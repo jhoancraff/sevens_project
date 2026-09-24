@@ -1,0 +1,15 @@
+[Unit]
+Description=Gunicorn daemon for Sevens Django Project
+After=network.target postgresql.service
+
+[Service]
+User=sevens
+Group=sevens
+WorkingDirectory=/home/sevens/sevens_project/backend
+EnvironmentFile=/home/sevens/sevens_project/backend/.env
+ExecStart=/home/sevens/sevens_project/backend/venv/bin/gunicorn -c gunicorn.conf.py core.wsgi:application
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
