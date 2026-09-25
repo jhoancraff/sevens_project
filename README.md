@@ -1,6 +1,6 @@
-# Proyecto Sevens: Django + PostgreSQL + React + Gunicorn
+# Proyecto Sevens: Django + PostgreSQL + React + Gunicorn + Nginx
 
-Este proyecto está configurado con una arquitectura moderna desacoplada en Frontend y Backend, con base de datos PostgreSQL y despliegue WSGI mediante Gunicorn.
+Este proyecto cuenta con una arquitectura fullstack completa y desacoplada con base de datos PostgreSQL, backend en Django expuesto mediante Gunicorn (gestionado por systemd), frontend en React (Vite) y servidor web Nginx como proxy inverso unificado.
 
 ---
 
@@ -36,74 +36,76 @@ DB_USER=sevens
 DB_PASSWORD=tu_clave_aqui
 DB_HOST=127.0.0.1
 DB_PORT=5432
-CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost
 ```
 
 ### Configuración Frontend (`frontend/.env`):
 ```env
-VITE_API_URL=http://localhost:8000/api
+VITE_API_URL=/api
 ```
 
 ---
 
 ## 🦄 3. Backend (Django + Gunicorn)
 
-### Activar entorno virtual:
+- **Servicio Systemd:** `gunicorn.service` (Activo y corriendo en segundo plano)
+- **Superusuario Django:** `sevens` (acceso al panel de administración en `/admin/`)
+- **API REST Framework:** Endpoints disponibles en `/api/` (ej: `/api/items/` y `/api/status/`)
+
+### Comandos útiles del servicio Backend:
+```bash
+sudo systemctl status gunicorn   # Ver estado del servicio
+sudo systemctl restart gunicorn  # Reiniciar tras cambios en código Python
+sudo journalctl -u gunicorn -f   # Ver logs en tiempo real
+```
+
+### Entorno virtual manual:
 ```bash
 cd /home/sevens/sevens_project/backend
 source venv/bin/activate
-```
-
-### Ejecutar migraciones:
-```bash
 python manage.py migrate
-```
-
-### Iniciar servidor de desarrollo Django:
-```bash
-python manage.py runserver 0.0.0.0:8000
-```
-
-### Iniciar con Gunicorn (Producción / WSGI):
-Puedes usar el script incluido:
-```bash
-./start_gunicorn.sh
-```
-O directamente con el archivo de configuración:
-```bash
-venv/bin/gunicorn -c gunicorn.conf.py core.wsgi:application
-```
-
-### Servicio Systemd (Opcional para segundo plano):
-El archivo `gunicorn.service` está listo en la raíz del proyecto. Para instalarlo:
-```bash
-sudo cp /home/sevens/sevens_project/gunicorn.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now gunicorn
 ```
 
 ---
 
-## ⚛️ 4. Frontend (React + Vite)
+## 🌐 4. Servidor Web Nginx (Proxy Inverso Unificado)
 
-### Iniciar servidor de desarrollo React:
+Nginx (`nginx.conf`) unifica todo el ecosistema en el puerto `80`:
+- `/` -> Sirve la aplicación React SPA (`frontend/dist/`).
+- `/api/` -> Encamina automáticamente a Gunicorn (`http://127.0.0.1:8000/api/`).
+- `/admin/` -> Encamina automáticamente al panel de Django (`http://127.0.0.1:8000/admin/`).
+- `/static/` -> Sirve directamente los archivos estáticos de Django (`backend/staticfiles/`).
+
+### Comandos Nginx:
+```bash
+sudo systemctl status nginx
+sudo systemctl reload nginx
+```
+
+---
+
+## ⚛️ 5. Frontend (React + Vite)
+
+### Compilación y publicación en Nginx:
+```bash
+cd /home/sevens/sevens_project/frontend
+npm run build
+```
+Los archivos en `dist/` se sirven inmediatamente a través de Nginx en `http://localhost/`.
+
+### Servidor de desarrollo con Hot Reload:
 ```bash
 cd /home/sevens/sevens_project/frontend
 npm run dev -- --host
 ```
 
-### Compilar para producción:
-```bash
-npm run build
-```
-
 ---
 
-## 🌿 5. Git
+## 🌿 6. Control de Versiones (Git)
 
 El repositorio Git está inicializado en `/home/sevens/sevens_project/`.
-Para revisar el estado de los archivos ignorados:
+Para revisar el estado de los archivos:
 ```bash
 git status
 ```
-Comprobarás que `.env`, `venv/` y `node_modules/` nunca son rastreados por Git.
+Los archivos `.env`, directorios `venv/` y `node_modules/` están estrictamente ignorados y protegidos contra filtraciones accidentales.
