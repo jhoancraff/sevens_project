@@ -1,18 +1,24 @@
-# Proyecto Sevens: Django + PostgreSQL + React + Gunicorn + Nginx
+# Proyecto Sevens
 
-Este proyecto cuenta con una arquitectura fullstack completa y desacoplada con base de datos PostgreSQL, backend en Django expuesto mediante Gunicorn (gestionado por systemd), frontend en React (Vite) y servidor web Nginx como proxy inverso unificado.
+Sistema de gestion para restaurante: Django + PostgreSQL + React + Gunicorn + Nginx.
+
+La app de Django (`backend/sevens/`) cubre menu con recetas, inventario y
+costeo, mesas, pedidos, cocina en tiempo real, facturacion fiscal, compras,
+devoluciones,conciliacion bancaria, cierre de caja y reportes de margen.
 
 ---
 
 ## 🗄️ 1. Base de Datos (PostgreSQL)
 
-- **Motor:** PostgreSQL 18
+- **Motor:** PostgreSQL
 - **Base de Datos:** `sevensdb`
 - **Usuario:** `sevens`
-- **Host:** `localhost` (puerto `5432`)
-- **Estado del servicio:** Activo vía systemd (`sudo systemctl status postgresql`)
+- **Estado:** Activo vía systemd (`sudo systemctl status postgresql`)
 
-Para conectarte directamente por consola:
+Las tablas usan el prefijo `vg_` (`vg_usuarios`, `vg_pedidos`, ...) porque los
+50 modelos declaran `db_table` explicito. El label de la app de Django es
+`sevens` (antes `varagrill`).
+
 ```bash
 psql -h localhost -U sevens -d sevensdb
 ```
@@ -21,10 +27,10 @@ psql -h localhost -U sevens -d sevensdb
 
 ## 🔒 2. Seguridad y Variables de Entorno (Git Seguro)
 
-Siguiendo las mejores prácticas de seguridad:
 - Ninguna contraseña, llave secreta o URL sensible está en el repositorio Git.
 - Todos los archivos `.env` están agregados al `.gitignore`.
-- Se incluyen archivos `.env.example` como plantilla para despliegues o nuevos desarrolladores.
+- Se incluyen archivos `.env.example` como plantilla.
+
 
 ### Configuración Backend (`backend/.env`):
 ```env
@@ -49,8 +55,37 @@ VITE_API_URL=/api
 ## 🦄 3. Backend (Django + Gunicorn)
 
 - **Servicio Systemd:** `gunicorn.service` (Activo y corriendo en segundo plano)
-- **Superusuario Django:** `sevens` (acceso al panel de administración en `/admin/`)
-- **API REST Framework:** Endpoints disponibles en `/api/` (ej: `/api/items/` y `/api/status/`)
+- **Panel de administración:** `/admin/`
+- **App de restaurante:** `backend/sevens/` — 50 modelos, 63 migraciones, 83 endpoints
+- **Autenticación:** sesión con cookies de Django (no JWT). El login acepta
+  username o email, sin distinguir mayúsculas.
+
+### Endpoints principales
+
+| Ruta | Contenido |
+|---|---|
+| `/api/auth/login/` | Iniciar sesión |
+| `/api/auth/logout/` | Cerrar sesión |
+| `/api/auth/status/` | Usuario de la sesión actual |
+| `/api/pedidos/` | Crear pedido |
+| `/api/pedidos/cocina/` | Comandas activas de cocina |
+| `/api/pedidos/cobro/` | Cobrar pedidos |
+| `/api/mesas/` | Mesas del restaurante |
+| `/api/productos/` | Menú disponible |
+| `/api/facturas/`, `/api/notas-entrega/` | Facturación |
+| `/api/admin/...` | Administración, compras, gastos, reportes |
+
+La lista completa está en `backend/sevens/urls.py` y en `frontend/README.md`.
+
+### Pruebas
+
+```bash
+cd backend
+./venv/bin/python manage.py test sevens
+```
+
+La suite cubre login por email/mayúsculas, catálogo, usuarios, cocina, cobro
+con descuento de inventario e importación de ingredientes desde Excel.
 
 ### Comandos útiles del servicio Backend:
 ```bash
