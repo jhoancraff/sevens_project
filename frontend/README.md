@@ -1,16 +1,83 @@
-# React + Vite
+# Frontend React — Proyecto Sevens
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Este directorio esta **vacio a proposito**: es el destino del frontend React que
+vive en el otro servidor. Copia aqui el contenido de tu proyecto React.
 
-Currently, two official plugins are available:
+## Como copiarlo desde el otro servidor
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+# En el servidor donde esta tu React:
+tar czf frontend-sevens.tar.gz --exclude=node_modules --exclude=dist --exclude=.git .
 
-## React Compiler
+# Traerlo a este servidor:
+scp usuario@servidor-frontend:/ruta/frontend-sevens.tar.gz /tmp/
+tar xzf /tmp/frontend-sevens.tar.gz -C /home/sevens/sevens_project/frontend
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Excluye `node_modules`, `dist` y `.git`: aqui se reinstalan y se compilan.
 
-## Expanding the Oxlint configuration
+## Build para produccion (Nginx)
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+```bash
+cd /home/sevens/sevens_project/frontend
+npm install
+npm run build      # genera dist/
+```
+
+Nginx ya esta configurado para servir `frontend/dist/` y hacer proxy de
+`/api/` hacia Gunicorn (ver `../nginx.conf`). No hay que cambiar nada mas.
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+## Desarrollo con hot reload
+
+```bash
+npm run dev -- --host
+```
+
+En dev el frontend corre en `:5173` y no pasa por Nginx, asi que en
+`frontend/.env` pon la URL absoluta del backend:
+
+```env
+VITE_API_URL=http://<IP-DE-ESTE-SERVIDOR>:8000/api
+```
+
+Y agrega ese origen a `CORS_ALLOWED_ORIGINS` en `backend/.env`.
+
+## Contrato de API
+
+El backend expone todo bajo `/api/`. Autenticacion por **sesion con cookies**
+(`login()` de Django), no JWT. Endpoints que exige la suite de tests:
+
+| Endpoint | Metodo | Descripcion |
+|---|---|---|
+| `/api/auth/login/` | POST | Login (acepta username o email, case-insensitive) |
+| `/api/auth/logout/` | POST | Logout |
+| `/api/auth/status/` | GET | Usuario de la sesion actual |
+| `/api/pedidos/` | POST | Crear pedido |
+| `/api/pedidos/<id>/estado/` | POST | Cambiar estado del pedido |
+| `/api/pedidos/cobro/` | POST | Cobrar pedidos |
+| `/api/pedidos/cocina/` | GET | Comandas activas de cocina |
+| `/api/facturas/<id>/abonos/` | POST | Abonos de factura |
+| `/api/admin/catalogo/` | GET | Catalogo de productos |
+| `/api/admin/usuarios/` | GET | Usuarios y roles |
+| `/api/admin/gastos/` | GET/POST | Gastos |
+| `/api/admin/compras/borrador/agregar/` | POST | Lineas del borrador de compra |
+| `/api/admin/reportes/estado-resultados/` | GET | Reporte de resultados |
+
+> **Nota**: el backend tiene ~78 vistas implementadas, pero `sevens/urls.py`
+> aun no existe, asi que hoy solo responde lo que este enrutado. Eso se esta
+> corrigiendo — si tu React llama endpoints que no aparecen aqui, es porque
+> falta enrutarlos.
+
+## WebSockets (tiempo real de cocina)
+
+`ws://<host>/ws/pedidos/` — requiere `credentials` en el cliente WebSocket.
+Aun no esta habilitado en produccion (falta `CHANNEL_LAYERS` y servir ASGI).
+
+## Roles
+
+Los permisos se derivan del rol del usuario: Administrador, Analista, Mesero,
+Cocinero, Cajera, Contador. Mas `is_staff`/`is_superuser` para el dueno.

@@ -63,6 +63,10 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Respaldo del scaffold de Vite que vivia en frontend/ antes de traer el
+# frontend real de React. No forma parte del proyecto.
+frontend-demo-vite.bak/
+
 # ==========================================
 # Editores y Sistema Operativo
 # ==========================================

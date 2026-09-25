@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     'rest_framework',
     # Local apps
     'api',
+    'sevens.apps.SevensConfig',
 ]
 
 MIDDLEWARE = [
@@ -100,6 +101,7 @@ STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+AUTH_USER_MODEL = 'sevens.VGUsuario'
 
 # CORS Settings
 cors_origins_raw = os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173')
