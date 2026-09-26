@@ -1,6 +1,32 @@
 [Unit]
-Description=Gunicorn daemon for Sevens Django Project
-After=network.target postgresql.service
+Description=Gunicorn (Django API) del proyecto Sevens
+Documentation=file:/home/sevens/sevens_project/README.md
+
+# network-online, no network: network.target se cumple cuando la RED ESTA
+# CONFIGURADA, no cuando ya hay IP asignada. Con DHCP, esperar solo a
+# network.target puede arrancar Gunicorn sin IP y fallar.
+Wants=network-online.target
+After=network-online.target
+
+# PostgreSQL tiene que estar escuchando antes de que Gunicorn abra conexiones.
+# Con After= solamente, systemd arranca los dos en paralelo; hace falta
+# Require= para que Gunicorn no se quede solo si la base no levanta.
+Requires=postgresql.service
+After=postgresql.service
+
+# Nginx sirve la SPA y hace proxy hacia este servicio. Con Before=, systemd
+# levanta Gunicorn primero y luego Nginx, de modo que no haya una ventana
+# en la que el navegador reciba un 502 recien encendido. Ojo: Before= es
+# solo orden, no dependencia — si Gunicorn fallara, Nginx igual levanta y
+# sigue sirviendo el frontend estatico.
+Before=nginx.service
+
+# Si Gunicorn entra en crash-loop (por ejemplo, la base de datos tardó
+# demasiado), systemd lo para para no quedarse reintentando. Con esto hay
+# margen para 5 reintentos en 2 minutos, de sobra para una base lenta.
+# En systemd moderno estas dos directivas van en [Unit], no en [Service].
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 User=sevens
@@ -8,8 +34,25 @@ Group=sevens
 WorkingDirectory=/home/sevens/sevens_project/backend
 EnvironmentFile=/home/sevens/sevens_project/backend/.env
 ExecStart=/home/sevens/sevens_project/backend/venv/bin/gunicorn -c gunicorn.conf.py core.wsgi:application
+
 Restart=always
 RestartSec=3
 
+# Al parar, se da tiempo a que Gunicorn cierre las conexiones abiertas en
+# lugar de matarlas a la fuerza.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Logs al journal, que es donde ya se ven con journalctl -u gunicorn
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gunicorn
+
+# Endurecimiento basico: el proceso no necesita root ni escribir fuera de
+# backend/ salvo en media/ y logs.
+NoNewPrivileges=true
+PrivateTmp=true
+
 [Install]
 WantedBy=multi-user.target
+

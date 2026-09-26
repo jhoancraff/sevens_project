@@ -118,6 +118,60 @@ sudo systemctl restart gunicorn  # Reiniciar tras cambios en código Python
 sudo journalctl -u gunicorn -f   # Ver logs en tiempo real
 ```
 
+---
+
+## 💡 4. Arranque automático
+
+Los tres servicios están habilitados (`systemctl enable`), así que **levantan
+solos al prender el servidor**: no hay que escribir ningún comando.
+
+| Servicio | Qué hace | Unit |
+|---|---|---|
+| `postgresql` | Base de datos | del sistema |
+| `gunicorn` | API Django | `gunicorn.service` |
+| `nginx` | Sirve la SPA y hace proxy de `/api/` | del sistema |
+
+El frontend **no necesita servicio propio**: React se compila a archivos
+estáticos en `frontend/dist/` y es Nginx quien los sirve.
+
+### Orden de arranque
+
+`gunicorn.service` define las dependencias para que no haya errores al prender:
+
+1. Espera a `network-online.target` — con `network.target` a secas, el servicio
+   puede arrancar antes de que la red tenga IP (típico con DHCP).
+2. `Requires=postgresql.service` — la base tiene que estar escuchando antes de
+   que Django abra conexiones.
+3. `Before=nginx.service` — Gunicorn primero, Nginx después, para que nadie
+   reciba un 502 al entrar apenas se prende. Si Gunicorn fallara, Nginx igual
+   levanta y sigue sirviendo el frontend.
+
+### Verificar que todo quedó arriba
+
+```bash
+cd /home/sevens/sevens_project
+./verificar_sistema.sh
+```
+
+Revisa servicios, arranque automático, base de datos, API, frontend y
+permisos de lectura para Nginx. Imprime `OK` o `FALLA` en cada punto y
+avisa qué hacer si algo falla.
+
+### Después de un corte de luz
+
+No hay que hacer nada: el sistema se levanta solo. Para confirmarlo, abre
+`http://<IP-del-servidor>/` desde cualquier teléfono de la red, o corre el
+script de arriba.
+
+### Si toca instalarlo de nuevo
+
+```bash
+sudo cp gunicorn.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now postgresql gunicorn nginx
+sudo systemctl is-enabled gunicorn nginx postgresql   # deben decir: enabled
+```
+
 ### Entorno virtual manual:
 ```bash
 cd /home/sevens/sevens_project/backend
