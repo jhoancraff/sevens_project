@@ -48,6 +48,9 @@ class Command(BaseCommand):
         parser.add_argument('--inactivo', dest='is_active', action='store_false',
                             help='Crea o deja el usuario inactivo (no puede entrar).')
         parser.add_argument('--staff', action='store_true', help='Da acceso al panel /admin/.')
+        parser.add_argument('--superuser', action='store_true',
+                            help='Superusuario de Django: entra a TODO, incluidas las pantallas '
+                                 'reservadas al dueno (impresoras, datos fiscales, compras) y a /admin/.')
         parser.add_argument('--listar-roles', action='store_true',
                             help='Muestra los roles disponibles y sale.')
 
@@ -118,6 +121,13 @@ class Command(BaseCommand):
             if options['staff']:
                 usuario.is_staff = True
 
+            # Un superusuario necesita is_staff Y is_superuser: Django le cierra
+            # /admin/ sin is_staff, y la app reserva las pantallas del dueno
+            # (ver _is_owner_user) a quien tenga cualquiera de los dos.
+            if options['superuser']:
+                usuario.is_staff = True
+                usuario.is_superuser = True
+
             if options['password']:
                 usuario.set_password(options['password'])
 
@@ -126,7 +136,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f'OK  {usuario.username}  id={usuario.id}  '
             f'rol={getattr(usuario.id_role, "nombre_role", None) or "sin rol"}  '
-            f'activo={usuario.is_active}  staff={usuario.is_staff}'
+            f'activo={usuario.is_active}  staff={usuario.is_staff}  super={usuario.is_superuser}'
         ))
         if not options['password']:
             self.stdout.write('  (no se tocó el password)')
