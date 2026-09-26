@@ -60,6 +60,42 @@ paso "4. Instalando la configuracion de nginx (puerto $PUERTO)"
 cp "$RAIZ/nginx.conf" /etc/nginx/sites-available/sevens_project
 # sites-enabled es un symlink al available, asi que basta con recrearlo.
 ln -sf /etc/nginx/sites-available/sevens_project /etc/nginx/sites-enabled/sevens_project
+
+# nginx -t solo avisa "server directive is not allowed here" cuando hay una
+# llave descolocada, y el numero de linea que senala no siempre es donde esta
+# el problema. Este chequeo previo encuentra el server mal anidado ANTES de
+# instalar nada, y dice en que linea.
+if ! python3 - "$RAIZ/nginx.conf" <<'PYCHECK' 2>/tmp/sevens_ng_err
+import re, sys
+
+nivel = 0
+problemas = []
+for i, linea in enumerate(open(sys.argv[1], encoding="utf-8"), 1):
+    s = linea.strip()
+    if not s or s.startswith("#"):
+        continue
+    if re.match(r"^server\s*\{", s) and nivel != 0:
+        problemas.append(f"linea {i}: 'server' anidado (nivel {nivel}, deberia ser 0)")
+    if s.endswith("{"):
+        nivel += 1
+    elif s == "}":
+        nivel -= 1
+        if nivel < 0:
+            problemas.append(f"linea {i}: llave de cierre sobrante")
+if nivel != 0:
+    problemas.append(f"faltan {nivel} llave(s) de cierre al final")
+
+for p in problemas:
+    print(p, file=sys.stderr)
+sys.exit(1 if problemas else 0)
+PYCHECK
+then
+  mal "el nginx.conf del proyecto tiene llaves descolocadas:"
+  sed 's/^/        /' /tmp/sevens_ng_err
+  exit 1
+fi
+ok "llaves correctas: los 2 server estan al mismo nivel"
+
 if nginx -t 2>/dev/null; then
   ok "configuracion de nginx valida"
 else
