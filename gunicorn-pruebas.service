@@ -1,0 +1,44 @@
+[Unit]
+Description=Gunicorn del entorno de PRUEBAS (base sevensdb_test, puerto 8001)
+Documentation=file:/home/sevens/sevens_project/README.md
+
+# Aplica lo mismo que el de produccion: esperar la red de verdad, la base
+# de datos lista, y arrancar antes que Nginx para no dejar un 502 servido.
+Wants=network-online.target
+After=network-online.target
+Requires=postgresql.service
+After=postgresql.service
+Before=sevens-pruebas.service
+
+# Si entra en crash-loop, no quedarse reintentando para siempre.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+User=sevens
+Group=sevens
+WorkingDirectory=/home/sevens/sevens_project/backend
+EnvironmentFile=/home/sevens/sevens_project/backend/.env
+
+# Lo que distingue esta instancia de la de produccion: la base de datos y
+# el nombre del entorno, que la app lee para pintar el aviso en pantalla.
+Environment=DB_NAME=sevensdb_test
+Environment=SEVENS_AMBIENTE=pruebas
+
+# Puerto propio (8001) para no chocar con produccion (8000).
+ExecStart=/home/sevens/sevens_project/backend/venv/bin/gunicorn -c gunicorn.conf.py core.wsgi:application --bind 127.0.0.1:8001
+
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gunicorn-pruebas
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

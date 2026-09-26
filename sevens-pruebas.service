@@ -1,0 +1,16 @@
+[Unit]
+Description=Sevens ENTORNO DE PRUEBAS (http://IP:8080)
+Documentation=file:/home/sevens/sevens_project/README.md
+
+# El backend de pruebas tiene que estar arriba antes de que este sitio
+# acepte peticiones, para no servir un 502.
+After=gunicorn-pruebas.service
+Wants=gunicorn-pruebas.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+
+[Install]
+WantedBy=multi-user.target

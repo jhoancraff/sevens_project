@@ -90,9 +90,25 @@ if [ -f "$RAIZ/frontend/dist/index.html" ]; then
   fi
 fi
 
+echo "=== 7. Entorno de pruebas (opcional) ==="
+if systemctl is-enabled gunicorn-pruebas >/dev/null 2>&1; then
+  amb=$(curl -s -m 5 http://127.0.0.1:8080/api/status/ 2>/dev/null)
+  if echo "$amb" | grep -q 'sevensdb_test'; then
+    ok "entorno de pruebas en :8080 apuntando a sevensdb_test"
+  else
+    mal ":8080 responde pero no es el entorno de pruebas"
+  fi
+else
+  printf '  --   entorno de pruebas no instalado (opcional)\n'
+fi
+
 echo
 if [ "$fallos" -eq 0 ]; then
-  printf '\033[32mTodo listo. La app esta en http://%s/\033[0m\n' "$IP"
+  printf '\033[32mTodo listo.\033[0m\n'
+  printf '  \033[1mProduccion:\033[0m http://%s/\n' "$IP"
+  if curl -s -o /dev/null -m 5 "http://127.0.0.1:8080/" 2>/dev/null; then
+    printf '  \033[1mPruebas:  \033[0m http://%s:8080/\n' "$IP"
+  fi
   exit 0
 else
   printf '\033[31m%d problema(s) encontrado(s). Revisa lo de arriba.\033[0m\n' "$fallos"

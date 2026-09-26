@@ -164,32 +164,48 @@ demostración (27 productos, 53 ingredientes, 16 preparaciones, 12 mesas).
 Tiene dos redes de seguridad: pide confirmación si hay terminal, y se aborta
 si `DB_TEST` coincide con la base de producción o tiene un nombre inválido.
 
-### Entrar al entorno de pruebas desde el navegador
+### Entrar a cada entorno desde el teléfono
 
-Por defecto la app en `:80` apunta a **producción**. Para probar la interfaz
-sin tocar los datos reales, levanta una segunda instancia apuntando a la base
-de pruebas:
+| Entorno | Dirección | Base de datos | Usuario |
+|---|---|---|---|
+| **Producción** | `http://192.168.68.100/` | `sevensdb` (real) | `Jhoan` |
+| **Pruebas** | `http://192.168.68.100:8080/` | `sevensdb_test` | `pruebas` / `SevensPrueba2026` |
+
+Son **puertos distintos**, o sea orígenes distintos: la PWA instalada de cada
+entorno convive en el mismo teléfono sin pisarse. Y ambos arrancan solos al
+prender el servidor.
+
+Para saber en cuál estás sin mirar la URL, cada backend se identifica:
 
 ```bash
-cd /home/sevens/sevens_project/backend
-DB_NAME=sevensdb_test ./venv/bin/gunicorn -c gunicorn.conf.py core.wsgi:application \
-    --bind 127.0.0.1:8001 --workers 1
+curl http://192.168.68.100/api/status/       # "ambiente": "produccion"
+curl http://192.168.68.100:8080/api/status/  # "ambiente": "pruebas"
 ```
 
-Y en otra terminal, sírvela con un servidor simple:
+Nginx también manda la cabecera `X-Sevens-Ambiente` en cada puerto.
+
+#### Instalar el entorno de pruebas
 
 ```bash
-cd /home/sevens/sevens_project/frontend
-npx vite preview --port 3000
+cd /home/sevens/sevens_project
+sudo cp gunicorn-pruebas.service sevens-pruebas.service /etc/systemd/system/
+sudo cp nginx.conf /etc/nginx/sites-available/sevens_project
+sudo systemctl daemon-reload
+sudo systemctl enable --now gunicorn-pruebas
+sudo nginx -t && sudo systemctl reload nginx
+sudo ufw allow 8080/tcp          # sin esto el celular no entra a :8080
 ```
 
-Ahí entra con el usuario de pruebas:
+#### Apagar el entorno de pruebas
 
-```
-pruebas / SevensPrueba2026
+Para no gastar recursos cuando no se prueba:
+
+```bash
+sudo systemctl disable --now gunicorn-pruebas
 ```
 
-Cierra ambas ventanas (`Ctrl+C`) para volver a producción.
+El sitio de `:8080` seguirá ahí pero devolverá error de conexión: es la señal
+de que el entorno de pruebas está apagado.
 
 ### Comandos útiles del servicio Backend:
 ```bash
