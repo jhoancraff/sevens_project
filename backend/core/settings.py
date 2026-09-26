@@ -100,6 +100,13 @@ USE_TZ = True
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
+# Archivos subidos por el usuario (fotos de productos).
+# El catalogo publico los sirve por /api/productos/<id>/imagen/ (ver
+# product_image_view), pero el admin tambien devuelve la URL cruda, asi que
+# se expone /media/ para que Nginx la sirva directo.
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'sevens.VGUsuario'
 
