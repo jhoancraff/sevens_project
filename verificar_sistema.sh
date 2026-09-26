@@ -103,6 +103,24 @@ else
 fi
 
 echo
+echo "=== 8. Roles del sistema ==="
+ROLES_ESPERADOS="Administrador Analista Cajera Cocinero Contador Mesero"
+falta=""
+for r in $ROLES_ESPERADOS; do
+  if ! "$RAIZ/backend/venv/bin/python" "$RAIZ/backend/manage.py" shell -c \
+      "import sys; from sevens.models import VGRol; sys.exit(0 if VGRol.objects.filter(nombre_role='$r').exists() else 1)" \
+      >/dev/null 2>&1; then
+    falta="$falta $r"
+  fi
+done
+if [ -z "$falta" ]; then
+  ok "los 6 roles existen en produccion"
+else
+  mal "faltan estos roles:$falta"
+  echo "        se crean con:  ./entorno.sh produccion manage.py seed_restaurant_data"
+fi
+
+echo
 if [ "$fallos" -eq 0 ]; then
   printf '\033[32mTodo listo.\033[0m\n'
   printf '  \033[1mProduccion:\033[0m http://%s/\n' "$IP"
