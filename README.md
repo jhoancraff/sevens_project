@@ -111,6 +111,86 @@ El rol se puede escribir en cualquier caso (`mesero`, `MESERO`) y la cédula es
 obligatoria y única. También se puede hacer desde el panel de `/admin/`, en
 *Usuarios → Agregar*.
 
+---
+
+## 🧪 5. Entornos: producción y pruebas
+
+Hay **dos bases de datos separadas** en el mismo PostgreSQL. Los datos de
+pruebas se pueden romper, borrar o llenar de basura sin tocar los reales.
+
+| Entorno | Base | Contenido |
+|---|---|---|
+| **produccion** | `sevensdb` | La que usa la app en `http://192.168.68.100/` |
+| **prueba** | `sevensdb_test` | Solo para experimentar |
+
+Las dos tienen las **mismas 63 migraciones**, así que el esquema siempre coincide.
+
+### Cambiar de entorno
+
+```bash
+cd /home/sevens/sevens_project
+
+./entorno.sh                      # muestra los dos entornos
+./entorno.sh produccion <comando> # contra los datos reales
+./entorno.sh prueba     <comando> # contra los de prueba
+```
+
+Ejemplos:
+
+```bash
+./entorno.sh prueba manage.py shell
+./entorno.sh produccion manage.py crear_usuario --username ana --rol cajera
+```
+
+Funciona porque Django carga `backend/.env` con `load_dotenv()`, que **no** pisa
+las variables que ya vienen del entorno: con exportar `DB_NAME` basta para
+apuntar a otra base, sin tocar ningún archivo.
+
+> Si intentas correr un `seed_*`, `reset_*` o `flush` contra **producción**,
+> el script se detiene y avisa. Sin terminal (en un pipe o un script) aborta
+> en vez de dejar pasar el cambio en silencio. Para pasarlo a propósito:
+> `SEVENS_SIN_AVISO=1 ./entorno.sh produccion manage.py ...`
+
+### Empezar de cero en pruebas
+
+Después de una prueba fallida, para volver a datos limpios:
+
+```bash
+./reiniciar_pruebas.sh
+```
+
+Borra `sevensdb_test`, aplica las migraciones y carga el catálogo de
+demostración (27 productos, 53 ingredientes, 16 preparaciones, 12 mesas).
+Tiene dos redes de seguridad: pide confirmación si hay terminal, y se aborta
+si `DB_TEST` coincide con la base de producción o tiene un nombre inválido.
+
+### Entrar al entorno de pruebas desde el navegador
+
+Por defecto la app en `:80` apunta a **producción**. Para probar la interfaz
+sin tocar los datos reales, levanta una segunda instancia apuntando a la base
+de pruebas:
+
+```bash
+cd /home/sevens/sevens_project/backend
+DB_NAME=sevensdb_test ./venv/bin/gunicorn -c gunicorn.conf.py core.wsgi:application \
+    --bind 127.0.0.1:8001 --workers 1
+```
+
+Y en otra terminal, sírvela con un servidor simple:
+
+```bash
+cd /home/sevens/sevens_project/frontend
+npx vite preview --port 3000
+```
+
+Ahí entra con el usuario de pruebas:
+
+```
+pruebas / SevensPrueba2026
+```
+
+Cierra ambas ventanas (`Ctrl+C`) para volver a producción.
+
 ### Comandos útiles del servicio Backend:
 ```bash
 sudo systemctl status gunicorn   # Ver estado del servicio
