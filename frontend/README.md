@@ -1,4 +1,4 @@
-# Varagrill frontend
+# Sevens frontend
 
 Frontend React (Vite) del sistema de restaurante. Se comunica con el backend
 Django por rutas relativas `/api/...`, que Nginx hace de proxy hacia Gunicorn.
@@ -13,7 +13,7 @@ Django por rutas relativas `/api/...`, que Nginx hace de proxy hacia Gunicorn.
 | Config Nginx | `/home/sevens/sevens_project/nginx.conf` |
 
 > Este README antes describia `/home/mariadb/app/frontend` y
-> `/var/www/varagrilladmin/dist` (servidor anterior). Las rutas de arriba son
+> `/var/www/sevensadmin/dist` (servidor anterior). Las rutas de arriba son
 > las de aqui; el bloque de nginx de abajo ya esta actualizado.
 
 ## Compilar

@@ -337,7 +337,7 @@ def _build_ticket_bytes(pedido, categorias, items):
     out += BUZZER_ALT
     out += ALIGN_CENTER
     out += BOLD_ON
-    out += _text('VARAGRILL') + FEED
+    out += _text('SEVENS') + FEED
     out += BOLD_OFF
     out += _text(encabezado) + FEED
     out += ALIGN_LEFT
@@ -425,7 +425,7 @@ def _build_ticket_secundario_bytes(pedido, categoria, detalles):
     out += BUZZER_ALT
     out += ALIGN_CENTER
     out += BOLD_ON
-    out += _text('VARAGRILL') + FEED
+    out += _text('SEVENS') + FEED
     out += BOLD_OFF
     out += _text(categoria.nombre.upper()) + FEED
     out += ALIGN_LEFT

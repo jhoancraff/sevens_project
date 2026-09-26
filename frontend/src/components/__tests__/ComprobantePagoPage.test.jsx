@@ -18,7 +18,7 @@ function mockFetchSecuencia({ documentoField, documento }) {
     if (String(url).includes('/datos-fiscales/')) {
       return Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ ok: true, datos_fiscales: { nombre_comercial: 'VaraGrill' } }),
+        json: () => Promise.resolve({ ok: true, datos_fiscales: { nombre_comercial: 'Sevens' } }),
       });
     }
     return Promise.resolve({

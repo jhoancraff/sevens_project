@@ -12,14 +12,14 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['assets/varagrill-logo.jpg'],
+      includeAssets: ['assets/sevens-logo.jpg'],
       devOptions: {
         enabled: false,
       },
       manifest: {
-        name: 'Varagrill',
-        short_name: 'Varagrill',
-        description: 'Acceso rápido al sistema de restaurante Varagrill',
+        name: 'Sevens',
+        short_name: 'Sevens',
+        description: 'Acceso rápido al sistema de restaurante Sevens',
         theme_color: '#140606',
         background_color: '#140606',
         display: 'standalone',
@@ -32,7 +32,7 @@ export default defineConfig({
         dir: 'ltr',
         icons: [
           {
-            src: '/assets/varagrill-logo.jpg',
+            src: '/assets/sevens-logo.jpg',
             sizes: 'any',
             type: 'image/svg+xml',
             purpose: 'any maskable',

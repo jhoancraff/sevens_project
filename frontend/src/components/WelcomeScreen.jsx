@@ -555,7 +555,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             flexShrink: 0,
             marginRight: 10,
           }}>
-            <img src="/assets/varagrill-logo.jpg" alt="" aria-hidden="true" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            <img src="/assets/sevens-logo.jpg" alt="" aria-hidden="true" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           </div>
           <div style={{
             fontSize: 15,
@@ -566,7 +566,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             backgroundClip: 'text',
             letterSpacing: '0.04em',
           }}>
-            Varagrill
+            Sevens
           </div>
         </div>
 

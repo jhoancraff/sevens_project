@@ -125,7 +125,7 @@ export function buildKitchenTicketHtml(ticket) {
   </head>
   <body>
     <div class="ticket">
-      <div class="title center">Varagrill</div>
+      <div class="title center">Sevens</div>
       <div class="subtitle center">Comanda de cocina</div>
       <div class="meta">Pedido #${escapeHtml(normalizedTicket.pedidoId)}</div>
       <div class="meta">${escapeHtml(normalizedTicket.mesa ? `Mesa ${normalizedTicket.mesa}` : 'Sin mesa')} &middot; ${escapeHtml(tipoPedidoLabel(normalizedTicket.tipoPedido))}</div>

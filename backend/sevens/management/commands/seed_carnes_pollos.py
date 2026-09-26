@@ -41,7 +41,7 @@ class Command(BaseCommand):
             username="operador_inventario",
             defaults={
                 "cedula": "V30000001",
-                "email": "inventario@varagrill.local",
+                "email": "inventario@sevens.local",
                 "first_name": "Operador",
                 "last_name": "Inventario",
                 "id_role": role,

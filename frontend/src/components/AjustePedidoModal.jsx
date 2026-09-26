@@ -6,7 +6,7 @@ import useMobileBackHandler from '../hooks/useMobileBackHandler';
 // o moverlo a otra mesa. Las dos acciones son distintas en la UI (una pide
 // cuanto quitar, la otra a que mesa) pero comparten lo importante: una
 // advertencia clara y un motivo obligatorio, que queda guardado para
-// auditoria (ver VGAjustePedido en varagrill/models/restaurant.py).
+// auditoria (ver VGAjustePedido en sevens/models/restaurant.py).
 function AjustePedidoModal({
   modo, // 'eliminar' | 'mover'
   item, // { id, nombre, cantidad, esPorPeso }

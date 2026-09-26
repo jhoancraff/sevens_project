@@ -39,7 +39,7 @@ from .models import VGDatosFiscalesEmisor, VGImpresoraCaja, VGTasaCambio
 
 logger = logging.getLogger(__name__)
 
-LPD_ORIGIN_HOST = 'varagrill'
+LPD_ORIGIN_HOST = 'sevens'
 # Windows puede tardar varios segundos en despertar el spooler LPD y confirmar
 # cada archivo del trabajo; el límite aplica a conexión y a cada confirmación.
 LPD_CONNECT_TIMEOUT_SECONDS = 15
@@ -75,7 +75,7 @@ def _enviar_y_confirmar(sock, payload, etapa):
     _recv_ack(sock, etapa)
 
 
-def enviar_trabajo_lpd(host, puerto, cola, datos, job_id=1, usuario='varagrill', nombre_trabajo='Recibo'):
+def enviar_trabajo_lpd(host, puerto, cola, datos, job_id=1, usuario='sevens', nombre_trabajo='Recibo'):
     """
     Envía `datos` (bytes ESC/POS ya armados) como trabajo de impresión crudo a una cola
     LPD remota (RFC 1179): anuncia y transfiere primero el archivo de control (formato
@@ -216,7 +216,7 @@ def _build_recibo_bytes(
     out += KANJI_OFF
     out += ESC_POS_WCP1252
     out += ALIGN_CENTER
-    out += _text('VARAGRILL') + FEED
+    out += _text('SEVENS') + FEED
     out += BOLD_ON
     out += _text(titulo) + FEED
     out += BOLD_OFF
@@ -357,7 +357,7 @@ def _build_documento_venta_bytes(
     out += ESC_POS_WCP1252
     out += ALIGN_CENTER
     out += BOLD_ON
-    out += _text((datos_fiscales.nombre_comercial if datos_fiscales and datos_fiscales.nombre_comercial else None) or 'VARAGRILL') + FEED
+    out += _text((datos_fiscales.nombre_comercial if datos_fiscales and datos_fiscales.nombre_comercial else None) or 'SEVENS') + FEED
     out += BOLD_OFF
     if datos_fiscales:
         if datos_fiscales.razon_social:

@@ -15,7 +15,7 @@ def _build_order_message(pedido, actor_user) -> str:
         f"{mesa_label} · {pedido.tipo_pedido}\n"
         f"Total: ${pedido.total}\n"
         f"Mesero: {actor_name}\n"
-        "Revisa la cocina en Varagrill."
+        "Revisa la cocina en Sevens."
     )
 
 

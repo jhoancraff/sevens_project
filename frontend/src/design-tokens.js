@@ -1,5 +1,5 @@
 // design-tokens.js
-// Tokens de diseño centralizados para todo el sistema Varagrill.
+// Tokens de diseño centralizados para todo el sistema Sevens.
 // Úsalos como valores de referencia, no como importaciones obligatorias
 // (los componentes existentes usan inline styles, mantenemos ese patrón).
 

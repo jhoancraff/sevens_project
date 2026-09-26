@@ -296,7 +296,7 @@ function AnalystNewRecipePage({ isMobile, isAdmin, onBack }) {
                   value={form.nombre}
                   onChange={(event) => handleFormChange('nombre', event.target.value)}
                   style={inputStyle}
-                  placeholder="Ej. Arepa varagrill especial"
+                  placeholder="Ej. Arepa sevens especial"
                 />
               </label>
 

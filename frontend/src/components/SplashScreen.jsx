@@ -53,13 +53,13 @@ function SplashScreen() {
           }}
         >
           <img
-            src="/assets/varagrill-logo.jpg"
-            alt="Varagrill logo"
+            src="/assets/sevens-logo.jpg"
+            alt="Sevens logo"
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           />
         </div>
         <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: '0.01em' }}>
-          Varagrill
+          Sevens
         </div>
         <div style={{ marginTop: 10, color: '#d7b0b0', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
           <span>Preparando tu experiencia</span>

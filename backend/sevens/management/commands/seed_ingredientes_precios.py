@@ -33,7 +33,7 @@ class Command(BaseCommand):
             username="operador_inventario",
             defaults={
                 "cedula": "V30000001",
-                "email": "inventario@varagrill.local",
+                "email": "inventario@sevens.local",
                 "first_name": "Operador",
                 "last_name": "Inventario",
                 "id_role": role,
@@ -41,7 +41,7 @@ class Command(BaseCommand):
             },
         )
         if created:
-            user.set_password("Varagrill123!")
+            user.set_password("Sevens123!")
             user.save(update_fields=["password"])
         elif user.id_role_id != role.id:
             user.id_role = role

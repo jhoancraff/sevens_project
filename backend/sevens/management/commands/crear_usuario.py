@@ -11,7 +11,7 @@ Ejemplos:
         --cedula 12345678 --rol mesero --nombre "Jhoan" --apellido Perez
 
     python manage.py crear_usuario --username ana --password Clave123 \
-        --cedula 87654321 --rol cajera --email ana@varagrill.local
+        --cedula 87654321 --rol cajera --email ana@sevens.local
 
     # Ver los roles disponibles y cambiar el password de uno existente
     python manage.py crear_usuario --listar-roles

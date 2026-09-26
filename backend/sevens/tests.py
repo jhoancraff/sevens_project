@@ -40,7 +40,7 @@ class LoginViewTests(TestCase):
             username='chef',
             password='restaurante123',
             cedula='12345678',
-            email='chef@varagrill.test',
+            email='chef@sevens.test',
             id_role=mesero_role,
         )
 
@@ -60,11 +60,11 @@ class LoginViewTests(TestCase):
             username='meseroemail',
             password='claveSegura789',
             cedula='12345670',
-            email='mesero.email@varagrill.test',
+            email='mesero.email@sevens.test',
         )
 
         response = self.client.post('/api/auth/login/', {
-            'username': 'mesero.email@varagrill.test',
+            'username': 'mesero.email@sevens.test',
             'password': 'claveSegura789',
         })
 
@@ -77,7 +77,7 @@ class LoginViewTests(TestCase):
             username='Jhoan',
             password='claveJhoan789',
             cedula='12345671',
-            email='jhoan@varagrill.test',
+            email='jhoan@sevens.test',
         )
 
         response = self.client.post('/api/auth/login/', {
@@ -94,7 +94,7 @@ class LoginViewTests(TestCase):
             username='mesero',
             password='claveSegura123',
             cedula='12345679',
-            email='mesero@varagrill.test',
+            email='mesero@sevens.test',
         )
 
         self.client.post('/api/auth/login/', {
@@ -113,7 +113,7 @@ class LoginViewTests(TestCase):
             username='admincocina',
             password='claveAdmin456',
             cedula='12345680',
-            email='admin@varagrill.test',
+            email='admin@sevens.test',
         )
 
         self.client.post('/api/auth/login/', {
@@ -138,7 +138,7 @@ class AdminCatalogApiTests(TestCase):
             username='admincatalogo',
             password='claveAdmin123',
             cedula='99999999',
-            email='admincatalogo@varagrill.test',
+            email='admincatalogo@sevens.test',
             id_role=self.admin_role,
         )
         self.client.force_login(self.admin)
@@ -529,7 +529,7 @@ class ImportarIngredientesExcelTests(TestCase):
             username='adminimportexcel',
             password='claveAdmin123',
             cedula='99999998',
-            email='adminimportexcel@varagrill.test',
+            email='adminimportexcel@sevens.test',
             id_role=self.admin_role,
         )
 
@@ -648,7 +648,7 @@ class AdminUsersApiTests(TestCase):
             username='adminusuarios',
             password='claveAdmin999',
             cedula='90000001',
-            email='adminusuarios@varagrill.test',
+            email='adminusuarios@sevens.test',
             id_role=self.admin_role,
             is_staff=True,
         )
@@ -656,7 +656,7 @@ class AdminUsersApiTests(TestCase):
             username='meseroexistente',
             password='claveMesero111',
             cedula='90000002',
-            email='mesero@varagrill.test',
+            email='mesero@sevens.test',
             id_role=self.mesero_role,
         )
 
@@ -665,7 +665,7 @@ class AdminUsersApiTests(TestCase):
             username='sinpermiso',
             password='claveSinPermiso1',
             cedula='90000003',
-            email='sinpermiso@varagrill.test',
+            email='sinpermiso@sevens.test',
             id_role=self.mesero_role,
         )
         self.client.force_login(outsider)
@@ -695,7 +695,7 @@ class AdminUsersApiTests(TestCase):
                 'password': 'ClaveNueva123',
                 'first_name': 'Ana',
                 'last_name': 'Lista',
-                'email': 'ana@varagrill.test',
+                'email': 'ana@sevens.test',
                 'cedula': '90000004',
                 'telefono': '04120000000',
                 'fecha_nacimiento': '1995-01-10',
@@ -718,7 +718,7 @@ class AdminUsersApiTests(TestCase):
                 'password': 'ClaveActualizada456',
                 'first_name': 'Ana Maria',
                 'last_name': 'Lista',
-                'email': 'anamaria@varagrill.test',
+                'email': 'anamaria@sevens.test',
                 'cedula': '90000004',
                 'telefono': '04125555555',
                 'fecha_nacimiento': '1995-01-12',
@@ -730,7 +730,7 @@ class AdminUsersApiTests(TestCase):
         self.assertEqual(update_response.status_code, 200)
         created_user.refresh_from_db()
         self.assertEqual(created_user.first_name, 'Ana Maria')
-        self.assertEqual(created_user.email, 'anamaria@varagrill.test')
+        self.assertEqual(created_user.email, 'anamaria@sevens.test')
         self.assertEqual(created_user.id_role, self.admin_role)
         self.assertTrue(created_user.is_staff)
         self.assertFalse(created_user.is_active)
@@ -753,7 +753,7 @@ class KitchenOrdersApiTests(TestCase):
             username='cocinero',
             password='claveCocina123',
             cedula='22345680',
-            email='cocina@varagrill.test',
+            email='cocina@sevens.test',
             id_role=self.mesero_role,
         )
         self.client.force_login(self.user)
@@ -892,7 +892,7 @@ class PedidoCobroInventoryDeductionTests(TestCase):
             username='cajera',
             password='claveCajera123',
             cedula='33345680',
-            email='cajera@varagrill.test',
+            email='cajera@sevens.test',
             id_role=self.cajero_role,
         )
         self.client.force_login(self.user)
@@ -1114,7 +1114,7 @@ class UnidadesMedidaTests(TestCase):
             username='adminunidades',
             password='claveAdmin123',
             cedula='88888888',
-            email='adminunidades@varagrill.test',
+            email='adminunidades@sevens.test',
             id_role=admin_role,
         )
         self.client.force_login(admin)
@@ -1275,7 +1275,7 @@ class TasaCambioAutoAssignTests(TestCase):
         self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
         self.admin = VGUsuario.objects.create_superuser(
             username='tasa_admin', password='claveAdmin123', cedula='90000001',
-            email='tasa_admin@varagrill.test', id_role=self.admin_role,
+            email='tasa_admin@sevens.test', id_role=self.admin_role,
         )
         self.client.force_login(self.admin)
         self.metodo_pago = VGMetodoPago.objects.create(nombre='Efectivo test', moneda='USD', es_efectivo=True)
@@ -1357,7 +1357,7 @@ class TasaCambioInmutabilidadFinancieraTests(TestCase):
         self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
         self.admin = VGUsuario.objects.create_superuser(
             username='inmutable_admin', password='claveAdmin123', cedula='90000002',
-            email='inmutable_admin@varagrill.test', id_role=self.admin_role,
+            email='inmutable_admin@sevens.test', id_role=self.admin_role,
         )
         self.client.force_login(self.admin)
         self.categoria_gasto = VGCategoriaGasto.objects.create(nombre='Alquiler test')
@@ -1438,7 +1438,7 @@ class EstadoResultadosHistoricoAcumuladoTests(TestCase):
         self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
         self.admin = VGUsuario.objects.create_superuser(
             username='reporte_admin', password='claveAdmin123', cedula='90000003',
-            email='reporte_admin@varagrill.test', id_role=self.admin_role,
+            email='reporte_admin@sevens.test', id_role=self.admin_role,
         )
         self.client.force_login(self.admin)
         self.categoria_gasto = VGCategoriaGasto.objects.create(nombre='Nomina test')
