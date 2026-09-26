@@ -87,6 +87,30 @@ cd backend
 La suite cubre login por email/mayúsculas, catálogo, usuarios, cocina, cobro
 con descuento de inventario e importación de ingredientes desde Excel.
 
+### Dar de alta al personal
+
+Cada persona necesita un usuario con su rol. Desde la terminal:
+
+```bash
+cd /home/sevens/sevens_project/backend
+
+# Ver los roles disponibles
+./venv/bin/python manage.py crear_usuario --listar-roles
+
+# Crear un mesero
+./venv/bin/python manage.py crear_usuario \
+    --username jhoan --password 'ClaveSegura123' \
+    --cedula 12345678 --rol mesero \
+    --nombre Jhoan --apellido Perez
+
+# Cambiar solo la contraseña de alguien que ya existe
+./venv/bin/python manage.py crear_usuario --username jhoan --password 'NuevaClave456'
+```
+
+El rol se puede escribir en cualquier caso (`mesero`, `MESERO`) y la cédula es
+obligatoria y única. También se puede hacer desde el panel de `/admin/`, en
+*Usuarios → Agregar*.
+
 ### Comandos útiles del servicio Backend:
 ```bash
 sudo systemctl status gunicorn   # Ver estado del servicio
