@@ -20,7 +20,7 @@ const emptyCliente = { nombre: '', tipo_documento: '', numero_documento: '' };
 // solo queda oculto detras de esta bandera.
 const FACTURACION_HABILITADA = false;
 
-function CheckoutPage({ isMobile, onBack, lastKitchenEvent, canCancelarPedidos = false, canGestionarItems = false, mesasCatalogo = [], onArmarCanje }) {
+function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestionarItems = false, mesasCatalogo = [], onArmarCanje }) {
   const tasaCambio = useExchangeRate();
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -178,12 +178,6 @@ function CheckoutPage({ isMobile, onBack, lastKitchenEvent, canCancelarPedidos =
 
     return () => window.clearInterval(intervalId);
   }, [fetchPedidos]);
-
-  useEffect(() => {
-    if (lastKitchenEvent) {
-      fetchPedidos();
-    }
-  }, [lastKitchenEvent, fetchPedidos]);
 
   // Precargada de una vez (no al abrir el modal de mover) para que el selector de
   // mesero nunca aparezca vacío por timing — ver AjustePedidoModal/cargarMeserosDisponibles.

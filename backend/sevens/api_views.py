@@ -8,8 +8,6 @@ from pathlib import Path
 from django.conf import settings
 from django.core.files.storage import default_storage
 from django.utils.text import get_valid_filename
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
 from django.contrib.auth import authenticate, login, logout
 from django.http import FileResponse, Http404
 from django.db import transaction
@@ -277,42 +275,19 @@ def _resolve_recipe_components_for_save(parsed_components):
 
 
 def _notify_cocina_event(event_name, pedido, actor_user, previous_estado=None):
-    # Se imprime la comanda física solo al pasar el pedido a "en preparación"
-    # (cocina confirma que arranca a cocinarlo), no al registrarlo. No debe
-    # depender de que el canal de WebSocket esté disponible: se intenta
-    # siempre, aunque channel_layer sea None.
-    # Excepción: si viene de "listo" (el mesero le dio "Volver a preparar" por
-    # un error), no se reimprime la comanda — ya se imprimió la primera vez y
-    # no se quiere duplicar el ticket en cocina por una corrección de estado.
+    # Avisa a cocina por los dos canales que le quedan: la comanda fisica y
+    # (si esta habilitado) WhatsApp. La app ya no manda nada por WebSocket.
+    #
+    # La comanda se imprime solo al pasar el pedido a "en preparacion" (cocina
+    # confirma que arranca a cocinarlo), no al registrarlo.
+    # Excepcion: si viene de "listo" (el mesero le dio "Volver a preparar" por
+    # un error), no se reimprime la comanda - ya se imprimio la primera vez y
+    # no se quiere duplicar el ticket en cocina por una correccion de estado.
     if event_name == 'PEDIDO_ACTUALIZADO' and pedido.estado == 'en_preparacion' and previous_estado != 'listo':
         try:
             imprimir_comandas_pedido(pedido)
         except Exception:
             logger.exception('Fallo al imprimir comandas para pedido %s', pedido.id)
-
-    channel_layer = get_channel_layer()
-    if channel_layer is None:
-        return
-
-    payload = {
-        'event': event_name,
-        'pedido_id': pedido.id,
-        'mesa': pedido.mesa.numero if pedido.mesa else None,
-        'estado': pedido.estado,
-        'tipo_pedido': pedido.tipo_pedido,
-        'total': str(pedido.total),
-        'creado_en': pedido.fecha_creacion.isoformat(),
-        'actor': actor_user.username,
-        'actor_role': _get_role_name(actor_user),
-    }
-
-    async_to_sync(channel_layer.group_send)(
-        'role_cocinero_notifications',
-        {
-            'type': 'cocina_order_notification',
-            'payload': payload,
-        },
-    )
 
     # Alertas opcionales por WhatsApp para nuevos pedidos.
     if event_name == 'NUEVA_COMANDAS':
@@ -320,31 +295,6 @@ def _notify_cocina_event(event_name, pedido, actor_user, previous_estado=None):
             send_whatsapp_new_order_alert(pedido, actor_user)
         except Exception:
             logger.exception('Fallo al enviar alerta WhatsApp para pedido %s', pedido.id)
-
-
-def _notify_usuario_event(event_name, pedido, actor_user):
-    """Avisa por el grupo personal del mesero dueño del pedido (ej: cocina lo marcó listo)."""
-    channel_layer = get_channel_layer()
-    if channel_layer is None or not pedido.usuario_id:
-        return
-
-    payload = {
-        'event': event_name,
-        'pedido_id': pedido.id,
-        'mesa': pedido.mesa.numero if pedido.mesa else None,
-        'estado': pedido.estado,
-        'tipo_pedido': pedido.tipo_pedido,
-        'actor': actor_user.username,
-        'actor_role': _get_role_name(actor_user),
-    }
-
-    async_to_sync(channel_layer.group_send)(
-        f'usuario_{pedido.usuario_id}_notifications',
-        {
-            'type': 'usuario_order_notification',
-            'payload': payload,
-        },
-    )
 
 
 def _active_promotions_by_product(product_ids=None):
@@ -5250,7 +5200,6 @@ def _avanzar_pedidos_en_preparacion_vencidos(actor_user):
 
     for pedido in vencidos:
         _notify_cocina_event('PEDIDO_ACTUALIZADO', pedido, actor_user, previous_estado='en_preparacion')
-        _notify_usuario_event('PEDIDO_LISTO', pedido, actor_user)
 
     return vencidos
 
@@ -5867,8 +5816,6 @@ def kitchen_order_status_update_view(request, pedido_id):
             pedido.detalles.filter(estado='listo').update(estado='entregado')
 
     _notify_cocina_event('PEDIDO_ACTUALIZADO', pedido, request.user, previous_estado=previous_estado)
-    if next_state == 'listo':
-        _notify_usuario_event('PEDIDO_LISTO', pedido, request.user)
 
     return _auth_response({
         'ok': True,
