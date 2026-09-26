@@ -1,0 +1,1669 @@
+import { useCallback, useEffect, useState } from 'react';
+import { limpiarFechaSeleccionada, limpiarRangoSeleccionado } from '../utils/fechaContabilidad';
+import AdminPanelPage from './AdminPanelPage';
+import ContabilidadPanelPage from './ContabilidadPanelPage';
+import ReporteCuadreCajaPage from './ReporteCuadreCajaPage';
+import ReporteVentasDiaPage from './ReporteVentasDiaPage';
+import ReporteCuentasPorCobrarPage from './ReporteCuentasPorCobrarPage';
+import ReporteCuentasCobradasPage from './ReporteCuentasCobradasPage';
+import ReportePropinasPage from './ReportePropinasPage';
+import ReporteDevolucionesPage from './ReporteDevolucionesPage';
+import ReporteCuadreCajaRangoPage from './ReporteCuadreCajaRangoPage';
+import ReporteDisponibilidadCuentasPage from './ReporteDisponibilidadCuentasPage';
+import ReporteConciliacionBancariaPage from './ReporteConciliacionBancariaPage';
+import AnalystBulkPromotionPage from './AnalystBulkPromotionPage';
+import AnalystChefRecommendationsPage from './AnalystChefRecommendationsPage';
+import AnalystEditUserPage from './AnalystEditUserPage';
+import AnalystEditIngredientPage from './AnalystEditIngredientPage';
+import AnalystEditMesaPage from './AnalystEditMesaPage';
+import AnalystEditProductPage from './AnalystEditProductPage';
+import AnalystEditRecipePage from './AnalystEditRecipePage';
+import AnalystEditPreparationPage from './AnalystEditPreparationPage';
+import AnalystIngredientsBulkCreatePage from './AnalystIngredientsBulkCreatePage';
+import AnalystIngredientsCreateReportPage from './AnalystIngredientsCreateReportPage';
+import AnalystIngredientsImportPage from './AnalystIngredientsImportPage';
+import AnalystIngredientsReportPage from './AnalystIngredientsReportPage';
+import AnalystInventoryHubPage from './AnalystInventoryHubPage';
+import AnalystMesasPage from './AnalystMesasPage';
+import AnalystNewChefRecommendationPage from './AnalystNewChefRecommendationPage';
+import AnalystNewIngredientPage from './AnalystNewIngredientPage';
+import AnalystNewMesaPage from './AnalystNewMesaPage';
+import AnalystNewPreparationPage from './AnalystNewPreparationPage';
+import AnalystNewProductPage from './AnalystNewProductPage';
+import AnalystNewPromotionPage from './AnalystNewPromotionPage';
+import AnalystNewUserPage from './AnalystNewUserPage';
+import AnalystNewRecipePage from './AnalystNewRecipePage';
+import AnalystPaymentMethodsPage from './AnalystPaymentMethodsPage';
+import AnalystPreparationsReportPage from './AnalystPreparationsReportPage';
+import AnalystPrintersPage from './AnalysPrintersPage';
+import AnalystProductsPage from './AnalystProductsPage';
+import AnalystPromotionsPage from './AnalystPromotionsPage';
+import AnalystRecipesPage from './AnalystRecipesPage';
+import AnalystUsersPage from './AnalystUsersPage';
+import ChefRecommendationsPage from './ChefRecommendationsPage';
+import CheckoutPage from './CheckoutPage';
+import AnalystComprasBorradorPage from './AnalystComprasBorradorPage';
+import CuentasPorCobrarPage from './CuentasPorCobrarPage';
+import CuentasPorPagarPage from './CuentasPorPagarPage';
+import AnalystGastosPage from './AnalystGastosPage';
+import ComprobantePagoPage from './ComprobantePagoPage';
+import EstadoResultadosPage from './EstadoResultadosPage';
+import HistorialFacturasPage from './HistorialFacturasPage';
+import AnalystDatosFiscalesPage from './AnalystDatosFiscalesPage';
+import AnalystComprasPage from './AnalystComprasPage';
+import AnalystMargenGananciaPage from './AnalystMargenGananciaPage';
+import AnalystMovimientoProductosPage from './AnalystMovimientoProductosPage';
+import AnalystConfiguracionCosteoPage from './AnalystConfiguracionCosteoPage';
+import EditOrderPage from './EditOrderPage';
+import MesasAtendidasPage from './MesasAtendidasPage';
+import NewOrderPage from './NewOrderPage';
+import DeliveryPage from './DeliveryPage';
+import PedidoConfirmacionPage from './PedidoConfirmacionPage';
+import PromotionsPage from './PromotionsPage';
+import useKitchenSocket from '../hooks/useKitchenSocket';
+import useKitchenAlerts from './useKitchenAlerts';
+import useMobileBackHandler from '../hooks/useMobileBackHandler';
+import useViewHistory from '../hooks/useViewHistory';
+
+// 'mesas-atendidas' y 'orders': la cajera entra ahí a ver TODAS las mesas abiertas
+// (no solo las suyas, ver mesas_atendidas_view) y a registrarle una ronda a un
+// mesero desbordado que le pide ayuda — "Agregar ronda a esta mesa" navega a
+// 'orders' con la mesa/cliente precargados (ver handleAddRoundToTable).
+const CAJERA_ALLOWED_VIEWS = ['checkout', 'contabilidad', 'contabilidad-cuadre-caja', 'cuentas-cobrar', 'mesas-atendidas', 'orders', 'pedidos-delivery'];
+// Mismas 3 tarjetas que AdminPanelPage oculta (CARTAS_RESTRINGIDAS) — reservadas al
+// dueño real del negocio o al Contador, nunca a un Administrador de rol común.
+const RESTRICTED_ADMIN_VIEWS = ['admin-printers', 'admin-datos-fiscales', 'admin-compras'];
+
+function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
+  const isCajera = (role || '').trim().toLowerCase() === 'cajera';
+  const isContador = (role || '').trim().toLowerCase() === 'contador';
+  const isMesero = (role || '').trim().toLowerCase() === 'mesero';
+  const isAnalista = (role || '').trim().toLowerCase() === 'analista';
+  // Quién puede cancelar un pedido desde caja (ver CheckoutPage): administrador,
+  // cajera, contador o analista — nunca mesero/cocinero. isAdmin ya cubre
+  // administrador+contador (ver _is_admin_user en el backend).
+  const canCancelarPedidosDesdeCaja = isAdmin || isCajera || isAnalista;
+  // El Contador ya pasa isAdmin (el backend lo trata como admin), pero algunas tarjetas
+  // sensibles del Panel Analista (impresoras, datos fiscales, historial de compras)
+  // quedan reservadas al dueño real del negocio (isOwner) o al Contador — nunca a un
+  // Administrador de rol común. Ver ContabilidadPanelPage/AdminPanelPage.
+  const canSeeCartasRestringidas = isOwner || isContador;
+
+  const isCompactNavigationViewport = () => (
+    window.matchMedia('(max-width: 1024px)').matches
+    || window.matchMedia('(pointer: coarse)').matches
+  );
+
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 768px)').matches);
+  const [isSidebarOverlayMode, setIsSidebarOverlayMode] = useState(isCompactNavigationViewport);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  // El botón/gesto físico de "Atrás" del celular sincronizado con la navegación
+  // interna de pantallas — ver useViewHistory. goToView = entrar a una
+  // subvista (empuja historial); goBackView = volver a la anterior (la misma
+  // acción que dispara el Atrás físico); replaceView = correcciones
+  // automáticas de permisos que no son navegación real del usuario.
+  const { activeView, goToView, goBackView, replaceView } = useViewHistory('home');
+  const [mesas, setMesas] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [adicionales, setAdicionales] = useState([]);
+  const [loadingData, setLoadingData] = useState(true);
+  const [readyToBillCount, setReadyToBillCount] = useState(0);
+  const [liveNotice, setLiveNotice] = useState('');
+  const [lastKitchenEvent, setLastKitchenEvent] = useState(null);
+  const [showNotificationPrompt, setShowNotificationPrompt] = useState(false);
+  const [newOrderPreset, setNewOrderPreset] = useState(null);
+  const [mesaAutoAbrir, setMesaAutoAbrir] = useState(null);
+
+  const handleNuevoPedido = () => {
+    setNewOrderPreset(null);
+    goToView('orders');
+    if (isSidebarOverlayMode) {
+      setIsSidebarOpen(false);
+    }
+  };
+
+  const handleAddRoundToTable = ({ mesaId, cliente }) => {
+    setNewOrderPreset({ mesaId, cliente, token: Date.now() });
+    goToView('orders');
+    if (isSidebarOverlayMode) {
+      setIsSidebarOpen(false);
+    }
+  };
+
+  // Igual que handleAddRoundToTable, pero sin mesaId — un pedido para llevar/
+  // delivery no tiene mesa (ver NewOrderPage), así que la ronda nueva se
+  // precarga con el mismo cliente y tipo en vez de una mesa.
+  const handleAddRoundToDelivery = ({ tipoPedido, cliente, clienteCedula, clienteTelefono, grupoPedidoId }) => {
+    setNewOrderPreset({ tipoPedido, cliente, clienteCedula, clienteTelefono, grupoPedidoId, token: Date.now() });
+    goToView('orders');
+    if (isSidebarOverlayMode) {
+      setIsSidebarOpen(false);
+    }
+  };
+
+  // Tras un canje (ver NotasEntregaHistorialPage/ReporteDevolucionesPage), la
+  // cajera arma acá el plato de reemplazo como un pedido normal — sin mesa, porque
+  // ya está pagado con el dinero del documento que la nota de crédito anuló
+  // (ver initialNotaCreditoId en NewOrderPage → pedido_create_view).
+  const handleArmarCanje = ({ notaCreditoId, cliente }) => {
+    setNewOrderPreset({ tipoPedido: 'llevar', cliente, notaCreditoId, token: Date.now() });
+    goToView('orders');
+    if (isSidebarOverlayMode) {
+      setIsSidebarOpen(false);
+    }
+  };
+
+  // Cocina ya no tiene tablero propio (KitchenOrdersPage, eliminado — cocina
+  // no mira pantalla): tras crear o editar un pedido, el mesero aterriza
+  // directo en la mesa que lo originó, dentro de Mesas Atendidas. El `token`
+  // fuerza la reapertura aunque sea la misma mesaId de la vez anterior (mismo
+  // patrón que newOrderPreset, arriba).
+  const handleOrderCreated = (pedidoId, mesaId, tipoPedido) => {
+    // Para llevar/delivery no tienen mesa (ver NewOrderPage): mandarlos a Mesas
+    // atendidas los dejaría invisibles, esa vista solo lista pedidos con mesa
+    // (ver mesas_atendidas_view). Van en cambio a una pantalla de confirmación
+    // propia donde la cajera revisa, manda a imprimir y de ahí pasa a Caja.
+    if (tipoPedido && tipoPedido !== 'local') {
+      goToView(`pedido-confirmacion:${pedidoId}`);
+      return;
+    }
+    setMesaAutoAbrir({ mesaId, token: Date.now(), flashMessage: `Pedido #${pedidoId} registrado con éxito.` });
+    goToView('mesas-atendidas');
+  };
+
+  const handleOrderUpdated = (pedidoId, mesaId) => {
+    setMesaAutoAbrir({ mesaId, token: Date.now(), flashMessage: `Pedido #${pedidoId} actualizado con éxito.` });
+    goToView('mesas-atendidas');
+  };
+
+  useEffect(() => {
+    const handleEscapeClose = (event) => {
+      if (event.key === 'Escape') {
+        setIsSidebarOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleEscapeClose);
+    return () => window.removeEventListener('keydown', handleEscapeClose);
+  }, []);
+
+  // El menú lateral solo cuenta como una "capa" de navegación cuando se muestra
+  // como drawer superpuesto (móvil/táctil) — en modo escritorio siempre está
+  // visible y no debe interceptar el Atrás.
+  useMobileBackHandler(isSidebarOpen && isSidebarOverlayMode, () => setIsSidebarOpen(false));
+  useMobileBackHandler(isUserMenuOpen, () => setIsUserMenuOpen(false));
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(max-width: 768px)');
+
+    const handleViewportChange = (event) => {
+      setIsMobile(event.matches);
+    };
+
+    setIsMobile(mediaQuery.matches);
+    mediaQuery.addEventListener('change', handleViewportChange);
+
+    return () => {
+      mediaQuery.removeEventListener('change', handleViewportChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const widthQuery = window.matchMedia('(max-width: 1024px)');
+    const pointerQuery = window.matchMedia('(pointer: coarse)');
+
+    const syncOverlayMode = () => {
+      setIsSidebarOverlayMode(widthQuery.matches || pointerQuery.matches);
+    };
+
+    syncOverlayMode();
+    widthQuery.addEventListener('change', syncOverlayMode);
+    pointerQuery.addEventListener('change', syncOverlayMode);
+
+    return () => {
+      widthQuery.removeEventListener('change', syncOverlayMode);
+      pointerQuery.removeEventListener('change', syncOverlayMode);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isSidebarOverlayMode) {
+      setIsSidebarOpen(false);
+      return;
+    }
+
+    setIsSidebarOpen(true);
+  }, [isSidebarOverlayMode]);
+
+  useEffect(() => {
+    if (isSidebarOverlayMode) {
+      setIsSidebarOpen(false);
+    }
+  }, [activeView, isSidebarOverlayMode]);
+
+  const handleHomeClick = () => {
+    goToView('home');
+    if (isSidebarOverlayMode) {
+      setIsSidebarOpen(false);
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleAnalystNavigation = (view) => {
+    goToView(view);
+    if (isSidebarOverlayMode) {
+      setIsSidebarOpen(false);
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const reloadMesas = useCallback(async () => {
+    try {
+      const mesasResponse = await fetch('/api/mesas/', { credentials: 'include', cache: 'no-store' });
+      const mesasJson = mesasResponse.ok ? await mesasResponse.json() : [];
+      setMesas(Array.isArray(mesasJson) ? mesasJson : []);
+    } catch (error) {
+      setMesas([]);
+    }
+  }, []);
+
+  const reloadProducts = useCallback(async () => {
+    try {
+      const productsResponse = await fetch('/api/productos/', { credentials: 'include', cache: 'no-store' });
+      const productsJson = productsResponse.ok ? await productsResponse.json() : [];
+      setProducts(Array.isArray(productsJson) ? productsJson : []);
+    } catch (error) {
+      setProducts([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    const loadOrderData = async () => {
+      try {
+        const [mesasResponse, productsResponse, adicionalesResponse] = await Promise.all([
+          fetch('/api/mesas/', { credentials: 'include', cache: 'no-store' }),
+          fetch('/api/productos/', { credentials: 'include', cache: 'no-store' }),
+          fetch('/api/adicionales/', { credentials: 'include', cache: 'no-store' }),
+        ]);
+
+        const mesasJson = mesasResponse.ok ? await mesasResponse.json() : [];
+        const productsJson = productsResponse.ok ? await productsResponse.json() : [];
+        const adicionalesJson = adicionalesResponse.ok ? await adicionalesResponse.json().catch(() => ({})) : {};
+
+        setMesas(Array.isArray(mesasJson) ? mesasJson : []);
+        setProducts(Array.isArray(productsJson) ? productsJson : []);
+        setAdicionales(Array.isArray(adicionalesJson.adicionales) ? adicionalesJson.adicionales : []);
+      } catch (error) {
+        setProducts([]);
+        setMesas([]);
+        setAdicionales([]);
+      } finally {
+        setLoadingData(false);
+      }
+    };
+
+    loadOrderData();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadReadyToBill = async () => {
+      try {
+        const response = await fetch('/api/pedidos/cobro/', {
+          credentials: 'include',
+          cache: 'no-store',
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok || cancelled) {
+          return;
+        }
+
+        const count = Array.isArray(data.pedidos) ? data.pedidos.length : 0;
+        setReadyToBillCount(count);
+      } catch (error) {
+        // Keep the last known value when there is a temporary network error.
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        loadReadyToBill();
+      }
+    };
+
+    loadReadyToBill();
+    const pollId = window.setInterval(loadReadyToBill, 15000);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(pollId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Correcciones de permisos, no navegación real del usuario — replaceView
+    // en vez de goToView/goBackView para no apilar una entrada de historial
+    // que el Atrás físico tendría que atravesar sin ver ningún cambio.
+    if (isCajera) {
+      if (!CAJERA_ALLOWED_VIEWS.includes(activeView)) {
+        replaceView('checkout');
+      }
+      return;
+    }
+
+    // El home genérico (promociones/recomendación del chef) no le sirve de mucho al
+    // mesero en su día a día — lo que necesita ver apenas entra (o cuando recarga, o
+    // cuando toca "Inicio") son sus mesas atendidas. Solo se redirige desde 'home': el
+    // resto de sus vistas (Nuevo pedido, etc.) siguen libres.
+    if (isMesero && activeView === 'home') {
+      replaceView('mesas-atendidas');
+      return;
+    }
+
+    if (!isAdmin && (activeView.startsWith('admin') || activeView.startsWith('contabilidad'))) {
+      replaceView('home');
+      return;
+    }
+
+    if (!isAdmin && activeView === 'checkout') {
+      replaceView('home');
+      return;
+    }
+
+    if (!canSeeCartasRestringidas && RESTRICTED_ADMIN_VIEWS.includes(activeView)) {
+      replaceView('admin');
+    }
+  }, [activeView, isAdmin, isCajera, isMesero, canSeeCartasRestringidas, replaceView]);
+
+  const {
+    triggerKitchenAlert,
+    requestAlertPermission,
+  } = useKitchenAlerts();
+
+  // Después de autenticar, si el navegador soporta notificaciones y el usuario
+  // no ha decidido nada todavía (ni a nivel de navegador ni en un intento
+  // previo dentro de la app), le preguntamos una sola vez si quiere activarlas.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      return;
+    }
+    if (Notification.permission !== 'default') {
+      return;
+    }
+    if (window.localStorage.getItem('varagrill.notificationPromptDismissed') === '1') {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setShowNotificationPrompt(true), 900);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  const dismissNotificationPrompt = () => {
+    try {
+      window.localStorage.setItem('varagrill.notificationPromptDismissed', '1');
+    } catch (storageError) {
+      // Ignore storage failures (e.g. private browsing quota).
+    }
+    setShowNotificationPrompt(false);
+  };
+
+  const acceptNotificationPrompt = async () => {
+    await requestAlertPermission();
+    setShowNotificationPrompt(false);
+  };
+
+  const handleKitchenSocketEvent = useCallback((message) => {
+    if (!message?.event || !message.payload) {
+      return;
+    }
+
+    const payload = message.payload;
+    const mesaLabel = payload.mesa ? `Mesa ${payload.mesa}` : 'Sin mesa';
+
+    if (message.event === 'NUEVA_COMANDAS' || message.event === 'PEDIDO_ACTUALIZADO') {
+      // Solo cocina se une al grupo que emite estos eventos (ver consumers.py),
+      // así que si este socket los recibe es porque este usuario es cocinero.
+      triggerKitchenAlert('Nueva orden en cocina', `Pedido #${payload.pedido_id || payload.order_id || 'N/A'} · ${mesaLabel}`);
+      setLastKitchenEvent({ ...message, receivedAt: Date.now() });
+    }
+
+    if (message.event === 'NUEVA_COMANDAS') {
+      setLiveNotice(`Alerta cocina: pedido #${payload.pedido_id} (${mesaLabel}) registrado por ${payload.actor}.`);
+
+      window.setTimeout(() => {
+        setLiveNotice('');
+      }, 8000);
+    }
+
+    if (message.event === 'PEDIDO_LISTO') {
+      // Aviso personal: solo llega al mesero dueño del pedido (grupo por-usuario en consumers.py).
+      triggerKitchenAlert('¡Tu pedido está listo!', `Pedido #${payload.pedido_id} · ${mesaLabel} ya puede salir a la mesa.`);
+      setLiveNotice(`Pedido #${payload.pedido_id} (${mesaLabel}) está listo para servir.`);
+      window.setTimeout(() => {
+        setLiveNotice('');
+      }, 8000);
+    }
+  }, [triggerKitchenAlert]);
+
+  // Socket único para todo el equipo autenticado: cocina recibe comandas
+  // nuevas/actualizadas y cada usuario recibe además sus propios avisos
+  // (ej. "tu pedido está listo"), sin importar en qué vista esté parado.
+  useKitchenSocket({
+    socketPath: '/ws/pedidos/',
+    onEvent: handleKitchenSocketEvent,
+    enabled: true,
+  });
+
+  const sidebarWidth = isSidebarOverlayMode ? 'min(84vw, 320px)' : '300px';
+  const desktopContentOffset = isSidebarOpen && !isSidebarOverlayMode ? '332px' : '0px';
+  const displayName = name || 'Usuario';
+  const todayLabel = new Intl.DateTimeFormat('es-ES', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  }).format(new Date());
+
+  return (
+    <div style={{
+      minHeight: '100vh',
+      display: 'flex',
+      background: 'radial-gradient(circle at top, #2f0b0b 0%, #120606 45%, #050505 100%)',
+      padding: isMobile ? 16 : 24,
+      boxSizing: 'border-box',
+      position: 'relative',
+      overflow: 'hidden',
+      fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
+    }}>
+      <style>
+        {`@keyframes pendingPulse {
+            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 122, 122, 0.45); }
+            70% { transform: scale(1.08); box-shadow: 0 0 0 10px rgba(255, 122, 122, 0); }
+            100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 122, 122, 0); }
+          }
+          @keyframes sidebarSlideIn {
+            from { opacity: 0; transform: translateX(-8px); }
+            to   { opacity: 1; transform: translateX(0); }
+          }
+          .vg-sidebar-btn {
+            transition: background 180ms ease, color 180ms ease;
+          }
+          .vg-sidebar-btn:hover {
+            background: rgba(255, 77, 77, 0.10) !important;
+          }
+          .vg-feature-card {
+            transition: transform 200ms ease, box-shadow 200ms ease;
+          }
+          .vg-feature-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 18px 44px rgba(0, 0, 0, 0.38) !important;
+          }
+          @media print {
+            .no-print { display: none !important; }
+            body { background: #fff !important; }
+          }`}
+      </style>
+      {liveNotice && (
+        <div style={liveNoticeStyle}>
+          {liveNotice}
+        </div>
+      )}
+      {isSidebarOpen && isSidebarOverlayMode && (
+        <button
+          type="button"
+          onClick={() => setIsSidebarOpen(false)}
+          aria-label="Cerrar barra lateral"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            border: 'none',
+            background: 'rgba(0, 0, 0, 0.48)',
+            zIndex: 19,
+            cursor: 'pointer',
+            padding: 0,
+          }}
+        />
+      )}
+
+      {!isSidebarOpen && (
+        <button
+          type="button"
+          onClick={() => setIsSidebarOpen(true)}
+          aria-label="Abrir barra lateral"
+          style={{
+            position: 'fixed',
+            top: 16,
+            left: 16,
+            width: 42,
+            height: 42,
+            borderRadius: 12,
+            border: '1px solid rgba(255, 110, 110, 0.45)',
+            background: 'rgba(36, 13, 13, 0.96)',
+            color: '#fff',
+            display: 'grid',
+            placeItems: 'center',
+            cursor: 'pointer',
+            zIndex: 30,
+            boxShadow: '0 8px 20px rgba(0, 0, 0, 0.35)',
+          }}
+        >
+          <span aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M4 7h16" />
+              <path d="M4 12h16" />
+              <path d="M4 17h16" />
+            </svg>
+          </span>
+        </button>
+      )}
+
+      <aside
+        aria-label="Barra lateral"
+        className="no-print"
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          height: '100vh',
+          width: sidebarWidth,
+          transform: isSidebarOpen ? 'translateX(0)' : 'translateX(-100%)',
+          transition: 'transform 260ms ease',
+          zIndex: 24,
+          background: 'linear-gradient(180deg, rgba(22, 8, 8, 0.98) 0%, rgba(8, 8, 8, 0.98) 100%)',
+          borderRight: '1px solid rgba(255, 89, 89, 0.34)',
+          boxShadow: '12px 0 26px rgba(0, 0, 0, 0.38)',
+          boxSizing: 'border-box',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setIsSidebarOpen(false)}
+          aria-label="Cerrar barra lateral"
+          style={{
+            position: 'absolute',
+            top: 16,
+            right: 12,
+            width: 38,
+            height: 38,
+            borderRadius: 10,
+            border: '1px solid rgba(255, 110, 110, 0.35)',
+            background: 'rgba(46, 14, 14, 0.88)',
+            color: '#fff',
+            display: 'grid',
+            placeItems: 'center',
+            cursor: 'pointer',
+          }}
+        >
+          <span style={{ fontSize: 20, lineHeight: 1 }}>×</span>
+        </button>
+
+        {/* Solo esta parte hace scroll (el resto del menu de accesos) — la
+            tarjeta de usuario/cerrar sesion queda fija abajo (ver footer mas
+            abajo), para no tener que bajar buscándola en una tablet donde el
+            menu completo no entra de una vez en la pantalla. */}
+        <div style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          WebkitOverflowScrolling: 'touch',
+          padding: '72px 12px 12px',
+          boxSizing: 'border-box',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12,
+        }}>
+        {/* ── Logo en sidebar ── */}
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: 64,
+          display: 'flex',
+          alignItems: 'center',
+          padding: '0 16px',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+          background: 'rgba(22, 8, 8, 0.6)',
+          backdropFilter: 'blur(8px)',
+          zIndex: 1,
+        }}>
+          <div style={{
+            width: 32,
+            height: 32,
+            borderRadius: 10,
+            background: 'linear-gradient(135deg, #bf1f1f 0%, #7a0d0d 100%)',
+            overflow: 'hidden',
+            flexShrink: 0,
+            marginRight: 10,
+          }}>
+            <img src="/assets/varagrill-logo.jpg" alt="" aria-hidden="true" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          </div>
+          <div style={{
+            fontSize: 15,
+            fontWeight: 800,
+            background: 'linear-gradient(90deg, #ff6b6b 0%, #ff4d4d 100%)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            backgroundClip: 'text',
+            letterSpacing: '0.04em',
+          }}>
+            Varagrill
+          </div>
+        </div>
+
+        {!isCajera ? (
+          <button
+            type="button"
+            className="vg-sidebar-btn"
+            onClick={handleHomeClick}
+            style={sidebarButtonStyle(activeView === 'home')}
+          >
+            <span aria-hidden="true" style={sidebarIconWrapStyle(activeView === 'home')}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 10.5L12 3l9 7.5" />
+                <path d="M5 9.5V21h14V9.5" />
+                <path d="M9.5 21v-6.5h5V21" />
+              </svg>
+            </span>
+            <span>Inicio</span>
+          </button>
+        ) : null}
+
+        {!isCajera ? (
+          <button
+            type="button"
+            className="vg-sidebar-btn"
+            onClick={handleNuevoPedido}
+            style={sidebarButtonStyle(activeView === 'orders')}
+          >
+            <span aria-hidden="true" style={sidebarIconWrapStyle(activeView === 'orders')}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 11h6" />
+                <path d="M9 15h6" />
+                <path d="M5 3h14a2 2 0 0 1 2 2v14l-3-2-3 2-3-2-3 2-3-2V5a2 2 0 0 1 2-2Z" />
+              </svg>
+            </span>
+            <span>Nuevo pedido</span>
+          </button>
+        ) : null}
+
+        <button
+          type="button"
+          onClick={() => {
+            goToView('mesas-atendidas');
+            if (isSidebarOverlayMode) {
+              setIsSidebarOpen(false);
+            }
+          }}
+          className="vg-sidebar-btn"
+          style={sidebarButtonStyle(activeView === 'mesas-atendidas')}
+        >
+          <span aria-hidden="true" style={sidebarIconWrapStyle(activeView === 'mesas-atendidas')}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M3 10h18" />
+              <path d="M9 10v10" />
+            </svg>
+          </span>
+          {/* Para cajera/admin/contador esta pantalla muestra TODAS las mesas abiertas,
+              no solo las propias (ver mesas_atendidas_view) — por eso ya no se oculta
+              con `!isCajera` como el resto de los accesos de mesero. */}
+          <span style={{ flex: 1, textAlign: 'left' }}>Mesas atendidas</span>
+        </button>
+
+        {(isCajera || isAdmin) ? (
+          <button
+            type="button"
+            onClick={() => {
+              goToView('pedidos-delivery');
+              if (isSidebarOverlayMode) {
+                setIsSidebarOpen(false);
+              }
+            }}
+            className="vg-sidebar-btn"
+            style={sidebarButtonStyle(activeView === 'pedidos-delivery')}
+          >
+            <span aria-hidden="true" style={sidebarIconWrapStyle(activeView === 'pedidos-delivery')}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 7h13l3 5v5h-3" />
+                <path d="M3 7v10h2" />
+                <circle cx="7.5" cy="17.5" r="1.5" />
+                <circle cx="16.5" cy="17.5" r="1.5" />
+              </svg>
+            </span>
+            {/* Reservada a cajera/admin/contador (isAdmin ya cubre contador, ver
+                _is_admin_user en el backend) — un mesero no gestiona pedidos para
+                llevar/delivery, solo los de su propia mesa (ver pedidos_delivery_view). */}
+            <span style={{ flex: 1, textAlign: 'left' }}>Delivery / Para llevar</span>
+          </button>
+        ) : null}
+
+        {(isCajera || isAdmin) ? (
+          <button
+            type="button"
+            onClick={() => {
+              goToView('checkout');
+              if (isSidebarOverlayMode) {
+                setIsSidebarOpen(false);
+              }
+            }}
+            className="vg-sidebar-btn"
+            style={sidebarButtonStyle(activeView === 'checkout')}
+          >
+            <span aria-hidden="true" style={sidebarIconWrapStyle(activeView === 'checkout')}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="6" width="20" height="14" rx="2" />
+                <path d="M2 10h20" />
+                <path d="M6 15h4" />
+              </svg>
+            </span>
+            <span style={{ flex: 1, textAlign: 'left' }}>Cobro</span>
+            <span style={pendingBadgeStyle(readyToBillCount > 0)}>{readyToBillCount}</span>
+          </button>
+        ) : null}
+
+        {isCajera ? (
+          <button
+            type="button"
+            onClick={() => {
+              limpiarFechaSeleccionada();
+              limpiarRangoSeleccionado();
+              goToView('contabilidad-cuadre-caja');
+              if (isSidebarOverlayMode) {
+                setIsSidebarOpen(false);
+              }
+            }}
+            className="vg-sidebar-btn"
+            style={sidebarButtonStyle(activeView === 'contabilidad-cuadre-caja')}
+          >
+            <span aria-hidden="true" style={sidebarIconWrapStyle(activeView === 'contabilidad-cuadre-caja')}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="4" width="18" height="16" rx="2" />
+                <path d="M3 9h18" />
+                <path d="M8 14h.01" />
+                <path d="M12 14h4" />
+              </svg>
+            </span>
+            <span>Cuadre de caja</span>
+          </button>
+        ) : null}
+
+        {isAdmin ? (
+          <button
+            type="button"
+            onClick={() => {
+              goToView('admin');
+              if (isSidebarOverlayMode) {
+                setIsSidebarOpen(false);
+              }
+            }}
+            className="vg-sidebar-btn"
+            style={sidebarButtonStyle(activeView.startsWith('admin'))}
+          >
+            <span aria-hidden="true" style={sidebarIconWrapStyle(activeView.startsWith('admin'))}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09A1.65 1.65 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+              </svg>
+            </span>
+            <span>Panel analista</span>
+          </button>
+        ) : null}
+
+        {(isAdmin || isCajera) ? (
+          <button
+            type="button"
+            onClick={() => {
+              goToView('contabilidad');
+              if (isSidebarOverlayMode) {
+                setIsSidebarOpen(false);
+              }
+            }}
+            className="vg-sidebar-btn"
+            style={sidebarButtonStyle(activeView.startsWith('contabilidad'))}
+          >
+            <span aria-hidden="true" style={sidebarIconWrapStyle(activeView.startsWith('contabilidad'))}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="4" width="18" height="16" rx="2" />
+                <path d="M3 9h18" />
+                <path d="M8 14h.01" />
+                <path d="M12 14h4" />
+                <path d="M8 17h.01" />
+                <path d="M12 17h4" />
+              </svg>
+            </span>
+            <span>Contabilidad</span>
+          </button>
+        ) : null}
+
+        </div>
+
+        <div style={{
+          flexShrink: 0,
+          margin: '0 12px 16px',
+          borderRadius: 22,
+          padding: 16,
+          background: 'linear-gradient(180deg, rgba(191, 31, 31, 0.18) 0%, rgba(255, 255, 255, 0.03) 100%)',
+          border: '1px solid rgba(255, 102, 102, 0.2)',
+          boxShadow: '0 -8px 20px rgba(0, 0, 0, 0.25)',
+        }}>
+          <button
+            type="button"
+            onClick={() => setIsUserMenuOpen((current) => !current)}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              marginBottom: isUserMenuOpen ? 14 : 0,
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              color: 'inherit',
+              cursor: 'pointer',
+              textAlign: 'left',
+            }}
+          >
+            <div style={{
+              width: 44,
+              height: 44,
+              borderRadius: 14,
+              background: 'linear-gradient(135deg, #ff5a5a 0%, #7f1414 100%)',
+              display: 'grid',
+              placeItems: 'center',
+              color: '#fff',
+              fontWeight: 700,
+              fontSize: 16,
+              flexShrink: 0,
+            }}>
+              {displayName.slice(0, 1).toUpperCase()}
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#ffaaaa', marginBottom: 4 }}>
+                Usuario activo
+              </div>
+              <div style={{ fontSize: 17, fontWeight: 700, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {displayName}
+              </div>
+              <div style={{ fontSize: 12, color: '#e6bbbb', marginTop: 3 }}>
+                {todayLabel}
+              </div>
+            </div>
+            <span aria-hidden="true" style={{ marginLeft: 'auto', opacity: 0.72, transform: isUserMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 180ms ease' }}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </span>
+          </button>
+
+          {isUserMenuOpen && (
+            <div style={{
+              display: 'grid',
+              gap: 10,
+              paddingTop: 12,
+              borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+            }}>
+              <button
+                type="button"
+                style={userActionButtonStyle}
+              >
+                <span aria-hidden="true" style={userActionIconStyle}>
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09A1.65 1.65 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+                  </svg>
+                </span>
+                <span style={{ flex: 1 }}>Configuración</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={onBack}
+                style={userActionButtonStyle}
+              >
+                <span aria-hidden="true" style={userActionIconStyle}>
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                    <path d="m16 17 5-5-5-5" />
+                    <path d="M21 12H9" />
+                  </svg>
+                </span>
+                <span style={{ flex: 1 }}>Cerrar sesión</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <div style={{
+        width: '100%',
+        maxWidth: 1180,
+        marginLeft: desktopContentOffset,
+        transition: 'margin-left 260ms ease',
+        display: 'grid',
+        gap: 18,
+        alignContent: 'start',
+        paddingTop: isMobile ? 64 : 0,
+      }}>
+        {activeView === 'home' ? (
+          <>
+            {/* ── Bloque de saludo ── */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 12,
+              padding: '20px 22px',
+              borderRadius: 22,
+              background: 'linear-gradient(145deg, rgba(60, 15, 15, 0.7) 0%, rgba(15, 8, 8, 0.6) 100%)',
+              border: '1px solid rgba(255, 80, 80, 0.15)',
+              marginBottom: 4,
+            }}>
+              <div>
+                <div style={{ fontSize: isMobile ? 22 : 28, fontWeight: 800, color: '#fff', lineHeight: 1.2 }}>
+                  Bienvenido, {displayName} 👋
+                </div>
+                <div style={{ color: '#c8a0a0', fontSize: 13, marginTop: 5 }}>
+                  {todayLabel} · Todo listo para el servicio
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setNewOrderPreset(null); goToView('orders'); }}
+                style={newOrderButtonStyle}
+              >
+                <span aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 5v14" />
+                    <path d="M5 12h14" />
+                  </svg>
+                </span>
+                Nuevo pedido
+              </button>
+            </div>
+
+            <section style={{
+              display: 'grid',
+              gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, minmax(0, 1fr))',
+              gap: 16,
+            }}>
+              {[
+                {
+                  view: 'promotions',
+                  title: 'Promociones',
+                  icon: (
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M20.59 13.41 12 22l-9-9V4a1 1 0 0 1 1-1h9l8.59 8.59a2 2 0 0 1 0 2.82Z" />
+                      <path d="M7 7h.01" />
+                    </svg>
+                  ),
+                },
+                {
+                  view: 'chef-recommendations',
+                  title: 'Recomendación del chef',
+                  icon: (
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17 21v-8a5 5 0 0 0-10 0v8" />
+                      <path d="M4 21h16" />
+                      <path d="M12 3a4 4 0 0 1 4 4c0 1.5-1 2-1 3H9c0-1-1-1.5-1-3a4 4 0 0 1 4-4Z" />
+                    </svg>
+                  ),
+                },
+              ].map((item) => (
+                <button
+                  key={item.view}
+                  type="button"
+                  className="vg-feature-card"
+                  onClick={() => goToView(item.view)}
+                  style={featureCardButtonStyle}
+                >
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'inline-grid', placeItems: 'center', width: 44, height: 44, borderRadius: 14, background: 'rgba(255, 88, 88, 0.12)', color: '#ff7d7d', marginBottom: 18 }}>
+                      {item.icon}
+                    </div>
+                    <span style={{ color: 'rgba(255, 100, 100, 0.6)', fontSize: 20, lineHeight: 1 }} aria-hidden="true">→</span>
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: '#fff', marginBottom: 10 }}>{item.title}</div>
+                </button>
+              ))}
+            </section>
+          </>
+        ) : activeView === 'promotions' ? (
+          <PromotionsPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'chef-recommendations' ? (
+          <ChefRecommendationsPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'orders' ? (
+          <NewOrderPage
+            key={newOrderPreset ? `preset-${newOrderPreset.token}` : 'blank'}
+            isMobile={isMobile}
+            mesas={mesas}
+            products={products}
+            adicionales={adicionales}
+            loadingData={loadingData}
+            waiterName={displayName}
+            initialMesaId={newOrderPreset?.mesaId}
+            initialCliente={newOrderPreset?.cliente}
+            initialTipoPedido={newOrderPreset?.tipoPedido}
+            initialClienteCedula={newOrderPreset?.clienteCedula}
+            initialClienteTelefono={newOrderPreset?.clienteTelefono}
+            initialGrupoPedidoId={newOrderPreset?.grupoPedidoId}
+            initialNotaCreditoId={newOrderPreset?.notaCreditoId}
+            onBack={goBackView}
+            onSubmitSuccess={handleOrderCreated}
+            checkMesasOcupadas={isMesero}
+          />
+        ) : activeView.startsWith('pedido-confirmacion:') ? (
+          <PedidoConfirmacionPage
+            isMobile={isMobile}
+            pedidoId={activeView.split(':')[1] || ''}
+            onBack={goBackView}
+            onIrACaja={() => goToView('checkout')}
+          />
+        ) : activeView === 'mesas-atendidas' ? (
+          <MesasAtendidasPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onAddRoundToTable={handleAddRoundToTable}
+            onNuevoPedido={handleNuevoPedido}
+            onEditOrder={(orderId) => goToView(`orders-edit:${orderId}`)}
+            autoAbrir={mesaAutoAbrir}
+            onAutoAbrirConsumido={() => setMesaAutoAbrir(null)}
+            mesasCatalogo={mesas}
+            canGestionarItems={isAdmin || isCajera}
+            sidebarOffset={desktopContentOffset}
+          />
+        ) : activeView === 'pedidos-delivery' ? (
+          <DeliveryPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onAddRoundToDelivery={handleAddRoundToDelivery}
+            onNuevoPedido={handleNuevoPedido}
+            onEditOrder={(orderId) => goToView(`orders-edit:${orderId}`)}
+            sidebarOffset={desktopContentOffset}
+          />
+        ) : activeView.startsWith('orders-edit:') ? (
+          <EditOrderPage
+            isMobile={isMobile}
+            mesas={mesas}
+            products={products}
+            adicionales={adicionales}
+            loadingData={loadingData}
+            orderId={activeView.split(':')[1] || ''}
+            onBack={goBackView}
+            onSubmitSuccess={handleOrderUpdated}
+          />
+        ) : activeView === 'checkout' ? (
+          <CheckoutPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            lastKitchenEvent={lastKitchenEvent}
+            waiterName={displayName}
+            canCancelarPedidos={canCancelarPedidosDesdeCaja}
+            canGestionarItems={isAdmin || isCajera}
+            mesasCatalogo={mesas}
+            onArmarCanje={handleArmarCanje}
+          />
+        ) : activeView === 'cuentas-cobrar' ? (
+          <CuentasPorCobrarPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'cuentas-pagar' ? (
+          <CuentasPorPagarPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onVerComprobante={(tipo, documentoId, abonoId) => goToView(`comprobante-pago:${tipo}:${documentoId}:${abonoId}`)}
+          />
+        ) : activeView === 'gastos-operativos' ? (
+          <AnalystGastosPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onVerComprobante={(tipo, documentoId, abonoId) => goToView(`comprobante-pago:${tipo}:${documentoId}:${abonoId}`)}
+          />
+        ) : activeView.startsWith('comprobante-pago:') ? (
+          <ComprobantePagoPage
+            isMobile={isMobile}
+            tipo={activeView.split(':')[1]}
+            documentoId={activeView.split(':')[2]}
+            abonoId={Number(activeView.split(':')[3])}
+            onBack={goBackView}
+          />
+        ) : activeView === 'facturas-historial' ? (
+          <HistorialFacturasPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'margen-ganancia' ? (
+          <AnalystMargenGananciaPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'movimiento-productos' ? (
+          <AnalystMovimientoProductosPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-configuracion-costeo' ? (
+          <AnalystConfiguracionCosteoPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'estado-resultados' ? (
+          <EstadoResultadosPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onNavigate={handleAnalystNavigation}
+          />
+        ) : activeView === 'admin-datos-fiscales' ? (
+          <AnalystDatosFiscalesPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-compras' ? (
+          <AnalystComprasPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin' ? (
+          <AdminPanelPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onNavigate={handleAnalystNavigation}
+            canSeeCartasRestringidas={canSeeCartasRestringidas}
+          />
+        ) : activeView === 'contabilidad' ? (
+          <ContabilidadPanelPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onNavigate={handleAnalystNavigation}
+            onlyCardIds={isCajera ? ['contabilidad-cuadre-caja', 'cuentas-cobrar'] : null}
+          />
+        ) : activeView === 'contabilidad-cuadre-caja' ? (
+          <ReporteCuadreCajaPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onNavigate={handleAnalystNavigation}
+            backLabel={isCajera ? '← Volver a Cobro' : '← Volver a Contabilidad'}
+          />
+        ) : activeView === 'contabilidad-ventas-dia' ? (
+          <ReporteVentasDiaPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'contabilidad-cuentas-por-cobrar-detalle' ? (
+          <ReporteCuentasPorCobrarPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'contabilidad-cuentas-cobradas-dia' ? (
+          <ReporteCuentasCobradasPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'contabilidad-propinas-dia' ? (
+          <ReportePropinasPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'contabilidad-devoluciones' ? (
+          <ReporteDevolucionesPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onArmarCanje={handleArmarCanje}
+          />
+        ) : activeView === 'contabilidad-cuadre-caja-rango' ? (
+          <ReporteCuadreCajaRangoPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onNavigate={handleAnalystNavigation}
+          />
+        ) : activeView === 'contabilidad-disponibilidad-cuentas' ? (
+          <ReporteDisponibilidadCuentasPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'contabilidad-conciliacion-bancaria' ? (
+          <ReporteConciliacionBancariaPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-users' ? (
+          <AnalystUsersPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            onBack={goBackView}
+            onCreateNewUser={() => goToView('admin-users-new')}
+            onEditUser={(userId) => goToView(`admin-users-edit:${userId}`)}
+          />
+        ) : activeView.startsWith('admin-users-edit:') ? (
+          <AnalystEditUserPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            userId={activeView.split(':')[1] || ''}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-users-new' ? (
+          <AnalystNewUserPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-mesas' ? (
+          <AnalystMesasPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            onBack={goBackView}
+            onCreateNewMesa={() => goToView('admin-mesas-new')}
+            onEditMesa={(mesaId) => goToView(`admin-mesas-edit:${mesaId}`)}
+            onMesasChanged={reloadMesas}
+          />
+        ) : activeView.startsWith('admin-mesas-edit:') ? (
+          <AnalystEditMesaPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            mesaId={activeView.split(':')[1] || ''}
+            onBack={goBackView}
+            onMesasChanged={reloadMesas}
+          />
+        ) : activeView === 'admin-mesas-new' ? (
+          <AnalystNewMesaPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            onBack={goBackView}
+            onMesasChanged={reloadMesas}
+          />
+        ) : activeView === 'admin-products' ? (
+          <AnalystProductsPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            onBack={goBackView}
+            onCreateNewProduct={() => goToView('admin-products-new')}
+            onEditProduct={(productId) => goToView(`admin-products-edit:${productId}`)}
+            onProductsChanged={reloadProducts}
+          />
+        ) : activeView.startsWith('admin-products-edit:') ? (
+          <AnalystEditProductPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            productId={activeView.split(':')[1] || ''}
+            onBack={goBackView}
+            onProductsChanged={reloadProducts}
+          />
+        ) : activeView === 'admin-products-new' ? (
+          <AnalystNewProductPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            onBack={goBackView}
+            onProductsChanged={reloadProducts}
+          />
+        ) : activeView === 'admin-ingredients' ? (
+          <AnalystInventoryHubPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onCreate={() => goToView('admin-ingredients-create')}
+            onViewInventory={() => goToView('admin-ingredients-inventory')}
+          />
+        ) : activeView === 'admin-ingredients-create' ? (
+          <AnalystIngredientsCreateReportPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onManualCreate={() => goToView('admin-ingredients-new')}
+            onBulkCreate={() => goToView('admin-ingredients-bulk-create')}
+          />
+        ) : activeView === 'admin-ingredients-inventory' ? (
+          <AnalystIngredientsReportPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onEdit={(ingredientId) => goToView(`admin-ingredients-edit:${ingredientId}`)}
+            onImport={() => goToView('admin-ingredients-import')}
+            onCargaPorLote={() => goToView('admin-ingredients-compras-borrador')}
+          />
+        ) : activeView === 'admin-ingredients-compras-borrador' ? (
+          <AnalystComprasBorradorPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView.startsWith('admin-ingredients-edit:') ? (
+          <AnalystEditIngredientPage
+            isMobile={isMobile}
+            ingredientId={activeView.split(':')[1] || ''}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-ingredients-new' ? (
+          <AnalystNewIngredientPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onEditExisting={(ingredientId) => goToView(`admin-ingredients-edit:${ingredientId}`)}
+          />
+        ) : activeView === 'admin-ingredients-bulk-create' ? (
+          <AnalystIngredientsBulkCreatePage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-ingredients-import' ? (
+          <AnalystIngredientsImportPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-preparations' ? (
+          <AnalystPreparationsReportPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onCreateNew={() => goToView('admin-preparations-new')}
+            onEdit={(preparationId) => goToView(`admin-preparations-edit:${preparationId}`)}
+          />
+        ) : activeView.startsWith('admin-preparations-edit:') ? (
+          <AnalystEditPreparationPage
+            isMobile={isMobile}
+            preparationId={activeView.split(':')[1] || ''}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-preparations-new' ? (
+          <AnalystNewPreparationPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-recipes' ? (
+          <AnalystRecipesPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            onBack={goBackView}
+            onCreateNewRecipe={() => goToView('admin-recipes-new')}
+            onEditRecipe={(recipeId) => goToView(`admin-recipes-edit:${recipeId}`)}
+          />
+        ) : activeView.startsWith('admin-recipes-edit:') ? (
+          <AnalystEditRecipePage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            recipeId={activeView.split(':')[1] || ''}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-recipes-new' ? (
+          <AnalystNewRecipePage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-promotions' ? (
+          <AnalystPromotionsPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            onBack={goBackView}
+            onSelectProduct={(productId) => goToView(`admin-promotions-new:${productId}`)}
+            onSelectBulk={(productIds) => goToView(`admin-promotions-bulk:${productIds.join(',')}`)}
+          />
+        ) : activeView.startsWith('admin-promotions-new:') ? (
+          <AnalystNewPromotionPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            productId={activeView.split(':')[1] || ''}
+            onBack={goBackView}
+          />
+        ) : activeView.startsWith('admin-promotions-bulk:') ? (
+          <AnalystBulkPromotionPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            productIds={activeView.split(':')[1] || ''}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-chef-recommendations' ? (
+          <AnalystChefRecommendationsPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            onBack={goBackView}
+            onCreateNew={() => goToView('admin-chef-recommendations-new')}
+          />
+        ) : activeView === 'admin-chef-recommendations-new' ? (
+          <AnalystNewChefRecommendationPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-printers' ? (
+          <AnalystPrintersPage
+            isMobile={isMobile}
+            isAdmin={isAdmin}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-payment-methods' ? (
+          <AnalystPaymentMethodsPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : (
+          <MesasAtendidasPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onAddRoundToTable={handleAddRoundToTable}
+            onNuevoPedido={handleNuevoPedido}
+            onEditOrder={(orderId) => goToView(`orders-edit:${orderId}`)}
+            autoAbrir={mesaAutoAbrir}
+            onAutoAbrirConsumido={() => setMesaAutoAbrir(null)}
+            mesasCatalogo={mesas}
+            canGestionarItems={isAdmin || isCajera}
+            sidebarOffset={desktopContentOffset}
+          />
+        )}
+      </div>
+
+      {showNotificationPrompt ? (
+        <div style={notificationPromptBackdropStyle}>
+          <div style={notificationPromptCardStyle(isMobile)}>
+            <div style={notificationPromptIconStyle} aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+                <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+              </svg>
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ color: '#fff', fontWeight: 700, fontSize: 17 }}>¿Activar notificaciones del equipo?</div>
+              <p style={{ margin: 0, color: '#d2c3c3', fontSize: 13.5, lineHeight: 1.5 }}>
+                Te avisaremos en este navegador cuando lleguen pedidos nuevos a cocina y cuando tus pedidos estén listos para servir, aunque tengas la app en segundo plano.
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
+              <button type="button" onClick={acceptNotificationPrompt} style={notificationPromptAcceptStyle}>
+                Sí, activar
+              </button>
+              <button type="button" onClick={dismissNotificationPrompt} style={notificationPromptDismissStyle}>
+                Ahora no
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const sidebarButtonStyle = (isPrimary) => ({
+  width: '100%',
+  border: 'none',
+  borderRadius: 14,
+  borderLeft: isPrimary ? '3px solid #ff5555' : '3px solid transparent',
+  padding: '12px 12px 12px 10px',
+  color: isPrimary ? '#ffffff' : 'rgba(255,255,255,0.78)',
+  background: isPrimary
+    ? 'linear-gradient(90deg, rgba(195, 35, 35, 0.28) 0%, rgba(195, 35, 35, 0.10) 100%)'
+    : 'rgba(255, 255, 255, 0.03)',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  cursor: 'pointer',
+  fontWeight: isPrimary ? 700 : 500,
+  letterSpacing: '0.02em',
+  justifyContent: 'flex-start',
+  fontSize: 14,
+});
+
+const sidebarIconWrapStyle = (isPrimary) => ({
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  color: isPrimary ? '#ff7d7d' : 'rgba(255,255,255,0.55)',
+  transition: 'color 180ms ease',
+  flexShrink: 0,
+  width: 20,
+});
+
+const pendingBadgeStyle = (isActive) => ({
+  minWidth: 28,
+  height: 28,
+  borderRadius: 999,
+  display: 'inline-grid',
+  placeItems: 'center',
+  fontSize: 12,
+  fontWeight: 800,
+  color: '#fff',
+  background: isActive ? '#ff9d9d' : 'rgba(255, 255, 255, 0.18)',
+  border: isActive ? '1px solid rgba(255, 185, 185, 0.9)' : '1px solid rgba(255, 255, 255, 0.2)',
+  animation: isActive ? 'pendingPulse 1.1s ease-in-out infinite' : 'none',
+  boxSizing: 'border-box',
+  flexShrink: 0,
+});
+
+const featureCardStyle = {
+  background: 'linear-gradient(180deg, rgba(20, 10, 10, 0.94) 0%, rgba(10, 10, 10, 0.96) 100%)',
+  border: '1px solid rgba(255, 255, 255, 0.08)',
+  borderRadius: 24,
+  padding: 22,
+  boxShadow: '0 12px 32px rgba(0,0,0,0.24)',
+};
+
+const featureCardButtonStyle = {
+  ...featureCardStyle,
+  display: 'block',
+  width: '100%',
+  textAlign: 'left',
+  cursor: 'pointer',
+  color: 'inherit',
+  font: 'inherit',
+  borderTop: '2px solid rgba(255, 77, 77, 0.45)',
+};
+
+const userActionButtonStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  borderRadius: 16,
+  padding: '13px 14px',
+  background: 'rgba(255, 255, 255, 0.05)',
+  border: '1px solid rgba(255, 255, 255, 0.08)',
+  color: '#f5f5f5',
+  fontWeight: 600,
+  cursor: 'pointer',
+  width: '100%',
+};
+
+const userActionIconStyle = {
+  width: 34,
+  height: 34,
+  borderRadius: 11,
+  display: 'grid',
+  placeItems: 'center',
+  background: 'rgba(255, 77, 77, 0.12)',
+  color: '#ff7a7a',
+};
+
+const newOrderButtonStyle = {
+  border: 'none',
+  borderRadius: 999,
+  padding: '12px 20px',
+  background: 'linear-gradient(90deg, #bf1f1f 0%, #ff4d4d 100%)',
+  color: '#fff',
+  fontWeight: 700,
+  cursor: 'pointer',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  fontSize: 15,
+  letterSpacing: '0.02em',
+  boxShadow: '0 4px 14px rgba(191, 31, 31, 0.4)',
+  flexShrink: 0,
+};
+
+const liveNoticeStyle = {
+  position: 'fixed',
+  top: 18,
+  right: 18,
+  zIndex: 50,
+  maxWidth: 'min(92vw, 420px)',
+  borderRadius: 14,
+  border: '1px solid rgba(82, 206, 123, 0.45)',
+  background: 'rgba(19, 77, 37, 0.92)',
+  color: '#e9fff0',
+  padding: '12px 14px',
+  fontWeight: 700,
+  boxShadow: '0 14px 30px rgba(0, 0, 0, 0.34)',
+};
+
+const notificationPromptBackdropStyle = {
+  position: 'fixed',
+  inset: 0,
+  zIndex: 60,
+  background: 'rgba(0,0,0,0.6)',
+  display: 'grid',
+  placeItems: 'center',
+  padding: 16,
+};
+
+const notificationPromptCardStyle = (isMobile) => ({
+  display: 'grid',
+  gap: 14,
+  width: '100%',
+  maxWidth: 420,
+  padding: isMobile ? 18 : 22,
+  borderRadius: 20,
+  border: '1px solid rgba(255, 106, 106, 0.4)',
+  background: 'linear-gradient(180deg, rgba(24, 10, 10, 0.98) 0%, rgba(8, 8, 8, 0.99) 100%)',
+  boxShadow: '0 20px 50px rgba(0,0,0,0.5)',
+});
+
+const notificationPromptIconStyle = {
+  width: 46,
+  height: 46,
+  borderRadius: 14,
+  display: 'grid',
+  placeItems: 'center',
+  background: 'rgba(255, 88, 88, 0.14)',
+  color: '#ff8f8f',
+};
+
+const notificationPromptAcceptStyle = {
+  border: 'none',
+  borderRadius: 999,
+  padding: '11px 18px',
+  background: 'linear-gradient(90deg, #bf1f1f 0%, #ff4d4d 100%)',
+  color: '#fff',
+  fontWeight: 700,
+  cursor: 'pointer',
+  flex: '1 1 auto',
+};
+
+const notificationPromptDismissStyle = {
+  border: '1px solid rgba(255, 255, 255, 0.16)',
+  borderRadius: 999,
+  padding: '11px 18px',
+  background: 'rgba(255, 255, 255, 0.04)',
+  color: '#fff',
+  fontWeight: 600,
+  cursor: 'pointer',
+  flex: '1 1 auto',
+};
+
+export default WelcomeScreen;

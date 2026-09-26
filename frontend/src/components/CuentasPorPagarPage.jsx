@@ -1,0 +1,584 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import useExchangeRate from '../hooks/useExchangeRate';
+import { formatBs, formatBsRaw } from '../utils/currency';
+import { consumirAperturaCuentasPorPagarPagadas } from '../utils/fechaContabilidad';
+
+// `bsPreciso`, cuando viene, es el total_bs que ya calculó el backend (para
+// una compra con total_bs_factura, es el monto EXACTO que el analista
+// escribió — ver _serialize_compra) en vez de recalcular amount*tasa aquí,
+// que perdía bolívares por el redondeo de `amount` a 2 decimales.
+function formatUsdBs(amount, tasa, bsPreciso) {
+  const usd = `$${Number(amount).toFixed(2)}`;
+  const bs = bsPreciso != null ? formatBsRaw(bsPreciso) : formatBs(amount, tasa);
+  return bs ? `${usd} (${bs})` : usd;
+}
+
+// Para el saldo pendiente de un gasto: saldo_pendiente_bs viene precalculado
+// desde el backend con la precision completa de monto (ver _serialize_gasto),
+// asi que coincide con el total en bs que muestra el reporte de gastos — a
+// diferencia de convertir aqui saldo_pendiente (redondeado a 2 decimales),
+// que perdia centimos y mostraba un bs distinto para la misma deuda.
+function formatSaldoUsdBs(amount, tasa, saldoBsPreciso) {
+  const usd = `$${Number(amount).toFixed(2)}`;
+  const bs = saldoBsPreciso != null ? formatBsRaw(saldoBsPreciso) : formatBs(amount, tasa);
+  return bs ? `${usd} (${bs})` : usd;
+}
+
+function todayIso() {
+  const now = new Date();
+  const offset = now.getTimezoneOffset();
+  const local = new Date(now.getTime() - offset * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
+function startOfMonthIso() {
+  const today = todayIso();
+  return `${today.slice(0, 7)}-01`;
+}
+
+const FILAS_POR_PAGINA = 20;
+
+function coincideBusqueda(compra, busqueda) {
+  if (!busqueda) return true;
+  const texto = busqueda.trim().toLowerCase();
+  if (!texto) return true;
+  const campos = [
+    String(compra.id),
+    compra.proveedor_nombre,
+    compra.categoria_nombre,
+    compra.descripcion,
+    compra.numero_factura_proveedor,
+    compra.numero_comprobante,
+  ];
+  return campos.some((campo) => (campo || '').toLowerCase().includes(texto));
+}
+
+function coincideTipo(compra, filtroTipo) {
+  if (filtroTipo === 'todos') return true;
+  return compra.tipo === filtroTipo;
+}
+
+function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
+  const tasaCambio = useExchangeRate();
+  // 'pendientes' es el comportamiento de siempre (lotes/gastos sin saldar);
+  // 'pagadas' es el historial nuevo de facturas ya saldadas, filtrable por
+  // fecha — "las facturas que pagué". Si se llega desde el chip "Compras a
+  // proveedores" del estado de resultados (ver setAbrirCuentasPorPagarEnPagadas),
+  // arranca directo en esa pestaña con el mismo rango que se estaba viendo, para
+  // poder rastrear de dónde sale ese monto.
+  const [aperturaInicial] = useState(() => consumirAperturaCuentasPorPagarPagadas());
+  const [vista, setVista] = useState(aperturaInicial ? 'pagadas' : 'pendientes');
+  const [historialDesde, setHistorialDesde] = useState(aperturaInicial ? aperturaInicial.desde : startOfMonthIso());
+  const [historialHasta, setHistorialHasta] = useState(aperturaInicial ? aperturaInicial.hasta : todayIso());
+  const [compras, setCompras] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [metodosPago, setMetodosPago] = useState([]);
+  const [selectedCompraId, setSelectedCompraId] = useState(null);
+  const [selectedTipo, setSelectedTipo] = useState(null);
+  const [compraDetalle, setCompraDetalle] = useState(null);
+  const [loadingDetalle, setLoadingDetalle] = useState(false);
+  const [montoAbono, setMontoAbono] = useState('');
+  const [monedaAbono, setMonedaAbono] = useState('USD');
+  const [metodoAbono, setMetodoAbono] = useState('');
+  const [savingAbono, setSavingAbono] = useState(false);
+  const [feedback, setFeedback] = useState('');
+  const [feedbackType, setFeedbackType] = useState('success');
+  const [ultimoAbonoId, setUltimoAbonoId] = useState(null);
+  const [busqueda, setBusqueda] = useState('');
+  const [filtroTipo, setFiltroTipo] = useState('todos');
+  const [pagina, setPagina] = useState(1);
+  const detailPanelRef = useRef(null);
+
+  const fetchCompras = useCallback(async () => {
+    try {
+      const query = vista === 'pagadas'
+        ? `?estado=pagadas&desde=${historialDesde}&hasta=${historialHasta}`
+        : '';
+      const response = await fetch(`/api/cuentas-por-pagar/${query}`, { credentials: 'include', cache: 'no-store' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        setError(data.message || 'No se pudieron cargar las cuentas por pagar.');
+        return;
+      }
+      setCompras(Array.isArray(data.compras) ? data.compras : []);
+      setError('');
+    } catch (requestError) {
+      setError('Error de red al cargar las cuentas por pagar.');
+    } finally {
+      setLoading(false);
+    }
+  }, [vista, historialDesde, historialHasta]);
+
+  useEffect(() => {
+    setLoading(true);
+    setSelectedCompraId(null);
+    setCompraDetalle(null);
+    fetchCompras();
+  }, [fetchCompras]);
+
+  const cambiarVista = (nuevaVista) => {
+    setVista(nuevaVista);
+    setBusqueda('');
+    setFiltroTipo('todos');
+    setPagina(1);
+    setFeedback('');
+  };
+
+  useEffect(() => {
+    setPagina(1);
+  }, [busqueda, filtroTipo, vista, historialDesde, historialHasta]);
+
+  useEffect(() => {
+    const loadMetodosPago = async () => {
+      try {
+        const response = await fetch('/api/metodos-pago/', { credentials: 'include', cache: 'no-store' });
+        const data = await response.json().catch(() => ({}));
+        if (response.ok && data.ok) {
+          setMetodosPago(Array.isArray(data.metodos_pago) ? data.metodos_pago : []);
+        }
+      } catch (requestError) {
+        // El selector queda vacio si falla.
+      }
+    };
+    loadMetodosPago();
+  }, []);
+
+  const fetchCompraDetalle = useCallback(async (compraId, tipo) => {
+    setLoadingDetalle(true);
+    const url = tipo === 'gasto' ? `/api/admin/gastos/${compraId}/` : `/api/admin/compras/${compraId}/`;
+    try {
+      const response = await fetch(url, { credentials: 'include', cache: 'no-store' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        setFeedbackType('error');
+        setFeedback(data.message || 'No se pudo cargar el detalle.');
+        return;
+      }
+      setCompraDetalle({ ...(tipo === 'gasto' ? data.gasto : data.compra), tipo });
+    } catch (requestError) {
+      setFeedbackType('error');
+      setFeedback('Error de red al cargar el detalle.');
+    } finally {
+      setLoadingDetalle(false);
+    }
+  }, []);
+
+  const handleSelectCompra = (compra) => {
+    setFeedback('');
+    setMontoAbono('');
+    setMonedaAbono('USD');
+    setSelectedCompraId(compra.id);
+    setSelectedTipo(compra.tipo);
+    fetchCompraDetalle(compra.id, compra.tipo);
+    // Al elegir una fila mas abajo en una lista larga, el detalle se ve sin
+    // tener que volver a subir con la mano hasta el principio de la pagina.
+    if (detailPanelRef.current) {
+      detailPanelRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  const handleRegistrarAbono = async (event) => {
+    event.preventDefault();
+    if (!selectedCompraId) {
+      return;
+    }
+    const metodoPagoId = metodoAbono || (metodosPago[0] && metodosPago[0].id);
+    if (!metodoPagoId) {
+      setFeedbackType('error');
+      setFeedback('No hay metodos de pago activos configurados.');
+      return;
+    }
+
+    setSavingAbono(true);
+    setFeedback('');
+    setUltimoAbonoId(null);
+    const url = selectedTipo === 'gasto'
+      ? `/api/admin/gastos/${selectedCompraId}/abonos/`
+      : `/api/admin/compras/${selectedCompraId}/abonos/`;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          ...(monedaAbono === 'VES' ? { monto_bs: montoAbono } : { monto: montoAbono }),
+          metodo_pago_id: metodoPagoId,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        setFeedbackType('error');
+        setFeedback(data.message || 'No se pudo registrar el abono.');
+        return;
+      }
+      const cuentaActualizada = selectedTipo === 'gasto' ? data.gasto : data.compra;
+      setFeedbackType('success');
+      setFeedback(`Abono de ${formatUsdBs(data.abono.monto, data.abono.tasa_cambio_referencia ?? tasaCambio)} registrado. Saldo pendiente: ${formatSaldoUsdBs(cuentaActualizada.saldo_pendiente, cuentaActualizada.tasa_cambio_referencia ?? tasaCambio, cuentaActualizada.saldo_pendiente_bs)}.`);
+      setCompraDetalle({ ...cuentaActualizada, tipo: selectedTipo });
+      setUltimoAbonoId(data.abono.id);
+      setMontoAbono('');
+      await fetchCompras();
+    } catch (requestError) {
+      setFeedbackType('error');
+      setFeedback('Error de red al registrar el abono.');
+    } finally {
+      setSavingAbono(false);
+    }
+  };
+
+  const comprasFiltradas = compras.filter(
+    (compra) => coincideTipo(compra, filtroTipo) && coincideBusqueda(compra, busqueda),
+  );
+  const totalPaginas = Math.max(1, Math.ceil(comprasFiltradas.length / FILAS_POR_PAGINA));
+  const paginaActual = Math.min(pagina, totalPaginas);
+  const comprasPagina = comprasFiltradas.slice(
+    (paginaActual - 1) * FILAS_POR_PAGINA,
+    paginaActual * FILAS_POR_PAGINA,
+  );
+
+  return (
+    <section style={containerStyle(isMobile)}>
+      <div style={headerWrapStyle(isMobile)}>
+        <div>
+          <div style={eyebrowStyle}>Contabilidad</div>
+          <h2 style={titleStyle(isMobile)}>Cuentas por pagar</h2>
+        </div>
+        <button type="button" onClick={onBack} style={backButtonStyle(isMobile)}>
+          Volver
+        </button>
+      </div>
+
+      <div style={tabsRowStyle}>
+        <button type="button" onClick={() => cambiarVista('pendientes')} style={tabButtonStyle(vista === 'pendientes')}>
+          Pendientes
+        </button>
+        <button type="button" onClick={() => cambiarVista('pagadas')} style={tabButtonStyle(vista === 'pagadas')}>
+          Facturas pagadas
+        </button>
+      </div>
+
+      {vista === 'pagadas' ? (
+        <div style={historialFiltrosStyle(isMobile)}>
+          <label style={dateLabelStyle}>
+            Desde
+            <input
+              type="date"
+              value={historialDesde}
+              max={historialHasta}
+              onChange={(event) => setHistorialDesde(event.target.value)}
+              style={dateInputStyle}
+            />
+          </label>
+          <label style={dateLabelStyle}>
+            Hasta
+            <input
+              type="date"
+              value={historialHasta}
+              max={todayIso()}
+              onChange={(event) => setHistorialHasta(event.target.value)}
+              style={dateInputStyle}
+            />
+          </label>
+        </div>
+      ) : null}
+
+      <div style={filtrosBusquedaRowStyle(isMobile)}>
+        <input
+          type="text"
+          value={busqueda}
+          onChange={(event) => setBusqueda(event.target.value)}
+          placeholder={vista === 'pagadas' ? 'Buscar por proveedor, factura, categoría o comprobante...' : 'Buscar por proveedor, factura o categoría...'}
+          style={busquedaInputStyle}
+        />
+        <select
+          value={filtroTipo}
+          onChange={(event) => setFiltroTipo(event.target.value)}
+          style={tipoFiltroSelectStyle}
+          className="admin-dark-select"
+        >
+          <option value="todos">Todos</option>
+          <option value="compra">Lotes</option>
+          <option value="gasto">Gastos</option>
+        </select>
+      </div>
+
+      {feedback ? (
+        <div style={feedbackStyle(feedbackType)}>
+          {feedback}
+          {ultimoAbonoId && onVerComprobante ? (
+            <button
+              type="button"
+              onClick={() => onVerComprobante(selectedTipo, selectedCompraId, ultimoAbonoId)}
+              style={comprobanteLinkStyle}
+            >
+              Ver comprobante de pago
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {loading ? <div style={emptyStateStyle}>Cargando cuentas por pagar...</div> : null}
+      {!loading && error ? <div style={errorStyle}>{error}</div> : null}
+      {!loading && !error && compras.length === 0 ? (
+        <div style={emptyStateStyle}>
+          {vista === 'pendientes'
+            ? 'No hay deudas pendientes con proveedores ni gastos por saldar en este momento.'
+            : 'No se pagó ninguna factura ni gasto en este período.'}
+        </div>
+      ) : null}
+      {!loading && !error && compras.length > 0 && comprasFiltradas.length === 0 ? (
+        <div style={emptyStateStyle}>
+          {busqueda
+            ? `No hay ninguna cuenta que coincida con "${busqueda}".`
+            : `No hay ${filtroTipo === 'compra' ? 'lotes' : 'gastos'} en esta vista.`}
+        </div>
+      ) : null}
+
+      {!loading && !error && comprasFiltradas.length > 0 ? (
+        <div style={layoutStyle(isMobile)}>
+          <div style={listColumnStyle}>
+            <div style={listStyle}>
+              {comprasPagina.map((compra) => (
+              <button
+                key={compra.id}
+                type="button"
+                onClick={() => handleSelectCompra(compra)}
+                style={compraCardStyle(selectedCompraId === compra.id)}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                  <span style={{ color: '#fff', fontWeight: 700 }}>
+                    {compra.tipo === 'gasto' ? `Gasto #${compra.id}` : `Lote #${compra.id}`}
+                  </span>
+                  <span style={estadoBadgeStyle(compra.estado_pago)}>{estadoLabel(compra.estado_pago)}</span>
+                </div>
+                <div style={{ color: '#d2c4c4', fontSize: 13 }}>
+                  {compra.tipo === 'gasto' ? (compra.categoria_nombre || compra.descripcion) : compra.proveedor_nombre}
+                  {compra.numero_factura_proveedor ? ` · Factura ${compra.numero_factura_proveedor}` : ''}
+                  {compra.numero_comprobante ? ` · Comp. ${compra.numero_comprobante}` : ''}
+                </div>
+                <div style={{ color: vista === 'pagadas' ? '#9fe3b0' : '#ffcf7d', fontWeight: 700 }}>
+                  {vista === 'pagadas'
+                    ? `Total pagado: ${formatUsdBs(compra.tipo === 'gasto' ? compra.monto : compra.total, compra.tasa_cambio_referencia ?? tasaCambio, compra.total_bs)}`
+                    : `Saldo: ${formatSaldoUsdBs(compra.saldo_pendiente, compra.tasa_cambio_referencia ?? tasaCambio, compra.saldo_pendiente_bs)}`}
+                </div>
+              </button>
+              ))}
+            </div>
+
+            {totalPaginas > 1 ? (
+              <div style={paginacionStyle}>
+                <button
+                  type="button"
+                  onClick={() => setPagina((p) => Math.max(1, p - 1))}
+                  disabled={paginaActual <= 1}
+                  style={paginacionBotonStyle(paginaActual <= 1)}
+                >
+                  ← Anterior
+                </button>
+                <span style={paginacionTextoStyle}>Página {paginaActual} de {totalPaginas}</span>
+                <button
+                  type="button"
+                  onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))}
+                  disabled={paginaActual >= totalPaginas}
+                  style={paginacionBotonStyle(paginaActual >= totalPaginas)}
+                >
+                  Siguiente →
+                </button>
+              </div>
+            ) : null}
+          </div>
+
+          <div ref={detailPanelRef} style={detailPanelStyle}>
+            {!selectedCompraId ? (
+              <div style={emptyStateStyle}>Selecciona un lote para ver su detalle y registrar un abono.</div>
+            ) : loadingDetalle || !compraDetalle ? (
+              <div style={emptyStateStyle}>Cargando compra...</div>
+            ) : (
+              <>
+                <div style={{ color: '#ffb0b0', fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                  {compraDetalle.tipo === 'gasto'
+                    ? `Gasto #${compraDetalle.id} · ${compraDetalle.categoria_nombre}`
+                    : `Lote #${compraDetalle.id} · ${compraDetalle.proveedor_nombre}`}
+                </div>
+                <div style={{ color: '#d2c4c4', fontSize: 13 }}>
+                  {compraDetalle.numero_factura_proveedor ? `Factura ${compraDetalle.numero_factura_proveedor} · ` : ''}
+                  {compraDetalle.numero_comprobante ? `Comprobante ${compraDetalle.numero_comprobante} · ` : ''}
+                  {compraDetalle.tipo === 'gasto' && compraDetalle.descripcion ? `${compraDetalle.descripcion} · ` : ''}
+                  Cargado el {new Date(compraDetalle.fecha_creacion).toLocaleDateString('es-VE')}
+                </div>
+
+                {compraDetalle.tipo !== 'gasto' ? (
+                  <div style={{ display: 'grid', gap: 4 }}>
+                    {compraDetalle.detalles.map((detalle) => (
+                      <div key={detalle.id} style={lineaRowStyle}>
+                        <span>{detalle.cantidad} {detalle.unidad_medida} — {detalle.ingrediente_nombre}</span>
+                        <span>{formatUsdBs(detalle.subtotal, compraDetalle.tasa_cambio_referencia ?? tasaCambio)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div style={detailTotalsStyle}>
+                  <span style={{ fontWeight: 800, color: '#fff' }}>Total: {formatUsdBs(compraDetalle.tipo === 'gasto' ? compraDetalle.monto : compraDetalle.total, compraDetalle.tasa_cambio_referencia ?? tasaCambio, compraDetalle.total_bs)}</span>
+                  <span style={{ fontWeight: 800, color: '#ffcf7d' }}>Saldo pendiente: {formatSaldoUsdBs(compraDetalle.saldo_pendiente, compraDetalle.tasa_cambio_referencia ?? tasaCambio, compraDetalle.saldo_pendiente_bs)}</span>
+                </div>
+
+                {compraDetalle.abonos.length > 0 ? (
+                  <div style={{ display: 'grid', gap: 4 }}>
+                    <div style={{ color: '#9fe3b0', fontWeight: 700, fontSize: 12, textTransform: 'uppercase' }}>Abonos registrados</div>
+                    {compraDetalle.abonos.map((abono) => (
+                      <div key={abono.id} style={lineaRowStyle}>
+                        <span>{abono.metodo_pago} — {new Date(abono.fecha_pago).toLocaleString('es-VE')}</span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          {formatUsdBs(abono.monto, abono.tasa_cambio_referencia ?? tasaCambio)}
+                          {onVerComprobante ? (
+                            <button type="button" onClick={() => onVerComprobante(compraDetalle.tipo, compraDetalle.id, abono.id)} style={miniPrintButtonStyle} title="Ver comprobante">
+                              🖨
+                            </button>
+                          ) : null}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                {!esEstadoSaldado(compraDetalle.estado_pago) ? (
+                  <form onSubmit={handleRegistrarAbono} style={abonoFormStyle(isMobile)}>
+                    <div style={monedaToggleStyle}>
+                      <button
+                        type="button"
+                        onClick={() => setMonedaAbono('USD')}
+                        style={monedaToggleButtonStyle(monedaAbono === 'USD')}
+                      >
+                        Dólares ($)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMonedaAbono('VES')}
+                        style={monedaToggleButtonStyle(monedaAbono === 'VES')}
+                      >
+                        Bolívares (Bs)
+                      </button>
+                    </div>
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      placeholder={monedaAbono === 'VES' ? 'Monto del abono en Bs' : 'Monto del abono en $'}
+                      value={montoAbono}
+                      onChange={(event) => setMontoAbono(event.target.value)}
+                      style={inputStyle}
+                      required
+                    />
+                    <select
+                      value={metodoAbono || (metodosPago[0] && metodosPago[0].id) || ''}
+                      onChange={(event) => setMetodoAbono(Number(event.target.value))}
+                      style={selectStyle}
+                      className="admin-dark-select"
+                    >
+                      {metodosPago.map((metodo) => (
+                        <option key={metodo.id} value={metodo.id}>{metodo.nombre}</option>
+                      ))}
+                    </select>
+                    <button type="submit" style={primaryButtonStyle} disabled={savingAbono}>
+                      {savingAbono ? 'Registrando...' : 'Registrar abono'}
+                    </button>
+                  </form>
+                ) : (
+                  <div style={{ color: '#9fe3b0', fontWeight: 700 }}>Esta cuenta ya esta saldada.</div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function estadoLabel(estado) {
+  if (estado === 'pendiente') return 'Pendiente';
+  if (estado === 'abonada_parcial') return 'Abonada';
+  if (estado === 'pagada' || estado === 'pagado') return 'Pagada';
+  return estado;
+}
+
+function esEstadoSaldado(estado) {
+  return estado === 'pagada' || estado === 'pagado';
+}
+
+const containerStyle = (isMobile) => ({ display: 'grid', gap: 16, padding: isMobile ? 4 : 8 });
+const headerWrapStyle = (isMobile) => ({ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'flex-start' : 'center', flexDirection: isMobile ? 'column' : 'row', gap: 12 });
+const eyebrowStyle = { fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#f7a5a5', marginBottom: 8 };
+const titleStyle = (isMobile) => ({ margin: 0, color: '#fff', fontSize: isMobile ? 26 : 32, fontWeight: 700 });
+const subtitleStyle = { margin: '8px 0 0', color: '#d2c3c3', lineHeight: 1.6, maxWidth: 640 };
+const backButtonStyle = (isMobile) => ({ border: '1px solid rgba(255, 115, 115, 0.34)', borderRadius: 999, padding: isMobile ? '11px 16px' : '10px 16px', background: 'rgba(255,255,255,0.03)', color: '#fff', fontWeight: 600, cursor: 'pointer', width: isMobile ? '100%' : 'auto' });
+
+const emptyStateStyle = { minHeight: 100, display: 'grid', placeItems: 'center', borderRadius: 24, border: '1px dashed rgba(255, 255, 255, 0.14)', background: 'linear-gradient(180deg, rgba(20, 10, 10, 0.95) 0%, rgba(8, 8, 8, 0.98) 100%)', color: '#c8bbbb', textAlign: 'center', padding: 20 };
+const errorStyle = { padding: '12px 14px', borderRadius: 16, border: '1px solid rgba(255, 145, 145, 0.22)', background: 'rgba(255, 98, 98, 0.12)', color: '#ffd8d8' };
+const feedbackStyle = (feedbackType) => ({
+  borderRadius: 12,
+  border: feedbackType === 'error' ? '1px solid rgba(223, 102, 102, 0.5)' : '1px solid rgba(82, 206, 123, 0.35)',
+  background: feedbackType === 'error' ? 'rgba(102, 29, 29, 0.55)' : 'rgba(31, 89, 48, 0.45)',
+  color: feedbackType === 'error' ? '#ffe2e2' : '#dbffe4',
+  padding: '10px 12px',
+  fontSize: 13,
+});
+
+const layoutStyle = (isMobile) => ({ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(260px, 340px) 1fr', gap: 16, alignItems: 'start' });
+const listColumnStyle = { display: 'grid', gap: 10 };
+const listStyle = { display: 'grid', gap: 10 };
+const busquedaInputStyle = { width: '100%', boxSizing: 'border-box', borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: '#161010', padding: '10px 12px', color: '#fff4f4', fontSize: 13 };
+const filtrosBusquedaRowStyle = (isMobile) => ({ display: 'flex', gap: 10, flexDirection: isMobile ? 'column' : 'row', alignItems: isMobile ? 'stretch' : 'center' });
+const tipoFiltroSelectStyle = {
+  flexShrink: 0, minWidth: 140, boxSizing: 'border-box', borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)',
+  background: '#161010', padding: '10px 12px', color: '#fff4f4', fontSize: 13, appearance: 'auto', colorScheme: 'dark', cursor: 'pointer',
+};
+const paginacionStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingTop: 4 };
+const paginacionTextoStyle = { color: '#c8bbbb', fontSize: 12, fontWeight: 700 };
+const paginacionBotonStyle = (deshabilitado) => ({
+  border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '7px 12px', fontSize: 12, fontWeight: 700,
+  background: 'rgba(255,255,255,0.04)', color: deshabilitado ? '#6b6060' : '#fff',
+  cursor: deshabilitado ? 'not-allowed' : 'pointer', opacity: deshabilitado ? 0.6 : 1,
+});
+const compraCardStyle = (selected) => ({
+  display: 'grid', gap: 6, textAlign: 'left', padding: '14px 16px', borderRadius: 16,
+  border: selected ? '1px solid rgba(255, 130, 130, 0.6)' : '1px solid rgba(255, 255, 255, 0.1)',
+  background: selected ? 'rgba(255, 90, 90, 0.12)' : 'linear-gradient(180deg, rgba(20, 10, 10, 0.95) 0%, rgba(8, 8, 8, 0.98) 100%)',
+  color: '#fff', cursor: 'pointer',
+});
+const estadoBadgeStyle = (estado) => ({
+  padding: '3px 10px', borderRadius: 999, fontSize: 11, fontWeight: 800, textTransform: 'uppercase', height: 'fit-content',
+  background: estado === 'pendiente' ? 'rgba(255, 145, 145, 0.16)' : 'rgba(255, 200, 120, 0.16)',
+  color: estado === 'pendiente' ? '#ff9b9b' : '#ffcf7d',
+});
+const detailPanelStyle = { display: 'grid', gap: 12, padding: '18px 18px', borderRadius: 20, background: 'linear-gradient(180deg, rgba(20, 10, 10, 0.95) 0%, rgba(8, 8, 8, 0.98) 100%)', border: '1px solid rgba(255, 255, 255, 0.1)', boxShadow: '0 12px 28px rgba(0,0,0,0.24)', minHeight: 200 };
+const lineaRowStyle = { display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#e8dede' };
+const detailTotalsStyle = { display: 'flex', flexWrap: 'wrap', gap: 14, paddingTop: 8, borderTop: '1px solid rgba(255, 255, 255, 0.06)', color: '#d2c4c4', fontSize: 13 };
+const abonoFormStyle = () => ({ display: 'grid', gap: 10, paddingTop: 10, borderTop: '1px solid rgba(255, 255, 255, 0.08)' });
+const inputStyle = { width: '100%', boxSizing: 'border-box', borderRadius: 12, border: '1px solid rgba(255, 255, 255, 0.14)', background: '#161010', padding: '9px 10px', color: '#fff4f4', fontSize: 13 };
+const selectStyle = { ...inputStyle, appearance: 'auto', colorScheme: 'dark', cursor: 'pointer' };
+const primaryButtonStyle = { border: 'none', borderRadius: 999, padding: '10px 16px', background: 'linear-gradient(90deg, #1f7a3f 0%, #34d399 100%)', color: '#04140a', fontWeight: 800, cursor: 'pointer' };
+const comprobanteLinkStyle = { display: 'block', marginTop: 8, border: 'none', background: 'transparent', color: 'inherit', textDecoration: 'underline', fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: 13 };
+const miniPrintButtonStyle = { border: '1px solid rgba(255,255,255,0.14)', borderRadius: 8, padding: '2px 6px', background: 'rgba(255,255,255,0.04)', cursor: 'pointer', fontSize: 12, lineHeight: 1 };
+
+const tabsRowStyle = { display: 'flex', gap: 8, flexWrap: 'wrap' };
+const tabButtonStyle = (activo) => ({
+  border: activo ? '1px solid rgba(255, 130, 130, 0.6)' : '1px solid rgba(255, 255, 255, 0.14)',
+  borderRadius: 999, padding: '9px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+  background: activo ? 'rgba(255, 90, 90, 0.16)' : 'rgba(255, 255, 255, 0.03)',
+  color: activo ? '#ffb0b0' : '#d2c4c4',
+});
+const historialFiltrosStyle = (isMobile) => ({ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: isMobile ? 'stretch' : 'flex-end', flexDirection: isMobile ? 'column' : 'row' });
+const dateLabelStyle = { display: 'flex', flexDirection: 'column', gap: 6, color: '#f2e6e6', fontSize: 13, fontWeight: 700 };
+const dateInputStyle = { borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: '#161010', padding: '10px 12px', color: '#fff' };
+const monedaToggleStyle = { display: 'flex', gap: 8 };
+const monedaToggleButtonStyle = (activo) => ({
+  flex: 1, border: activo ? 'none' : '1px solid rgba(255,255,255,0.14)', borderRadius: 12, padding: '9px 10px',
+  fontSize: 13, fontWeight: 800, cursor: 'pointer',
+  background: activo ? 'linear-gradient(90deg, #1f7a3f 0%, #34d399 100%)' : 'rgba(255,255,255,0.04)',
+  color: activo ? '#04140a' : '#d2c4c4',
+});
+
+export default CuentasPorPagarPage;

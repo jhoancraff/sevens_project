@@ -126,24 +126,24 @@ urlpatterns = [
     path('pedidos/cobro/', pedidos_cobro_view, name='pedidos_cobro'),
     path('pedidos/delivery/', pedidos_delivery_view, name='pedidos_delivery'),
     path('pedidos/<int:pedido_id>/estado/', kitchen_order_status_update_view, name='kitchen_order_estado'),
-    path('pedidos/<int:pedido_id>/comanda/reimprimir/', pedido_reimprimir_comanda_view, name='pedido_comanda_reimprimir'),
-    path('pedidos/<int:pedido_id>/editar/', pedido_update_view, name='pedido_update'),
-    path('pedidos/<int:pedido_id>/detalles/<int:detalle_id>/eliminar/', pedido_detalle_eliminar_view, name='pedido_detalle_eliminar'),
-    path('pedidos/<int:pedido_id>/detalles/<int:detalle_id>/mover/', pedido_detalle_mover_view, name='pedido_detalle_mover'),
-    path('pedidos/<int:pedido_id>/detalles/<int:detalle_id>/reimprimir/', pedido_detalle_reimprimir_view, name='pedido_detalle_reimprimir'),
+    path('pedidos/<int:pedido_id>/reimprimir-comanda/', pedido_reimprimir_comanda_view, name='pedido_comanda_reimprimir'),
+    path('pedidos/<int:pedido_id>/actualizar/', pedido_update_view, name='pedido_update'),
+    path('pedidos/<int:pedido_id>/items/<int:detalle_id>/eliminar/', pedido_detalle_eliminar_view, name='pedido_detalle_eliminar'),
+    path('pedidos/<int:pedido_id>/items/<int:detalle_id>/mover/', pedido_detalle_mover_view, name='pedido_detalle_mover'),
+    path('pedidos/<int:pedido_id>/items/<int:detalle_id>/reimprimir/', pedido_detalle_reimprimir_view, name='pedido_detalle_reimprimir'),
     path('pedidos/<int:pedido_id>/', pedido_detail_view, name='pedido_detail'),
 
     # --- Mesas ------------------------------------------------------------
     path('mesas/', MesaListView.as_view(), name='mesas_lista'),
     path('mesas/ocupadas/', mesas_ocupadas_view, name='mesas_ocupadas'),
-    path('mesas/atendidas/', mesas_atendidas_view, name='mesas_atendidas'),
-    path('mesas/atendida/mover/', mesa_atendida_mover_view, name='mesa_atendida_mover'),
-    path('meseros-disponibles/', meseros_disponibles_view, name='meseros_disponibles'),
+    path('pedidos/mesas-atendidas/', mesas_atendidas_view, name='mesas_atendidas'),
+    path('pedidos/mesas-atendidas/mover/', mesa_atendida_mover_view, name='mesa_atendida_mover'),
+    path('pedidos/meseros-disponibles/', meseros_disponibles_view, name='meseros_disponibles'),
 
     # --- Catalogo publico -------------------------------------------------
     path('productos/', ProductoListView.as_view(), name='productos_lista'),
     path('productos/<int:product_id>/imagen/', product_image_view, name='producto_imagen'),
-    path('adicionales-disponibles/', adicionales_disponibles_view, name='adicionales_disponibles'),
+    path('adicionales/', adicionales_disponibles_view, name='adicionales_disponibles'),
     path('promociones/', promociones_activas_view, name='promociones_activas'),
     path('recomendaciones-chef/', recomendaciones_chef_activas_view, name='recomendaciones_chef_activas'),
     path('tasa-cambio/', tasa_cambio_view, name='tasa_cambio'),
@@ -157,8 +157,8 @@ urlpatterns = [
     path('admin/promociones/', admin_promotions_view, name='admin_promociones'),
     path('admin/recomendaciones-chef/', admin_chef_recommendations_view, name='admin_recomendaciones_chef'),
     path('admin/impresora-caja/', admin_impresora_caja_view, name='admin_impresora_caja'),
-    path('admin/ingredientes/importar/', admin_ingredientes_import_view, name='admin_ingredientes_importar'),
-    path('admin/ingredientes/crear/', admin_ingredientes_bulk_create_view, name='admin_ingredientes_crear'),
+    path('admin/catalogo/importar/', admin_ingredientes_import_view, name='admin_ingredientes_importar'),
+    path('admin/catalogo/importar-simple/', admin_ingredientes_bulk_create_view, name='admin_ingredientes_crear'),
 
     # --- Administracion: personas y mesas ---------------------------------
     path('admin/usuarios/', admin_users_view, name='admin_usuarios'),
@@ -182,7 +182,7 @@ urlpatterns = [
 
     # --- Administracion: metodos de pago e ingresos extra ------------------
     path('admin/metodos-pago/', admin_metodos_pago_view, name='admin_metodos_pago'),
-    path('ingresos-extra/', ingresos_extra_view, name='ingresos_extra'),
+    path('contabilidad/ingresos-extra/', ingresos_extra_view, name='ingresos_extra'),
     path('metodos-pago/', metodos_pago_activos_view, name='metodos_pago_activos'),
 
     # --- Reportes ---------------------------------------------------------
@@ -191,7 +191,7 @@ urlpatterns = [
     path('admin/reportes/cuadre-caja/', reporte_cuadre_caja_view, name='reporte_cuadre_caja'),
     path('admin/reportes/cuadre-caja-rango/', reporte_cuadre_caja_rango_view, name='reporte_cuadre_caja_rango'),
     path('admin/reportes/ventas-dia/', reporte_ventas_dia_view, name='reporte_ventas_dia'),
-    path('admin/reportes/venta-nota/<int:nota_id>/', reporte_venta_nota_detalle_view, name='reporte_venta_nota_detalle'),
+    path('admin/reportes/ventas-dia/<int:nota_id>/', reporte_venta_nota_detalle_view, name='reporte_venta_nota_detalle'),
     path('admin/reportes/cuentas-por-cobrar/', reporte_cuentas_por_cobrar_view, name='reporte_cuentas_por_cobrar'),
     path('admin/reportes/cuentas-cobradas-dia/', reporte_cuentas_cobradas_dia_view, name='reporte_cuentas_cobradas_dia'),
     path('admin/reportes/disponibilidad-cuentas/', reporte_disponibilidad_cuentas_view, name='reporte_disponibilidad_cuentas'),
@@ -200,7 +200,7 @@ urlpatterns = [
 
     # --- Facturacion ------------------------------------------------------
     path('clientes/buscar/', clientes_buscar_view, name='clientes_buscar'),
-    path('datos-fiscales/', datos_fiscales_view, name='datos_fiscales'),
+    path('admin/datos-fiscales/', datos_fiscales_view, name='datos_fiscales'),
     path('prefacturas/', prefacturas_view, name='prefacturas'),
     path('prefacturas/<int:prefactura_id>/convertir/', prefactura_convertir_view, name='prefactura_convertir'),
     path('prefacturas/<int:prefactura_id>/anular/', prefactura_anular_view, name='prefactura_anular'),
@@ -222,5 +222,5 @@ urlpatterns = [
 
     # --- Cuentas por pagar ------------------------------------------------
     path('cuentas-por-pagar/', cuentas_por_pagar_view, name='cuentas_por_pagar'),
-    path('compras/<int:compra_id>/abonos/', compra_abono_view, name='compra_abono'),
+    path('admin/compras/<int:compra_id>/abonos/', compra_abono_view, name='compra_abono'),
 ]

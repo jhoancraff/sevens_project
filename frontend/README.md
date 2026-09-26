@@ -1,31 +1,31 @@
-# Frontend React — Proyecto Sevens
+# Varagrill frontend
 
-Este directorio esta **vacio a proposito**: es el destino del frontend React que
-vive en el otro servidor. Copia aqui el contenido de tu proyecto React.
+Frontend React (Vite) del sistema de restaurante. Se comunica con el backend
+Django por rutas relativas `/api/...`, que Nginx hace de proxy hacia Gunicorn.
 
-## Como copiarlo desde el otro servidor
+## Rutas de este servidor
 
-```bash
-# En el servidor donde esta tu React:
-tar czf frontend-sevens.tar.gz --exclude=node_modules --exclude=dist --exclude=.git .
+| Que | Donde |
+|---|---|
+| Frontend | `/home/sevens/sevens_project/frontend` |
+| Build | `/home/sevens/sevens_project/frontend/dist` |
+| Backend | `/home/sevens/sevens_project/backend` |
+| Config Nginx | `/home/sevens/sevens_project/nginx.conf` |
 
-# Traerlo a este servidor:
-scp usuario@servidor-frontend:/ruta/frontend-sevens.tar.gz /tmp/
-tar xzf /tmp/frontend-sevens.tar.gz -C /home/sevens/sevens_project/frontend
-```
+> Este README antes describia `/home/mariadb/app/frontend` y
+> `/var/www/varagrilladmin/dist` (servidor anterior). Las rutas de arriba son
+> las de aqui; el bloque de nginx de abajo ya esta actualizado.
 
-Excluye `node_modules`, `dist` y `.git`: aqui se reinstalan y se compilan.
-
-## Build para produccion (Nginx)
+## Compilar
 
 ```bash
 cd /home/sevens/sevens_project/frontend
 npm install
-npm run build      # genera dist/
+npm run build
 ```
 
-Nginx ya esta configurado para servir `frontend/dist/` y hacer proxy de
-`/api/` hacia Gunicorn (ver `../nginx.conf`). No hay que cambiar nada mas.
+El build escribe en `dist/` y Nginx lo sirve de inmediato. Si Nginx esta
+activo, despues del build basta recargar:
 
 ```bash
 sudo nginx -t && sudo systemctl reload nginx
@@ -34,50 +34,61 @@ sudo nginx -t && sudo systemctl reload nginx
 ## Desarrollo con hot reload
 
 ```bash
-npm run dev -- --host
+npm run dev
 ```
 
-En dev el frontend corre en `:5173` y no pasa por Nginx, asi que en
-`frontend/.env` pon la URL absoluta del backend:
+Levanta en `0.0.0.0:3000`. El proxy de `vite.config.js` manda `/api`,
+`/admin`, `/static` y `/ws` a `http://127.0.0.1:8000` (Gunicorn).
 
-```env
-VITE_API_URL=http://<IP-DE-ESTE-SERVIDOR>:8000/api
+Para que el backend acepte el origen del dev server, agregalo a
+`CORS_ALLOWED_ORIGINS` en `backend/.env`:
+
+```
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
 ```
 
-Y agrega ese origen a `CORS_ALLOWED_ORIGINS` en `backend/.env`.
+## Pruebas
 
-## Contrato de API
+```bash
+npm test
+```
 
-El backend expone todo bajo `/api/`. Autenticacion por **sesion con cookies**
-(`login()` de Django), no JWT. Endpoints que exige la suite de tests:
+## Nginx para servir el frontend
 
-| Endpoint | Metodo | Descripcion |
-|---|---|---|
-| `/api/auth/login/` | POST | Login (acepta username o email, case-insensitive) |
-| `/api/auth/logout/` | POST | Logout |
-| `/api/auth/status/` | GET | Usuario de la sesion actual |
-| `/api/pedidos/` | POST | Crear pedido |
-| `/api/pedidos/<id>/estado/` | POST | Cambiar estado del pedido |
-| `/api/pedidos/cobro/` | POST | Cobrar pedidos |
-| `/api/pedidos/cocina/` | GET | Comandas activas de cocina |
-| `/api/facturas/<id>/abonos/` | POST | Abonos de factura |
-| `/api/admin/catalogo/` | GET | Catalogo de productos |
-| `/api/admin/usuarios/` | GET | Usuarios y roles |
-| `/api/admin/gastos/` | GET/POST | Gastos |
-| `/api/admin/compras/borrador/agregar/` | POST | Lineas del borrador de compra |
-| `/api/admin/reportes/estado-resultados/` | GET | Reporte de resultados |
+La configuracion de este servidor esta en `/home/sevens/sevens_project/nginx.conf`
+y se instala copiandola a un sitio habilitado:
 
-> **Nota**: el backend tiene ~78 vistas implementadas, pero `sevens/urls.py`
-> aun no existe, asi que hoy solo responde lo que este enrutado. Eso se esta
-> corrigiendo — si tu React llama endpoints que no aparecen aqui, es porque
-> falta enrutarlos.
+```bash
+sudo cp /home/sevens/sevens_project/nginx.conf /etc/nginx/sites-available/sevens
+sudo ln -sf /etc/nginx/sites-available/sevens /etc/nginx/sites-enabled/sevens
+sudo nginx -t && sudo systemctl reload nginx
+```
 
-## WebSockets (tiempo real de cocina)
+### Bloques que importan
 
-`ws://<host>/ws/pedidos/` — requiere `credentials` en el cliente WebSocket.
-Aun no esta habilitado en produccion (falta `CHANNEL_LAYERS` y servir ASGI).
+- `client_max_body_size 20m` — sin esto, la subida del Excel de ingredientes
+  a `/api/admin/catalogo/importar/` se corta (el default de Nginx es 1m).
+- `location /assets/` — cache larga para los JS/CSS con hash del build.
+- `location = /sw.js` — **sin** cache, para que la PWA detecte actualizaciones.
+- `location /api/` y `/admin/` — proxy a Gunicorn en `127.0.0.1:8000`.
 
-## Roles
+### Diagnostico
 
-Los permisos se derivan del rol del usuario: Administrador, Analista, Mesero,
-Cocinero, Cajera, Contador. Mas `is_staff`/`is_superuser` para el dueno.
+Si `/` responde pero `/api/` da `404`, Nginx esta cargando otro sitio:
+
+```bash
+sudo nginx -T | grep -n "server_name\|location /api/"
+```
+
+## PWA
+
+`vite-plugin-pwa` genera `sw.js`, `workbox-*.js` y `manifest.webmanifest` en
+`dist/`. El service worker usa `NetworkFirst` para navegaciones, asi que la app
+sigue funcionando sin conexion y se actualiza sola.
+
+## API
+
+La lista completa de endpoints esta en `backend/sevens/urls.py` (83 rutas).
+Todos los paths que este frontend llama existen en el backend: se verifico
+resolviendo cada llamada contra el URLconf de Django.
+
