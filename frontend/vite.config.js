@@ -12,7 +12,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['assets/sevens-logo.jpg'],
+      includeAssets: ['assets/sevens-logo.png', 'assets/favicon-64.png'],
       devOptions: {
         enabled: false,
       },
@@ -32,10 +32,24 @@ export default defineConfig({
         dir: 'ltr',
         icons: [
           {
-            src: '/assets/sevens-logo.jpg',
-            sizes: 'any',
-            type: 'image/svg+xml',
-            purpose: 'any maskable',
+            src: '/assets/pwa-192x192.png',
+            sizes: '192x192',
+            type: 'image/png',
+            purpose: 'any',
+          },
+          {
+            src: '/assets/pwa-512x512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'any',
+          },
+          {
+            // maskable: el sistema recorta hasta un 20% por lado, por eso el
+            // logo va al 80% del lienzo (ver preparar_logo).
+            src: '/assets/pwa-512x512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'maskable',
           },
         ],
       },

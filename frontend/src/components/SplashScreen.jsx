@@ -53,7 +53,7 @@ function SplashScreen() {
           }}
         >
           <img
-            src="/assets/sevens-logo.jpg"
+            src="/assets/sevens-logo.png"
             alt="Sevens logo"
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           />
