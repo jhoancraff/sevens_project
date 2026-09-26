@@ -186,14 +186,39 @@ Nginx también manda la cabecera `X-Sevens-Ambiente` en cada puerto.
 
 #### Instalar el entorno de pruebas
 
+Con un solo comando, que además verifica cada paso y dice dónde falló si algo
+sale mal:
+
 ```bash
-cd /home/sevens/sevens_project
-sudo cp gunicorn-pruebas.service sevens-pruebas.service /etc/systemd/system/
-sudo cp nginx.conf /etc/nginx/sites-available/sevens_project
+sudo /home/sevens/sevens_project/instalar_pruebas.sh
+```
+
+Hace todo esto:
+
+1. Copia `gunicorn-pruebas.service` y recarga systemd
+2. Arranca el backend de pruebas y **comprueba que responde y que usa
+   `sevensdb_test`** (no con que la base correcta)
+3. Instala el sitio de nginx en el puerto 8080 y valida la config con `nginx -t`
+4. Abre el puerto 8080 en el firewall
+5. Verifica que las dos URLs responden 200 desde la red
+
+Al final imprime las direcciones para entrar desde el teléfono.
+
+#### Si algo falla
+
+El script se detiene en el paso que falló y muestra el comando para ver la
+causa. El caso más común:
+
+```bash
+sudo journalctl -u gunicorn-pruebas -n 30 --no-pager
+```
+
+#### Desinstalar
+
+```bash
+sudo systemctl disable --now gunicorn-pruebas
+sudo rm /etc/systemd/system/gunicorn-pruebas.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now gunicorn-pruebas
-sudo nginx -t && sudo systemctl reload nginx
-sudo ufw allow 8080/tcp          # sin esto el celular no entra a :8080
 ```
 
 #### Apagar el entorno de pruebas
