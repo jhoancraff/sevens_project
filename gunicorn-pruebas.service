@@ -18,12 +18,17 @@ Type=simple
 User=sevens
 Group=sevens
 WorkingDirectory=/home/sevens/sevens_project/backend
-EnvironmentFile=/home/sevens/sevens_project/backend/.env
 
-# Lo que distingue esta instancia de la de produccion: la base de datos y
-# el nombre del entorno, que la app lee para pintar el aviso en pantalla.
-# Environment= se aplica DESPUES de EnvironmentFile=, asi que gana sobre el
-# DB_NAME que este tenga.
+# OJO: aqui NO va EnvironmentFile= a proposito.
+#
+# En systemd, EnvironmentFile= tiene MAS prioridad que Environment=, asi que
+# si se declarara, el DB_NAME=sevensdb de backend/.env ganaria y esta
+# instancia acabaria connectada a la base de PRODUCCION mientras se anuncia
+# como "pruebas" (que es justo el fallo que se corrigio).
+#
+# Sin ese archivo, el SECRET_KEY, DB_PASSWORD y demas los carga Django desde
+# backend/.env con load_dotenv(), que NO pisa las variables que ya vienen del
+# entorno. Por eso el DB_NAME de abajo si gana.
 Environment=DB_NAME=sevensdb_test
 Environment=SEVENS_AMBIENTE=pruebas
 

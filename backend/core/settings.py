@@ -15,6 +15,30 @@ DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 't')
 
 ALLOWED_HOSTS = [host.strip() for host in os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') if host.strip()]
 
+# ------------------------------------------------------------------
+# Red de seguridad entre produccion y pruebas
+# ------------------------------------------------------------------
+# Si el proceso se declara como entorno de pruebas, la base de datos tiene
+# que ser la de pruebas. Se dio el caso de lo contrario (por el orden de
+# precedencia de EnvironmentFile= sobre Environment= en systemd) y el
+# resultado era una app de pruebas escribiendo sobre los datos reales del
+# restaurante. Aqui se corta en seco en lugar de confiar en la config.
+AMBIENTE = (os.getenv('SEVENS_AMBIENTE', '') or '').strip().lower()
+ES_ENTORNO_PRUEBAS = AMBIENTE in ('prueba', 'pruebas', 'test', 'tests', 'dev', 'staging')
+DB_ESPERADA_EN_PRUEBAS = os.getenv('DB_ESPERADA_EN_PRUEBAS', 'sevensdb_test')
+
+if ES_ENTORNO_PRUEBAS and os.getenv('DB_NAME', '') == 'sevensdb':
+    raise RuntimeError(
+        'CONFIGURACION INVALIDA: el proceso dice ser de pruebas '
+        f'(SEVENS_AMBIENTE={AMBIENTE}) pero esta apuntando a "sevensdb", '
+        'la base de PRODUCCION con los datos reales del restaurante. '
+        'Se detiene el arranque para no escribirlas por error.\n'
+        '  Causa habitual: declarar EnvironmentFile= en el unit, que en '
+        'systemd tiene mas prioridad que Environment=.\n'
+        f'  Arreglo: quitar EnvironmentFile= y dejar que Django lea '
+        f'{BASE_DIR / ".env"}, con DB_NAME={DB_ESPERADA_EN_PRUEBAS} en Environment=.'
+    )
+
 # Application definition
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -99,14 +123,12 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-
 # Archivos subidos por el usuario (fotos de productos).
 # El catalogo publico los sirve por /api/productos/<id>/imagen/ (ver
 # product_image_view), pero el admin tambien devuelve la URL cruda, asi que
 # se expone /media/ para que Nginx la sirva directo.
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
-
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'sevens.VGUsuario'
 
