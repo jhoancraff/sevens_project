@@ -1,0 +1,1358 @@
+{
+  "backend/api/__init__.py": {
+    "mtime": 1790430992.9856832,
+    "seen": 1790436175.1348822,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "backend/api/admin.py": {
+    "mtime": 1790430992.986195,
+    "seen": 1790436175.1348884,
+    "ast_hash": "519b5e667860a947baa4cce99ffbd567",
+    "semantic_hash": "519b5e667860a947baa4cce99ffbd567"
+  },
+  "backend/api/apps.py": {
+    "mtime": 1790430992.986195,
+    "seen": 1790436175.134891,
+    "ast_hash": "10b68881b541de7b147f6a042409de98",
+    "semantic_hash": "10b68881b541de7b147f6a042409de98"
+  },
+  "backend/api/migrations/0001_initial.py": {
+    "mtime": 1790430992.9872084,
+    "seen": 1790436175.1348922,
+    "ast_hash": "fb976e67532b41cd64b32d30824ee19e",
+    "semantic_hash": "fb976e67532b41cd64b32d30824ee19e"
+  },
+  "backend/api/migrations/__init__.py": {
+    "mtime": 1790430992.9872084,
+    "seen": 1790436175.134894,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "backend/api/models.py": {
+    "mtime": 1790430992.9872084,
+    "seen": 1790436175.1348948,
+    "ast_hash": "74cb30c3193b8af5512d9de21e7ae95a",
+    "semantic_hash": "74cb30c3193b8af5512d9de21e7ae95a"
+  },
+  "backend/api/serializers.py": {
+    "mtime": 1790430992.9884346,
+    "seen": 1790436175.134896,
+    "ast_hash": "5bde359958656cca53171fb80fd5109a",
+    "semantic_hash": "5bde359958656cca53171fb80fd5109a"
+  },
+  "backend/api/tests.py": {
+    "mtime": 1790430992.9884346,
+    "seen": 1790436175.1348975,
+    "ast_hash": "e08f0582500f6562bf0a931ef9503b39",
+    "semantic_hash": "e08f0582500f6562bf0a931ef9503b39"
+  },
+  "backend/api/urls.py": {
+    "mtime": 1790430992.9894557,
+    "seen": 1790436175.1348982,
+    "ast_hash": "8d3e776374fdeb071af64ef7b245e26c",
+    "semantic_hash": "8d3e776374fdeb071af64ef7b245e26c"
+  },
+  "backend/api/views.py": {
+    "mtime": 1790430992.9894557,
+    "seen": 1790436175.1348994,
+    "ast_hash": "7db612e694e07810623b71c8eb834292",
+    "semantic_hash": "7db612e694e07810623b71c8eb834292"
+  },
+  "backend/core/__init__.py": {
+    "mtime": 1790430992.9905694,
+    "seen": 1790436175.1349008,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "backend/core/asgi.py": {
+    "mtime": 1790430992.9905694,
+    "seen": 1790436175.134902,
+    "ast_hash": "b3f0eebbea493100bcc0365d89d3a793",
+    "semantic_hash": "b3f0eebbea493100bcc0365d89d3a793"
+  },
+  "backend/core/settings.py": {
+    "mtime": 1790430992.9916368,
+    "seen": 1790436175.1349032,
+    "ast_hash": "f5e37cb44caa964694a32150395815c6",
+    "semantic_hash": "f5e37cb44caa964694a32150395815c6"
+  },
+  "backend/core/urls.py": {
+    "mtime": 1790430992.9916368,
+    "seen": 1790436175.1349044,
+    "ast_hash": "c289cfb42c75bf0c0d43bf4904bbaab3",
+    "semantic_hash": "c289cfb42c75bf0c0d43bf4904bbaab3"
+  },
+  "backend/core/views.py": {
+    "mtime": 1790430992.9921443,
+    "seen": 1790436175.134905,
+    "ast_hash": "198c740dfbe0d4e3c7ff69c35051e485",
+    "semantic_hash": "198c740dfbe0d4e3c7ff69c35051e485"
+  },
+  "backend/core/wsgi.py": {
+    "mtime": 1790430992.9921443,
+    "seen": 1790436175.1349063,
+    "ast_hash": "3c348a65c2d04c0f463db848f9ea956e",
+    "semantic_hash": "3c348a65c2d04c0f463db848f9ea956e"
+  },
+  "backend/gunicorn.conf.py": {
+    "mtime": 1790430992.9931533,
+    "seen": 1790436175.1349075,
+    "ast_hash": "5e9cda407c5b27fd21c58eff8954a6c7",
+    "semantic_hash": "5e9cda407c5b27fd21c58eff8954a6c7"
+  },
+  "backend/manage.py": {
+    "mtime": 1790430992.9931533,
+    "seen": 1790436175.1349084,
+    "ast_hash": "482b4fa3e73ba5413c52502680db7e1c",
+    "semantic_hash": "482b4fa3e73ba5413c52502680db7e1c"
+  },
+  "backend/sevens/__init__.py": {
+    "mtime": 1790430992.9941542,
+    "seen": 1790436175.1349094,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "backend/sevens/admin.py": {
+    "mtime": 1790430992.9951537,
+    "seen": 1790436175.1349103,
+    "ast_hash": "e9de4316292b87817bfb234e0274ad1c",
+    "semantic_hash": "e9de4316292b87817bfb234e0274ad1c"
+  },
+  "backend/sevens/api_views.py": {
+    "mtime": 1790430992.9966602,
+    "seen": 1790436175.1349118,
+    "ast_hash": "ef328f3134887484615c5a50032090a3",
+    "semantic_hash": "ef328f3134887484615c5a50032090a3"
+  },
+  "backend/sevens/apps.py": {
+    "mtime": 1790430992.9976707,
+    "seen": 1790436175.1349127,
+    "ast_hash": "8e47413b1984be457b1fd86413346ada",
+    "semantic_hash": "8e47413b1984be457b1fd86413346ada"
+  },
+  "backend/sevens/auth_helpers.py": {
+    "mtime": 1790430992.9986691,
+    "seen": 1790436175.1349144,
+    "ast_hash": "900ae9878b160610080ecc2ec7220eca",
+    "semantic_hash": "900ae9878b160610080ecc2ec7220eca"
+  },
+  "backend/sevens/compras_views.py": {
+    "mtime": 1790430992.99967,
+    "seen": 1790436175.1349156,
+    "ast_hash": "269505fa2628d71bf60e22a5cca527cd",
+    "semantic_hash": "269505fa2628d71bf60e22a5cca527cd"
+  },
+  "backend/sevens/contabilidad_views.py": {
+    "mtime": 1790430992.99967,
+    "seen": 1790436175.1349165,
+    "ast_hash": "472564974fc006bb7a1cf00da4f84b3e",
+    "semantic_hash": "472564974fc006bb7a1cf00da4f84b3e"
+  },
+  "backend/sevens/devoluciones_views.py": {
+    "mtime": 1790430993.0006702,
+    "seen": 1790436175.134918,
+    "ast_hash": "284e0e2d3399b6bd3e0d7707fd588263",
+    "semantic_hash": "284e0e2d3399b6bd3e0d7707fd588263"
+  },
+  "backend/sevens/facturacion_views.py": {
+    "mtime": 1790430993.0016706,
+    "seen": 1790436175.134919,
+    "ast_hash": "1dd1631b722f2733e0ca239c4a9e2374",
+    "semantic_hash": "1dd1631b722f2733e0ca239c4a9e2374"
+  },
+  "backend/sevens/gastos_views.py": {
+    "mtime": 1790430993.0016706,
+    "seen": 1790436175.13492,
+    "ast_hash": "bf6fb20d7dea61b0c035e6e499365949",
+    "semantic_hash": "bf6fb20d7dea61b0c035e6e499365949"
+  },
+  "backend/sevens/impresion_lpd.py": {
+    "mtime": 1790430993.0026703,
+    "seen": 1790436175.1349213,
+    "ast_hash": "61b016a5f06545970a653ef42638566e",
+    "semantic_hash": "61b016a5f06545970a653ef42638566e"
+  },
+  "backend/sevens/impresion_termica.py": {
+    "mtime": 1790430993.00367,
+    "seen": 1790436175.134922,
+    "ast_hash": "35fc6445bfacb7e905a2d27a9b4dccec",
+    "semantic_hash": "35fc6445bfacb7e905a2d27a9b4dccec"
+  },
+  "backend/sevens/ingredientes_excel.py": {
+    "mtime": 1790430993.00367,
+    "seen": 1790436175.1349232,
+    "ast_hash": "89fc48c819ed34e6be24439623f47260",
+    "semantic_hash": "89fc48c819ed34e6be24439623f47260"
+  },
+  "backend/sevens/management/__init__.py": {
+    "mtime": 1790430993.0046706,
+    "seen": 1790436175.1349247,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "backend/sevens/management/commands/__init__.py": {
+    "mtime": 1790430993.0046706,
+    "seen": 1790436175.1349256,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "backend/sevens/management/commands/crear_usuario.py": {
+    "mtime": 1790430993.0046706,
+    "seen": 1790436175.1349266,
+    "ast_hash": "7c110055c43a5bffd1c01f94e3763e05",
+    "semantic_hash": "7c110055c43a5bffd1c01f94e3763e05"
+  },
+  "backend/sevens/management/commands/ing.py": {
+    "mtime": 1790430993.0046706,
+    "seen": 1790436175.1349275,
+    "ast_hash": "70712562b903dda8a823ce22c190aa87",
+    "semantic_hash": "70712562b903dda8a823ce22c190aa87"
+  },
+  "backend/sevens/management/commands/reset_datos_operativos.py": {
+    "mtime": 1790430993.0061762,
+    "seen": 1790436175.134929,
+    "ast_hash": "65bdecba4d2a776390d1727a3ea64701",
+    "semantic_hash": "65bdecba4d2a776390d1727a3ea64701"
+  },
+  "backend/sevens/management/commands/reset_facturas.py": {
+    "mtime": 1790430993.0071886,
+    "seen": 1790436175.13493,
+    "ast_hash": "aa0e47a4b29ef2400560e95bd26ac82d",
+    "semantic_hash": "aa0e47a4b29ef2400560e95bd26ac82d"
+  },
+  "backend/sevens/management/commands/seed_beverages_data.py": {
+    "mtime": 1790430993.0071886,
+    "seen": 1790436175.1349308,
+    "ast_hash": "5bf32ae39d9737458087998dc2b868e5",
+    "semantic_hash": "5bf32ae39d9737458087998dc2b868e5"
+  },
+  "backend/sevens/management/commands/seed_carnes_pollos.py": {
+    "mtime": 1790430993.0085435,
+    "seen": 1790436175.1349323,
+    "ast_hash": "6e2d7457e4382d78614e97ae39ff047c",
+    "semantic_hash": "6e2d7457e4382d78614e97ae39ff047c"
+  },
+  "backend/sevens/management/commands/seed_ingredientes_precios.py": {
+    "mtime": 1790430993.0085435,
+    "seen": 1790436175.1349332,
+    "ast_hash": "26226bbd76a5537b101c0c2772e73dca",
+    "semantic_hash": "26226bbd76a5537b101c0c2772e73dca"
+  },
+  "backend/sevens/management/commands/seed_restaurant_data.py": {
+    "mtime": 1790430993.0095408,
+    "seen": 1790436175.1349342,
+    "ast_hash": "8df579a7ba6ccf4c88abdc7b5f54ae9a",
+    "semantic_hash": "8df579a7ba6ccf4c88abdc7b5f54ae9a"
+  },
+  "backend/sevens/management/commands/seed_tequenos_la_vara.py": {
+    "mtime": 1790430993.0105436,
+    "seen": 1790436175.1349354,
+    "ast_hash": "152a418a3668bbfb7afc983ab8adc33d",
+    "semantic_hash": "152a418a3668bbfb7afc983ab8adc33d"
+  },
+  "backend/sevens/migrations/0001_initial.py": {
+    "mtime": 1790430993.011697,
+    "seen": 1790436175.1349363,
+    "ast_hash": "d55ec0b1af87d230a85ca86fb6675e8c",
+    "semantic_hash": "d55ec0b1af87d230a85ca86fb6675e8c"
+  },
+  "backend/sevens/migrations/0002_seed_roles.py": {
+    "mtime": 1790430993.011697,
+    "seen": 1790436175.134938,
+    "ast_hash": "ff8b3d77b14886eefcf5d65ed81d1bb7",
+    "semantic_hash": "ff8b3d77b14886eefcf5d65ed81d1bb7"
+  },
+  "backend/sevens/migrations/0003_vgpromocion_vgrecomendacionchef.py": {
+    "mtime": 1790430993.0128374,
+    "seen": 1790436175.1349394,
+    "ast_hash": "c917c063b0619375b4f43522f6d69966",
+    "semantic_hash": "c917c063b0619375b4f43522f6d69966"
+  },
+  "backend/sevens/migrations/0004_vgpromocion_duracion_dias.py": {
+    "mtime": 1790430993.0128374,
+    "seen": 1790436175.1349404,
+    "ast_hash": "7e9e997c30ef9a175294f65824f33058",
+    "semantic_hash": "7e9e997c30ef9a175294f65824f33058"
+  },
+  "backend/sevens/migrations/0005_alter_vgpromocion_fecha_fin.py": {
+    "mtime": 1790430993.0128374,
+    "seen": 1790436175.1349413,
+    "ast_hash": "276f88f5a7eaf1622e0169fcc4e4488f",
+    "semantic_hash": "276f88f5a7eaf1622e0169fcc4e4488f"
+  },
+  "backend/sevens/migrations/0006_vgpreparacion_es_adicional_and_more.py": {
+    "mtime": 1790430993.0141478,
+    "seen": 1790436175.1349428,
+    "ast_hash": "fb3a115c382aa3b61a4375739c837cbf",
+    "semantic_hash": "fb3a115c382aa3b61a4375739c837cbf"
+  },
+  "backend/sevens/migrations/0007_vgproducto_receta_vinculada_and_more.py": {
+    "mtime": 1790430993.0141478,
+    "seen": 1790436175.1349437,
+    "ast_hash": "cad9097c6accdb738e6fb9a1ebda4203",
+    "semantic_hash": "cad9097c6accdb738e6fb9a1ebda4203"
+  },
+  "backend/sevens/migrations/0008_vgtasacambio.py": {
+    "mtime": 1790430993.0152428,
+    "seen": 1790436175.1349447,
+    "ast_hash": "a4e6c19600949a20325802bad75a36c2",
+    "semantic_hash": "a4e6c19600949a20325802bad75a36c2"
+  },
+  "backend/sevens/migrations/0009_vgdetallepedido_grupo_armado_and_more.py": {
+    "mtime": 1790430993.0157497,
+    "seen": 1790436175.1349459,
+    "ast_hash": "b2e01cd8ffdac04d51290c64c6a3e396",
+    "semantic_hash": "b2e01cd8ffdac04d51290c64c6a3e396"
+  },
+  "backend/sevens/migrations/0010_vgcategoriaproducto_ip_impresora_and_more.py": {
+    "mtime": 1790430993.0162573,
+    "seen": 1790436175.1349468,
+    "ast_hash": "fcf8a9756a2d0244b19a77c7104954ec",
+    "semantic_hash": "fcf8a9756a2d0244b19a77c7104954ec"
+  },
+  "backend/sevens/migrations/0011_vgimpresoracaja.py": {
+    "mtime": 1790430993.0162573,
+    "seen": 1790436175.134948,
+    "ast_hash": "5bb3fedfe830a0b540a4437407b7e1e9",
+    "semantic_hash": "5bb3fedfe830a0b540a4437407b7e1e9"
+  },
+  "backend/sevens/migrations/0012_alter_vgpago_metodo_pago_vgcierrecaja_and_more.py": {
+    "mtime": 1790430993.017304,
+    "seen": 1790436175.1349492,
+    "ast_hash": "0c45d5ae8564e2ddda3d9dbd4d69e7c4",
+    "semantic_hash": "0c45d5ae8564e2ddda3d9dbd4d69e7c4"
+  },
+  "backend/sevens/migrations/0013_metodos_pago_dinamicos_y_rol_cajera.py": {
+    "mtime": 1790430993.017304,
+    "seen": 1790436175.1349504,
+    "ast_hash": "ecdfdbf29840b62dc860e7fd51956ba5",
+    "semantic_hash": "ecdfdbf29840b62dc860e7fd51956ba5"
+  },
+  "backend/sevens/migrations/0014_vgmetodopago_moneda.py": {
+    "mtime": 1790430993.017304,
+    "seen": 1790436175.1349514,
+    "ast_hash": "b08053e3ee6c0dc7538c2bd91a6e2214",
+    "semantic_hash": "b08053e3ee6c0dc7538c2bd91a6e2214"
+  },
+  "backend/sevens/migrations/0015_alter_vgdetallecompra_costo_unitario_and_more.py": {
+    "mtime": 1790430993.018304,
+    "seen": 1790436175.1349525,
+    "ast_hash": "3dedc31117964f45d5a65013e0472d4f",
+    "semantic_hash": "3dedc31117964f45d5a65013e0472d4f"
+  },
+  "backend/sevens/migrations/0016_vgcorrelativofiscal_vgdatosfiscalesemisor_vgfactura_and_more.py": {
+    "mtime": 1790430993.018304,
+    "seen": 1790436175.1349535,
+    "ast_hash": "fbb87ff1b352877bea7aa513a53d6d07",
+    "semantic_hash": "fbb87ff1b352877bea7aa513a53d6d07"
+  },
+  "backend/sevens/migrations/0017_vgcompra_fecha_factura_and_more.py": {
+    "mtime": 1790430993.0193012,
+    "seen": 1790436175.1349545,
+    "ast_hash": "1a7055a65d6c00fe9bceb86ba806b5ad",
+    "semantic_hash": "1a7055a65d6c00fe9bceb86ba806b5ad"
+  },
+  "backend/sevens/migrations/0018_vgdetallepedido_costo_unitario_venta.py": {
+    "mtime": 1790430993.0193012,
+    "seen": 1790436175.1349554,
+    "ast_hash": "cd3706e83d91f86d97f70b982ff6e20a",
+    "semantic_hash": "cd3706e83d91f86d97f70b982ff6e20a"
+  },
+  "backend/sevens/migrations/0019_vgdetallepedidoopcion_vggrupoopcionproducto_and_more.py": {
+    "mtime": 1790430993.0203018,
+    "seen": 1790436175.1349566,
+    "ast_hash": "34b42bae5d25b1b0a7438e994fb3e076",
+    "semantic_hash": "34b42bae5d25b1b0a7438e994fb3e076"
+  },
+  "backend/sevens/migrations/0020_vgdetallepedidoopcion_producto_and_more.py": {
+    "mtime": 1790430993.0203018,
+    "seen": 1790436175.1349578,
+    "ast_hash": "9797e758f29dd322fd2b9e1d7f6c5bb6",
+    "semantic_hash": "9797e758f29dd322fd2b9e1d7f6c5bb6"
+  },
+  "backend/sevens/migrations/0021_vgcompra_estado_pago_vgcompra_saldo_pendiente_and_more.py": {
+    "mtime": 1790430993.0213015,
+    "seen": 1790436175.1349587,
+    "ast_hash": "5cb44f6d93a399e9a501e198618d9d82",
+    "semantic_hash": "5cb44f6d93a399e9a501e198618d9d82"
+  },
+  "backend/sevens/migrations/0022_vgcategoriagasto_vggasto_vgabonogasto.py": {
+    "mtime": 1790430993.0213015,
+    "seen": 1790436175.1349602,
+    "ast_hash": "6c1bd7bc57bc0313cc134af7289a6d0d",
+    "semantic_hash": "6c1bd7bc57bc0313cc134af7289a6d0d"
+  },
+  "backend/sevens/migrations/0023_seed_categorias_gasto.py": {
+    "mtime": 1790430993.0223076,
+    "seen": 1790436175.134961,
+    "ast_hash": "1e1fd450c394f4a92e97433b5b7461e2",
+    "semantic_hash": "1e1fd450c394f4a92e97433b5b7461e2"
+  },
+  "backend/sevens/migrations/0024_seed_rol_contador.py": {
+    "mtime": 1790430993.0223076,
+    "seen": 1790436175.134962,
+    "ast_hash": "c9ae68a286b7fb97ba3be381bc21fec5",
+    "semantic_hash": "c9ae68a286b7fb97ba3be381bc21fec5"
+  },
+  "backend/sevens/migrations/0025_solo_gramos_ml_unidad.py": {
+    "mtime": 1790430993.0233078,
+    "seen": 1790436175.1349633,
+    "ast_hash": "24c3616ed8799133df77d6febd6736b0",
+    "semantic_hash": "24c3616ed8799133df77d6febd6736b0"
+  },
+  "backend/sevens/migrations/0026_vgcategoriaproducto_arma_plato_automatico_and_more.py": {
+    "mtime": 1790430993.0233078,
+    "seen": 1790436175.1349642,
+    "ast_hash": "424ab4a23955a2e6f9d47a7605b602ac",
+    "semantic_hash": "424ab4a23955a2e6f9d47a7605b602ac"
+  },
+  "backend/sevens/migrations/0027_vgcategoriaproducto_prioridad_comanda.py": {
+    "mtime": 1790430993.0243201,
+    "seen": 1790436175.1349654,
+    "ast_hash": "34a1be510614e591a0c8e41accbbb265",
+    "semantic_hash": "34a1be510614e591a0c8e41accbbb265"
+  },
+  "backend/sevens/migrations/0028_vgingrediente_contenido_envase_and_more.py": {
+    "mtime": 1790430993.0253224,
+    "seen": 1790436175.1349664,
+    "ast_hash": "0bc018d01c0067870e6e3efcd73ce3ab",
+    "semantic_hash": "0bc018d01c0067870e6e3efcd73ce3ab"
+  },
+  "backend/sevens/migrations/0029_vgcategoriaproducto_no_requiere_cocina_and_more.py": {
+    "mtime": 1790430993.0263076,
+    "seen": 1790436175.1349676,
+    "ast_hash": "917462bb330c053b9a3be01a1b4150bd",
+    "semantic_hash": "917462bb330c053b9a3be01a1b4150bd"
+  },
+  "backend/sevens/migrations/0030_vgingrediente_precio_compra.py": {
+    "mtime": 1790430993.0268226,
+    "seen": 1790436175.1349685,
+    "ast_hash": "1104c36ff41288034096156d24d9a55f",
+    "semantic_hash": "1104c36ff41288034096156d24d9a55f"
+  },
+  "backend/sevens/migrations/0031_add_tasa_cambio_egresos.py": {
+    "mtime": 1790430993.0268226,
+    "seen": 1790436175.1349704,
+    "ast_hash": "e678f6596eefab07f2b5693f151cb4a9",
+    "semantic_hash": "e678f6596eefab07f2b5693f151cb4a9"
+  },
+  "backend/sevens/migrations/0032_vgproducto_margen_ganancia_pct_vgconfiguracioncosteo.py": {
+    "mtime": 1790430993.0278263,
+    "seen": 1790436175.1349714,
+    "ast_hash": "fc121734fae8902fd0b6d9a45d953c70",
+    "semantic_hash": "fc121734fae8902fd0b6d9a45d953c70"
+  },
+  "backend/sevens/migrations/0033_vgdetallepedidoopcion_grupo_and_more.py": {
+    "mtime": 1790430993.0278263,
+    "seen": 1790436175.1349723,
+    "ast_hash": "35a930ee2a243cae92e91029ad1568c3",
+    "semantic_hash": "35a930ee2a243cae92e91029ad1568c3"
+  },
+  "backend/sevens/migrations/0034_vgnotaentrega.py": {
+    "mtime": 1790430993.0288248,
+    "seen": 1790436175.1349738,
+    "ast_hash": "fdac560d62e118a1e916dd23a89b414d",
+    "semantic_hash": "fdac560d62e118a1e916dd23a89b414d"
+  },
+  "backend/sevens/migrations/0035_vgpedido_fecha_inicio_preparacion.py": {
+    "mtime": 1790430993.0288248,
+    "seen": 1790436175.1349747,
+    "ast_hash": "dd2e27acff94238f23497f43cd3968ed",
+    "semantic_hash": "dd2e27acff94238f23497f43cd3968ed"
+  },
+  "backend/sevens/migrations/0036_vgpedido_fecha_listo.py": {
+    "mtime": 1790430993.0298607,
+    "seen": 1790436175.1349757,
+    "ast_hash": "c7722eb0add020abd1d919ba0aa3d06b",
+    "semantic_hash": "c7722eb0add020abd1d919ba0aa3d06b"
+  },
+  "backend/sevens/migrations/0037_vgnotaentrega_estado_vgnotaentrega_saldo_pendiente_and_more.py": {
+    "mtime": 1790430993.0298607,
+    "seen": 1790436175.134977,
+    "ast_hash": "21dce0645eaadba997a026111df5e446",
+    "semantic_hash": "21dce0645eaadba997a026111df5e446"
+  },
+  "backend/sevens/migrations/0038_remove_vgpago_pago_tiene_pedido_o_factura_and_more.py": {
+    "mtime": 1790430993.0311441,
+    "seen": 1790436175.134978,
+    "ast_hash": "239a155dc4f938542273912c873e3b1e",
+    "semantic_hash": "239a155dc4f938542273912c873e3b1e"
+  },
+  "backend/sevens/migrations/0039_vgingresoextra.py": {
+    "mtime": 1790430993.031653,
+    "seen": 1790436175.134979,
+    "ast_hash": "6934c3e773ca87032184c792ff67633d",
+    "semantic_hash": "6934c3e773ca87032184c792ff67633d"
+  },
+  "backend/sevens/migrations/0040_vgingresoextra_tasa_cambio_referencia.py": {
+    "mtime": 1790430993.031653,
+    "seen": 1790436175.1349802,
+    "ast_hash": "39f89113067cabfad066b8c55bb83692",
+    "semantic_hash": "39f89113067cabfad066b8c55bb83692"
+  },
+  "backend/sevens/migrations/0041_vgcorreccionmetodopago.py": {
+    "mtime": 1790430993.0326645,
+    "seen": 1790436175.1349814,
+    "ast_hash": "00e4193c6a0efacc6ab3fd1ed7cee301",
+    "semantic_hash": "00e4193c6a0efacc6ab3fd1ed7cee301"
+  },
+  "backend/sevens/migrations/0042_vgmetodopago_cuenta_bancaria.py": {
+    "mtime": 1790430993.0336685,
+    "seen": 1790436175.1349823,
+    "ast_hash": "e104207f6ca3169242e484ac68ada2f6",
+    "semantic_hash": "e104207f6ca3169242e484ac68ada2f6"
+  },
+  "backend/sevens/migrations/0042_vgnotaentrega_estado_anulada.py": {
+    "mtime": 1790430993.0336685,
+    "seen": 1790436175.1349835,
+    "ast_hash": "c5d07fae2d74c39825fd0dc5b6e5fd4c",
+    "semantic_hash": "c5d07fae2d74c39825fd0dc5b6e5fd4c"
+  },
+  "backend/sevens/migrations/0043_alter_vgingresoextra_monto.py": {
+    "mtime": 1790430993.0346618,
+    "seen": 1790436175.1349847,
+    "ast_hash": "6f2ee19484083abb5ecbd5cb6070b6ec",
+    "semantic_hash": "6f2ee19484083abb5ecbd5cb6070b6ec"
+  },
+  "backend/sevens/migrations/0044_alter_vgpago_monto.py": {
+    "mtime": 1790430993.0346618,
+    "seen": 1790436175.1349864,
+    "ast_hash": "0f006b09b24c86809e32b3e4370d72bd",
+    "semantic_hash": "0f006b09b24c86809e32b3e4370d72bd"
+  },
+  "backend/sevens/migrations/0045_vgajustepedido.py": {
+    "mtime": 1790430993.0346618,
+    "seen": 1790436175.1349876,
+    "ast_hash": "6c1a989b8053a186c19b113d9504d2b1",
+    "semantic_hash": "6c1a989b8053a186c19b113d9504d2b1"
+  },
+  "backend/sevens/migrations/0046_vgconciliacionbancaria.py": {
+    "mtime": 1790430993.036168,
+    "seen": 1790436175.1349885,
+    "ast_hash": "a5e72d92304f8dfc9d42cf6eda912b8b",
+    "semantic_hash": "a5e72d92304f8dfc9d42cf6eda912b8b"
+  },
+  "backend/sevens/migrations/0047_merge_20260906_0137.py": {
+    "mtime": 1790430993.036168,
+    "seen": 1790436175.1349897,
+    "ast_hash": "59422145e4174a219b9257ceca44a1cc",
+    "semantic_hash": "59422145e4174a219b9257ceca44a1cc"
+  },
+  "backend/sevens/migrations/0048_alter_vgabonogasto_monto_alter_vggasto_monto.py": {
+    "mtime": 1790430993.0371757,
+    "seen": 1790436175.134991,
+    "ast_hash": "860d6b5e231a9429249f0c852c934c34",
+    "semantic_hash": "860d6b5e231a9429249f0c852c934c34"
+  },
+  "backend/sevens/migrations/0049_vggasto_moneda_origen.py": {
+    "mtime": 1790430993.0371757,
+    "seen": 1790436175.134992,
+    "ast_hash": "3dd0e4ee278bffa60dd991415e6fb297",
+    "semantic_hash": "3dd0e4ee278bffa60dd991415e6fb297"
+  },
+  "backend/sevens/migrations/0050_vgnotaentrega_descuento_monto_and_more.py": {
+    "mtime": 1790430993.0381756,
+    "seen": 1790436175.134993,
+    "ast_hash": "5050ab21ad2faf819e404e01b48c688c",
+    "semantic_hash": "5050ab21ad2faf819e404e01b48c688c"
+  },
+  "backend/sevens/migrations/0051_alter_vgabonocompra_monto.py": {
+    "mtime": 1790430993.0381756,
+    "seen": 1790436175.1349943,
+    "ast_hash": "f6ef2ef6839fd3ddb8e979c5f99875e3",
+    "semantic_hash": "f6ef2ef6839fd3ddb8e979c5f99875e3"
+  },
+  "backend/sevens/migrations/0052_vgdetallecompraborrador_tasa_cambio_referencia_and_more.py": {
+    "mtime": 1790430993.0391812,
+    "seen": 1790436175.1349952,
+    "ast_hash": "0ce9b2cb6e3acd3d2683db2851a5d085",
+    "semantic_hash": "0ce9b2cb6e3acd3d2683db2851a5d085"
+  },
+  "backend/sevens/migrations/0053_vgcorrecciongasto.py": {
+    "mtime": 1790430993.0401826,
+    "seen": 1790436175.1349962,
+    "ast_hash": "324391a694fc579ad1455196db7e9c2b",
+    "semantic_hash": "324391a694fc579ad1455196db7e9c2b"
+  },
+  "backend/sevens/migrations/0054_vgpedido_grupo_pedido.py": {
+    "mtime": 1790430993.0424795,
+    "seen": 1790436175.1349971,
+    "ast_hash": "b2d141c0801a31e9d875c589ca4cef89",
+    "semantic_hash": "b2d141c0801a31e9d875c589ca4cef89"
+  },
+  "backend/sevens/migrations/0055_vgnotaentrega_motivo_anulacion_vgnotacredito_vgmerma_and_more.py": {
+    "mtime": 1790430993.0444808,
+    "seen": 1790436175.1349983,
+    "ast_hash": "2b14e06d970a9111494975bcac5edd7d",
+    "semantic_hash": "2b14e06d970a9111494975bcac5edd7d"
+  },
+  "backend/sevens/migrations/0056_vgnotacredito_tipo_resolucion_vgcreditocliente.py": {
+    "mtime": 1790430993.048043,
+    "seen": 1790436175.1349993,
+    "ast_hash": "959ca3b9b3a37e9822a7ea045cd4f2f9",
+    "semantic_hash": "959ca3b9b3a37e9822a7ea045cd4f2f9"
+  },
+  "backend/sevens/migrations/0057_remove_vgnotacredito_estado_envio_and_more.py": {
+    "mtime": 1790430993.0510604,
+    "seen": 1790436175.1350005,
+    "ast_hash": "86981151bfeb6323925a9ad800427865",
+    "semantic_hash": "86981151bfeb6323925a9ad800427865"
+  },
+  "backend/sevens/migrations/0058_vgnotacredito_detalle_pedido_origen_and_more.py": {
+    "mtime": 1790430993.05233,
+    "seen": 1790436175.1350045,
+    "ast_hash": "dc210a4c6f1cabf11272a77228388305",
+    "semantic_hash": "dc210a4c6f1cabf11272a77228388305"
+  },
+  "backend/sevens/migrations/0059_alter_vgcreditocliente_monto_and_more.py": {
+    "mtime": 1790430993.05233,
+    "seen": 1790436175.1350057,
+    "ast_hash": "5ddaf74fef524082018e3845be67d80a",
+    "semantic_hash": "5ddaf74fef524082018e3845be67d80a"
+  },
+  "backend/sevens/migrations/0060_vgcompra_total_bs_factura.py": {
+    "mtime": 1790430993.0534492,
+    "seen": 1790436175.1350067,
+    "ast_hash": "33f041569aa7380c9aef6049b4308370",
+    "semantic_hash": "33f041569aa7380c9aef6049b4308370"
+  },
+  "backend/sevens/migrations/0061_vgcompra_total_saldo_precision.py": {
+    "mtime": 1790430993.0534492,
+    "seen": 1790436175.1350079,
+    "ast_hash": "dac1237626db3c7956ce3c3257be8777",
+    "semantic_hash": "dac1237626db3c7956ce3c3257be8777"
+  },
+  "backend/sevens/migrations/0062_vggasto_saldo_pendiente_precision.py": {
+    "mtime": 1790430993.05485,
+    "seen": 1790436175.1350088,
+    "ast_hash": "1a3f1c181e0a6c8b781dddacb741ad69",
+    "semantic_hash": "1a3f1c181e0a6c8b781dddacb741ad69"
+  },
+  "backend/sevens/migrations/0063_vgcompra_moneda_origen.py": {
+    "mtime": 1790430993.05485,
+    "seen": 1790436175.1350098,
+    "ast_hash": "a31f85b49d3a7cd0a8eaf7ad793c9c65",
+    "semantic_hash": "a31f85b49d3a7cd0a8eaf7ad793c9c65"
+  },
+  "backend/sevens/migrations/__init__.py": {
+    "mtime": 1790430993.05485,
+    "seen": 1790436175.1350107,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "backend/sevens/models/__init__.py": {
+    "mtime": 1790430993.0563927,
+    "seen": 1790436175.135012,
+    "ast_hash": "4755af304bdfde24c2691290d3d2ab13",
+    "semantic_hash": "4755af304bdfde24c2691290d3d2ab13"
+  },
+  "backend/sevens/models/base.py": {
+    "mtime": 1790430993.0563927,
+    "seen": 1790436175.1350129,
+    "ast_hash": "85a6a55f0cc8bc3f0103615be40174a9",
+    "semantic_hash": "85a6a55f0cc8bc3f0103615be40174a9"
+  },
+  "backend/sevens/models/contabilidad.py": {
+    "mtime": 1790430993.0574007,
+    "seen": 1790436175.1350138,
+    "ast_hash": "8b4781d5ba522e2b9e787e644b519952",
+    "semantic_hash": "8b4781d5ba522e2b9e787e644b519952"
+  },
+  "backend/sevens/models/restaurant.py": {
+    "mtime": 1790430993.058431,
+    "seen": 1790436175.135015,
+    "ast_hash": "bb7b6d5b0b39e732b044028fad1587f2",
+    "semantic_hash": "bb7b6d5b0b39e732b044028fad1587f2"
+  },
+  "backend/sevens/notifications.py": {
+    "mtime": 1790430993.0594964,
+    "seen": 1790436175.1350162,
+    "ast_hash": "861dd63a230abf2722f69222b6936a5b",
+    "semantic_hash": "861dd63a230abf2722f69222b6936a5b"
+  },
+  "backend/sevens/reportes.py": {
+    "mtime": 1790430993.0600052,
+    "seen": 1790436175.1350172,
+    "ast_hash": "f06994a85d2460d750b8d2ea457f3a26",
+    "semantic_hash": "f06994a85d2460d750b8d2ea457f3a26"
+  },
+  "backend/sevens/serializers.py": {
+    "mtime": 1790430993.0600052,
+    "seen": 1790436175.1350183,
+    "ast_hash": "237beb0805a2ef4ac986b643f56dc2fe",
+    "semantic_hash": "237beb0805a2ef4ac986b643f56dc2fe"
+  },
+  "backend/sevens/tasa_cambio.py": {
+    "mtime": 1790430993.0610135,
+    "seen": 1790436175.1350193,
+    "ast_hash": "87580dec764456906d6b6819bfc48d8d",
+    "semantic_hash": "87580dec764456906d6b6819bfc48d8d"
+  },
+  "backend/sevens/tests.py": {
+    "mtime": 1790430993.062045,
+    "seen": 1790436175.1350203,
+    "ast_hash": "a40d1cdbfe39fbe6c2f0b17fede37b0d",
+    "semantic_hash": "a40d1cdbfe39fbe6c2f0b17fede37b0d"
+  },
+  "backend/sevens/unit_rescale.py": {
+    "mtime": 1790430993.063296,
+    "seen": 1790436175.1350217,
+    "ast_hash": "aab26919c133e8ce1810bcb75d2e22b9",
+    "semantic_hash": "aab26919c133e8ce1810bcb75d2e22b9"
+  },
+  "backend/sevens/urls.py": {
+    "mtime": 1790430993.063296,
+    "seen": 1790436175.1350226,
+    "ast_hash": "8d9cae712de8d2c841f5c6184bf2570f",
+    "semantic_hash": "8d9cae712de8d2c841f5c6184bf2570f"
+  },
+  "backend/sevens/views.py": {
+    "mtime": 1790430993.0644283,
+    "seen": 1790436175.1350236,
+    "ast_hash": "1b404a794ebb7b2a80ea56ac3c7b824b",
+    "semantic_hash": "1b404a794ebb7b2a80ea56ac3c7b824b"
+  },
+  "backend/start_gunicorn.sh": {
+    "mtime": 1790430993.0644283,
+    "seen": 1790436175.1350248,
+    "ast_hash": "a15562ce981147caf7b0a5253a8c7f33",
+    "semantic_hash": "a15562ce981147caf7b0a5253a8c7f33"
+  },
+  "frontend/package.json": {
+    "mtime": 1790430993.0705278,
+    "seen": 1790436175.135026,
+    "ast_hash": "ba5a9d4b91eee1c7eee09252d1b4302d",
+    "semantic_hash": "ba5a9d4b91eee1c7eee09252d1b4302d"
+  },
+  "frontend/src/App.jsx": {
+    "mtime": 1790430993.078935,
+    "seen": 1790436175.135027,
+    "ast_hash": "e7f121b0e60bb5cc64bf3fdbd880d1fd",
+    "semantic_hash": "e7f121b0e60bb5cc64bf3fdbd880d1fd"
+  },
+  "frontend/src/components/AdminPanelPage.jsx": {
+    "mtime": 1790430993.080415,
+    "seen": 1790436175.1350281,
+    "ast_hash": "6e509542e095e9a7c1101ad749f1bb7c",
+    "semantic_hash": "6e509542e095e9a7c1101ad749f1bb7c"
+  },
+  "frontend/src/components/AjustePedidoModal.jsx": {
+    "mtime": 1790430993.0814157,
+    "seen": 1790436175.135029,
+    "ast_hash": "96ca3bc8d7af6cc9fdec1704c4bea462",
+    "semantic_hash": "96ca3bc8d7af6cc9fdec1704c4bea462"
+  },
+  "frontend/src/components/AnalysPrintersPage.jsx": {
+    "mtime": 1790430993.0825315,
+    "seen": 1790436175.13503,
+    "ast_hash": "dcf5421130158f4f625dcc7565c7ea5f",
+    "semantic_hash": "dcf5421130158f4f625dcc7565c7ea5f"
+  },
+  "frontend/src/components/AnalystBulkPromotionPage.jsx": {
+    "mtime": 1790430993.0845304,
+    "seen": 1790436175.1350312,
+    "ast_hash": "d2cebef8ad9bb9ca039ec266d75be056",
+    "semantic_hash": "d2cebef8ad9bb9ca039ec266d75be056"
+  },
+  "frontend/src/components/AnalystChefRecommendationsPage.jsx": {
+    "mtime": 1790430993.0860398,
+    "seen": 1790436175.1350324,
+    "ast_hash": "489dd5e881ead6bbe2df8e07de624614",
+    "semantic_hash": "489dd5e881ead6bbe2df8e07de624614"
+  },
+  "frontend/src/components/AnalystComprasBorradorPage.jsx": {
+    "mtime": 1790430993.0870907,
+    "seen": 1790436175.1350334,
+    "ast_hash": "acac352ca81f592de0c45270c70a278a",
+    "semantic_hash": "acac352ca81f592de0c45270c70a278a"
+  },
+  "frontend/src/components/AnalystComprasPage.jsx": {
+    "mtime": 1790430993.0881047,
+    "seen": 1790436175.1350343,
+    "ast_hash": "3d9be97a7499edff9a9d61cb7bf44c87",
+    "semantic_hash": "3d9be97a7499edff9a9d61cb7bf44c87"
+  },
+  "frontend/src/components/AnalystConfiguracionCosteoPage.jsx": {
+    "mtime": 1790430993.0901158,
+    "seen": 1790436175.1350353,
+    "ast_hash": "75dd74aa6a88d9d6248a57f91311d793",
+    "semantic_hash": "75dd74aa6a88d9d6248a57f91311d793"
+  },
+  "frontend/src/components/AnalystDatosFiscalesPage.jsx": {
+    "mtime": 1790430993.0935254,
+    "seen": 1790436175.1350365,
+    "ast_hash": "96f1370943303f75a64df4e8fef99032",
+    "semantic_hash": "96f1370943303f75a64df4e8fef99032"
+  },
+  "frontend/src/components/AnalystEditIngredientPage.jsx": {
+    "mtime": 1790430993.0945263,
+    "seen": 1790436175.1350374,
+    "ast_hash": "72283607b449298d865c933b67841229",
+    "semantic_hash": "72283607b449298d865c933b67841229"
+  },
+  "frontend/src/components/AnalystEditMesaPage.jsx": {
+    "mtime": 1790430993.0970464,
+    "seen": 1790436175.1350386,
+    "ast_hash": "3d7308dbfe492f96758643b2c86fa411",
+    "semantic_hash": "3d7308dbfe492f96758643b2c86fa411"
+  },
+  "frontend/src/components/AnalystEditPreparationPage.jsx": {
+    "mtime": 1790430993.0985014,
+    "seen": 1790436175.1350396,
+    "ast_hash": "e8478080530ef7d370462e05b7175c21",
+    "semantic_hash": "e8478080530ef7d370462e05b7175c21"
+  },
+  "frontend/src/components/AnalystEditProductPage.jsx": {
+    "mtime": 1790430993.0995028,
+    "seen": 1790436175.1350405,
+    "ast_hash": "94fc46589c0ba67f9c6bc2cbf87eec3a",
+    "semantic_hash": "94fc46589c0ba67f9c6bc2cbf87eec3a"
+  },
+  "frontend/src/components/AnalystEditRecipePage.jsx": {
+    "mtime": 1790430993.1005025,
+    "seen": 1790436175.1350417,
+    "ast_hash": "f3b974810fbc046e14b3817c979fbdd5",
+    "semantic_hash": "f3b974810fbc046e14b3817c979fbdd5"
+  },
+  "frontend/src/components/AnalystEditUserPage.jsx": {
+    "mtime": 1790430993.1015043,
+    "seen": 1790436175.135043,
+    "ast_hash": "c0153f22972272fa63e74e65ba02b4ca",
+    "semantic_hash": "c0153f22972272fa63e74e65ba02b4ca"
+  },
+  "frontend/src/components/AnalystGastosPage.jsx": {
+    "mtime": 1790430993.1025026,
+    "seen": 1790436175.1350439,
+    "ast_hash": "a309c0dc3dc3c430e0de2657645d151f",
+    "semantic_hash": "a309c0dc3dc3c430e0de2657645d151f"
+  },
+  "frontend/src/components/AnalystIngredientsBulkCreatePage.jsx": {
+    "mtime": 1790430993.1045117,
+    "seen": 1790436175.1350448,
+    "ast_hash": "9abb5ded2e9280e6ac83578f8b8b9e3c",
+    "semantic_hash": "9abb5ded2e9280e6ac83578f8b8b9e3c"
+  },
+  "frontend/src/components/AnalystIngredientsCreateReportPage.jsx": {
+    "mtime": 1790430993.1060598,
+    "seen": 1790436175.135046,
+    "ast_hash": "61cd927f65a6befda110b1d0a86f7c5b",
+    "semantic_hash": "61cd927f65a6befda110b1d0a86f7c5b"
+  },
+  "frontend/src/components/AnalystIngredientsImportPage.jsx": {
+    "mtime": 1790430993.1073527,
+    "seen": 1790436175.135047,
+    "ast_hash": "79b3c294ffacee4d387e4b5c8b5d3328",
+    "semantic_hash": "79b3c294ffacee4d387e4b5c8b5d3328"
+  },
+  "frontend/src/components/AnalystIngredientsPage.jsx": {
+    "mtime": 1790430993.1084747,
+    "seen": 1790436175.1350482,
+    "ast_hash": "e81628f4d4443127c06f05f42f82714a",
+    "semantic_hash": "e81628f4d4443127c06f05f42f82714a"
+  },
+  "frontend/src/components/AnalystIngredientsReportPage.jsx": {
+    "mtime": 1790430993.1084747,
+    "seen": 1790436175.135049,
+    "ast_hash": "be68a607eece01eb0950bc30f6121c7d",
+    "semantic_hash": "be68a607eece01eb0950bc30f6121c7d"
+  },
+  "frontend/src/components/AnalystInventoryHubPage.jsx": {
+    "mtime": 1790430993.1095552,
+    "seen": 1790436175.1350505,
+    "ast_hash": "836f44773360c4f8a46264ca64a98c10",
+    "semantic_hash": "836f44773360c4f8a46264ca64a98c10"
+  },
+  "frontend/src/components/AnalystMargenGananciaPage.jsx": {
+    "mtime": 1790430993.110795,
+    "seen": 1790436175.1350515,
+    "ast_hash": "84c4311c59359593cc60f588fbda2f0d",
+    "semantic_hash": "84c4311c59359593cc60f588fbda2f0d"
+  },
+  "frontend/src/components/AnalystMesasPage.jsx": {
+    "mtime": 1790430993.1117978,
+    "seen": 1790436175.1350524,
+    "ast_hash": "03b1823120a0b3bd246d475059ea1031",
+    "semantic_hash": "03b1823120a0b3bd246d475059ea1031"
+  },
+  "frontend/src/components/AnalystMovimientoProductosPage.jsx": {
+    "mtime": 1790430993.1117978,
+    "seen": 1790436175.1350536,
+    "ast_hash": "33b950aac87dc341339a0371759bec43",
+    "semantic_hash": "33b950aac87dc341339a0371759bec43"
+  },
+  "frontend/src/components/AnalystNewChefRecommendationPage.jsx": {
+    "mtime": 1790430993.1130233,
+    "seen": 1790436175.1350696,
+    "ast_hash": "657f2a71719456799887b7767edef5e2",
+    "semantic_hash": "657f2a71719456799887b7767edef5e2"
+  },
+  "frontend/src/components/AnalystNewIngredientPage.jsx": {
+    "mtime": 1790430993.1130233,
+    "seen": 1790436175.135071,
+    "ast_hash": "4664bbd227671287d1ebdc353838fce7",
+    "semantic_hash": "4664bbd227671287d1ebdc353838fce7"
+  },
+  "frontend/src/components/AnalystNewMesaPage.jsx": {
+    "mtime": 1790430993.1140275,
+    "seen": 1790436175.135072,
+    "ast_hash": "53b71e66a597f5031c245013f478a88f",
+    "semantic_hash": "53b71e66a597f5031c245013f478a88f"
+  },
+  "frontend/src/components/AnalystNewPreparationPage.jsx": {
+    "mtime": 1790430993.1140275,
+    "seen": 1790436175.135073,
+    "ast_hash": "99889e5968cc0aa73ffc006b42cfe8a3",
+    "semantic_hash": "99889e5968cc0aa73ffc006b42cfe8a3"
+  },
+  "frontend/src/components/AnalystNewProductPage.jsx": {
+    "mtime": 1790430993.115025,
+    "seen": 1790436175.1350744,
+    "ast_hash": "d997b9e327dd4a880442cfe6e92babe7",
+    "semantic_hash": "d997b9e327dd4a880442cfe6e92babe7"
+  },
+  "frontend/src/components/AnalystNewPromotionPage.jsx": {
+    "mtime": 1790430993.116025,
+    "seen": 1790436175.1350753,
+    "ast_hash": "dd2b0cfd3a4cd23206378dec37e950a0",
+    "semantic_hash": "dd2b0cfd3a4cd23206378dec37e950a0"
+  },
+  "frontend/src/components/AnalystNewRecipePage.jsx": {
+    "mtime": 1790430993.1165316,
+    "seen": 1790436175.1350763,
+    "ast_hash": "0d4199c22ab72a96cd1b601ea01ac034",
+    "semantic_hash": "0d4199c22ab72a96cd1b601ea01ac034"
+  },
+  "frontend/src/components/AnalystNewUserPage.jsx": {
+    "mtime": 1790430993.1165316,
+    "seen": 1790436175.1350775,
+    "ast_hash": "12fd98aafa5fb21855ca44d33f2eb7b4",
+    "semantic_hash": "12fd98aafa5fb21855ca44d33f2eb7b4"
+  },
+  "frontend/src/components/AnalystPaymentMethodsPage.jsx": {
+    "mtime": 1790430993.117541,
+    "seen": 1790436175.1350787,
+    "ast_hash": "354d4e7ebf5d367313b420785e2c5ea8",
+    "semantic_hash": "354d4e7ebf5d367313b420785e2c5ea8"
+  },
+  "frontend/src/components/AnalystPreparationsPage.jsx": {
+    "mtime": 1790430993.1185482,
+    "seen": 1790436175.1350796,
+    "ast_hash": "460d4ed3c97ba8e40e63209d4786999d",
+    "semantic_hash": "460d4ed3c97ba8e40e63209d4786999d"
+  },
+  "frontend/src/components/AnalystPreparationsReportPage.jsx": {
+    "mtime": 1790430993.1185482,
+    "seen": 1790436175.1350808,
+    "ast_hash": "c2aaa1e299f8c6720e8c5eb580d873be",
+    "semantic_hash": "c2aaa1e299f8c6720e8c5eb580d873be"
+  },
+  "frontend/src/components/AnalystProductsPage.jsx": {
+    "mtime": 1790430993.11955,
+    "seen": 1790436175.135082,
+    "ast_hash": "3686445b5bb13bd3036b75e3468d4de8",
+    "semantic_hash": "3686445b5bb13bd3036b75e3468d4de8"
+  },
+  "frontend/src/components/AnalystPromotionsPage.jsx": {
+    "mtime": 1790430993.1205504,
+    "seen": 1790436175.135083,
+    "ast_hash": "aeb0f10770f9fc32082a202b3b5d067c",
+    "semantic_hash": "aeb0f10770f9fc32082a202b3b5d067c"
+  },
+  "frontend/src/components/AnalystRecipesPage.jsx": {
+    "mtime": 1790430993.121548,
+    "seen": 1790436175.135084,
+    "ast_hash": "4f79113b7db441186169fdc8cdeb00dc",
+    "semantic_hash": "4f79113b7db441186169fdc8cdeb00dc"
+  },
+  "frontend/src/components/AnalystUsersPage.jsx": {
+    "mtime": 1790430993.121548,
+    "seen": 1790436175.135085,
+    "ast_hash": "e5a2cb502bbd1a1d7a80380cadcf47f6",
+    "semantic_hash": "e5a2cb502bbd1a1d7a80380cadcf47f6"
+  },
+  "frontend/src/components/AuthForm.jsx": {
+    "mtime": 1790430993.1225474,
+    "seen": 1790436175.135086,
+    "ast_hash": "f8fede419982f8db48cc1ea7986bdc2d",
+    "semantic_hash": "f8fede419982f8db48cc1ea7986bdc2d"
+  },
+  "frontend/src/components/BrandHeader.jsx": {
+    "mtime": 1790430993.1225474,
+    "seen": 1790436175.135087,
+    "ast_hash": "357d84bc9dcddd8ed9d02d40f456b4e6",
+    "semantic_hash": "357d84bc9dcddd8ed9d02d40f456b4e6"
+  },
+  "frontend/src/components/BsAmount.jsx": {
+    "mtime": 1790430993.1235495,
+    "seen": 1790436175.1350884,
+    "ast_hash": "c48f6637a109694163caaded8aaf7744",
+    "semantic_hash": "c48f6637a109694163caaded8aaf7744"
+  },
+  "frontend/src/components/CheckoutPage.jsx": {
+    "mtime": 1790430993.1245499,
+    "seen": 1790436175.1350894,
+    "ast_hash": "ee2ae3c3dc2b9e810d85f19cd5fcec4b",
+    "semantic_hash": "ee2ae3c3dc2b9e810d85f19cd5fcec4b"
+  },
+  "frontend/src/components/ChefRecommendationsPage.jsx": {
+    "mtime": 1790430993.1260614,
+    "seen": 1790436175.1350904,
+    "ast_hash": "8e2ecf980a261faa69e6013698efcad8",
+    "semantic_hash": "8e2ecf980a261faa69e6013698efcad8"
+  },
+  "frontend/src/components/ComprobantePagoPage.jsx": {
+    "mtime": 1790430993.1271715,
+    "seen": 1790436175.1350918,
+    "ast_hash": "3278e12e1c3fcafc7d9b4c7ad212c4d6",
+    "semantic_hash": "3278e12e1c3fcafc7d9b4c7ad212c4d6"
+  },
+  "frontend/src/components/ConfirmModal.jsx": {
+    "mtime": 1790430993.1271715,
+    "seen": 1790436175.1350925,
+    "ast_hash": "5252f9a6474f1060e003a842d2dbf8ab",
+    "semantic_hash": "5252f9a6474f1060e003a842d2dbf8ab"
+  },
+  "frontend/src/components/ContabilidadPanelPage.jsx": {
+    "mtime": 1790430993.1285322,
+    "seen": 1790436175.1350937,
+    "ast_hash": "4c966df3197313bfb090f41b692aaa16",
+    "semantic_hash": "4c966df3197313bfb090f41b692aaa16"
+  },
+  "frontend/src/components/CuentasPorCobrarPage.jsx": {
+    "mtime": 1790430993.1308558,
+    "seen": 1790436175.135095,
+    "ast_hash": "1d719ee8dfe5e5f65d5416c434dc57e9",
+    "semantic_hash": "1d719ee8dfe5e5f65d5416c434dc57e9"
+  },
+  "frontend/src/components/CuentasPorPagarPage.jsx": {
+    "mtime": 1790430993.1308558,
+    "seen": 1790436175.135101,
+    "ast_hash": "9475754075147d678c2da2c2114dca60",
+    "semantic_hash": "9475754075147d678c2da2c2114dca60"
+  },
+  "frontend/src/components/DeliveryPage.jsx": {
+    "mtime": 1790430993.131855,
+    "seen": 1790436175.1351025,
+    "ast_hash": "d75f8cac2cc48aa482705d890e52dd59",
+    "semantic_hash": "d75f8cac2cc48aa482705d890e52dd59"
+  },
+  "frontend/src/components/EditOrderPage.jsx": {
+    "mtime": 1790430993.1328578,
+    "seen": 1790436175.1351035,
+    "ast_hash": "b024bf69d1aa42d8401b273c1662c06a",
+    "semantic_hash": "b024bf69d1aa42d8401b273c1662c06a"
+  },
+  "frontend/src/components/EstadoResultadosPage.jsx": {
+    "mtime": 1790430993.1338556,
+    "seen": 1790436175.1351044,
+    "ast_hash": "d9c6ca58d64d2d5968ddd619e2ac2215",
+    "semantic_hash": "d9c6ca58d64d2d5968ddd619e2ac2215"
+  },
+  "frontend/src/components/FacturasHistorialPage.jsx": {
+    "mtime": 1790430993.134855,
+    "seen": 1790436175.1351056,
+    "ast_hash": "d0057f4dc9425895ebf880baf08453f5",
+    "semantic_hash": "d0057f4dc9425895ebf880baf08453f5"
+  },
+  "frontend/src/components/HistorialFacturasPage.jsx": {
+    "mtime": 1790430993.134855,
+    "seen": 1790436175.1351066,
+    "ast_hash": "0b1e63175c49e2ebabb332cb69d5f901",
+    "semantic_hash": "0b1e63175c49e2ebabb332cb69d5f901"
+  },
+  "frontend/src/components/MesasAtendidasPage.jsx": {
+    "mtime": 1790430993.134855,
+    "seen": 1790436175.1351075,
+    "ast_hash": "33773e1d2477053179aa6e866159b516",
+    "semantic_hash": "33773e1d2477053179aa6e866159b516"
+  },
+  "frontend/src/components/NewOrderPage.jsx": {
+    "mtime": 1790430993.136362,
+    "seen": 1790436175.1351087,
+    "ast_hash": "e859bcf606a189b478961d4c5b6c5db8",
+    "semantic_hash": "e859bcf606a189b478961d4c5b6c5db8"
+  },
+  "frontend/src/components/NotasEntregaHistorialPage.jsx": {
+    "mtime": 1790430993.1383834,
+    "seen": 1790436175.13511,
+    "ast_hash": "fe8d8abb1ec6bc671928ca0bb73de9ce",
+    "semantic_hash": "fe8d8abb1ec6bc671928ca0bb73de9ce"
+  },
+  "frontend/src/components/Pagination.jsx": {
+    "mtime": 1790430993.1383834,
+    "seen": 1790436175.1351109,
+    "ast_hash": "192d7fe46b1cd286138f6e9525df04b8",
+    "semantic_hash": "192d7fe46b1cd286138f6e9525df04b8"
+  },
+  "frontend/src/components/PedidoConfirmacionPage.jsx": {
+    "mtime": 1790430993.139385,
+    "seen": 1790436175.135112,
+    "ast_hash": "f1434674e5f849f09672812dc5a86fb4",
+    "semantic_hash": "f1434674e5f849f09672812dc5a86fb4"
+  },
+  "frontend/src/components/PromotionsPage.jsx": {
+    "mtime": 1790430993.141382,
+    "seen": 1790436175.1351132,
+    "ast_hash": "0e3c14ae4f76a52808151e2b1bf04a35",
+    "semantic_hash": "0e3c14ae4f76a52808151e2b1bf04a35"
+  },
+  "frontend/src/components/ReporteConciliacionBancariaPage.jsx": {
+    "mtime": 1790430993.1428423,
+    "seen": 1790436175.1351142,
+    "ast_hash": "fb8a7aaa9461c8ce928c32dca48bbeb0",
+    "semantic_hash": "fb8a7aaa9461c8ce928c32dca48bbeb0"
+  },
+  "frontend/src/components/ReporteCuadreCajaPage.jsx": {
+    "mtime": 1790430993.1438355,
+    "seen": 1790436175.1351151,
+    "ast_hash": "e84b919f49fb865b0922a578f42ce29f",
+    "semantic_hash": "e84b919f49fb865b0922a578f42ce29f"
+  },
+  "frontend/src/components/ReporteCuadreCajaRangoPage.jsx": {
+    "mtime": 1790430993.1438355,
+    "seen": 1790436175.1351163,
+    "ast_hash": "0fea37e8e48cbe4d1ea3e59a84955d44",
+    "semantic_hash": "0fea37e8e48cbe4d1ea3e59a84955d44"
+  },
+  "frontend/src/components/ReporteCuentasCobradasPage.jsx": {
+    "mtime": 1790430993.1449535,
+    "seen": 1790436175.1351173,
+    "ast_hash": "b5b7fd93bc532ffceaa13dc704591a55",
+    "semantic_hash": "b5b7fd93bc532ffceaa13dc704591a55"
+  },
+  "frontend/src/components/ReporteCuentasPorCobrarPage.jsx": {
+    "mtime": 1790430993.1459532,
+    "seen": 1790436175.1351182,
+    "ast_hash": "35c6ccefa7f63801f5a9124e8af7f8ff",
+    "semantic_hash": "35c6ccefa7f63801f5a9124e8af7f8ff"
+  },
+  "frontend/src/components/ReporteDevolucionesPage.jsx": {
+    "mtime": 1790430993.1476603,
+    "seen": 1790436175.1351194,
+    "ast_hash": "b648e36ba5b2d76f81099df5e2762418",
+    "semantic_hash": "b648e36ba5b2d76f81099df5e2762418"
+  },
+  "frontend/src/components/ReporteDisponibilidadCuentasPage.jsx": {
+    "mtime": 1790430993.1476603,
+    "seen": 1790436175.1351204,
+    "ast_hash": "e06b660bfda231f297a3f2e0dbc8fdde",
+    "semantic_hash": "e06b660bfda231f297a3f2e0dbc8fdde"
+  },
+  "frontend/src/components/ReportePropinasPage.jsx": {
+    "mtime": 1790430993.1486712,
+    "seen": 1790436175.1351216,
+    "ast_hash": "08c66ffd3ad165480546713c9f733214",
+    "semantic_hash": "08c66ffd3ad165480546713c9f733214"
+  },
+  "frontend/src/components/ReporteVentasDiaPage.jsx": {
+    "mtime": 1790430993.1496692,
+    "seen": 1790436175.1351228,
+    "ast_hash": "60f2f3ade3a4cb1dccf1737e5dbe2f24",
+    "semantic_hash": "60f2f3ade3a4cb1dccf1737e5dbe2f24"
+  },
+  "frontend/src/components/ScreenShell.jsx": {
+    "mtime": 1790430993.150672,
+    "seen": 1790436175.1351237,
+    "ast_hash": "9ec560d28a6e78e3b46f86a2415f02ff",
+    "semantic_hash": "9ec560d28a6e78e3b46f86a2415f02ff"
+  },
+  "frontend/src/components/SplashScreen.jsx": {
+    "mtime": 1790430993.150672,
+    "seen": 1790436175.135125,
+    "ast_hash": "b32a6f9d3a34fd7a6d1ce6b454116205",
+    "semantic_hash": "b32a6f9d3a34fd7a6d1ce6b454116205"
+  },
+  "frontend/src/components/Toast.jsx": {
+    "mtime": 1790430993.1516726,
+    "seen": 1790436175.135126,
+    "ast_hash": "692a6f256e43b7d65ed74065477f7187",
+    "semantic_hash": "692a6f256e43b7d65ed74065477f7187"
+  },
+  "frontend/src/components/UnsavedChangesModal.jsx": {
+    "mtime": 1790430993.1526704,
+    "seen": 1790436175.135127,
+    "ast_hash": "f11f3a42c190e0f5848f2021ccfded27",
+    "semantic_hash": "f11f3a42c190e0f5848f2021ccfded27"
+  },
+  "frontend/src/components/WelcomeScreen.jsx": {
+    "mtime": 1790430993.153674,
+    "seen": 1790436175.1351283,
+    "ast_hash": "e3f4adca258ff1541c962658fbbd3a8c",
+    "semantic_hash": "e3f4adca258ff1541c962658fbbd3a8c"
+  },
+  "frontend/src/components/__tests__/ComprobantePagoPage.test.jsx": {
+    "mtime": 1790430993.1548085,
+    "seen": 1790436175.1351295,
+    "ast_hash": "3af77355afa63f3bceb4c064e1751e5b",
+    "semantic_hash": "3af77355afa63f3bceb4c064e1751e5b"
+  },
+  "frontend/src/design-tokens.js": {
+    "mtime": 1790430993.1548085,
+    "seen": 1790436175.1351306,
+    "ast_hash": "e5988e432496e2688891ccf3cb8a1d4e",
+    "semantic_hash": "e5988e432496e2688891ccf3cb8a1d4e"
+  },
+  "frontend/src/hooks/dirtyGuardRegistry.js": {
+    "mtime": 1790430993.156323,
+    "seen": 1790436175.1351314,
+    "ast_hash": "15ade10efae119f4ab53ee9e83a03ec2",
+    "semantic_hash": "15ade10efae119f4ab53ee9e83a03ec2"
+  },
+  "frontend/src/hooks/mobileBackLayerStack.js": {
+    "mtime": 1790430993.1579275,
+    "seen": 1790436175.1351323,
+    "ast_hash": "7a26cbaff6dcd6b2441343f9e07dd963",
+    "semantic_hash": "7a26cbaff6dcd6b2441343f9e07dd963"
+  },
+  "frontend/src/hooks/popStateSuppression.js": {
+    "mtime": 1790430993.1591644,
+    "seen": 1790436175.135134,
+    "ast_hash": "fcade3a7a70a8dedbcf439dc941344c7",
+    "semantic_hash": "fcade3a7a70a8dedbcf439dc941344c7"
+  },
+  "frontend/src/hooks/useExchangeRate.js": {
+    "mtime": 1790430993.1591644,
+    "seen": 1790436175.135135,
+    "ast_hash": "41c3debd18411478a8528ad4930b6865",
+    "semantic_hash": "41c3debd18411478a8528ad4930b6865"
+  },
+  "frontend/src/hooks/useMobileBackHandler.js": {
+    "mtime": 1790430993.1601639,
+    "seen": 1790436175.1351366,
+    "ast_hash": "cc228aee41947189f53dac9b7a2caf0e",
+    "semantic_hash": "cc228aee41947189f53dac9b7a2caf0e"
+  },
+  "frontend/src/hooks/useToast.js": {
+    "mtime": 1790430993.1601639,
+    "seen": 1790436175.1351373,
+    "ast_hash": "8c68efd5d879c1a6055b0e1f95155c56",
+    "semantic_hash": "8c68efd5d879c1a6055b0e1f95155c56"
+  },
+  "frontend/src/hooks/useUnsavedChangesGuard.js": {
+    "mtime": 1790430993.1611645,
+    "seen": 1790436175.1351383,
+    "ast_hash": "ad1da49b4a9349547c67977479c42a5a",
+    "semantic_hash": "ad1da49b4a9349547c67977479c42a5a"
+  },
+  "frontend/src/hooks/useViewHistory.js": {
+    "mtime": 1790430993.1621635,
+    "seen": 1790436175.1351395,
+    "ast_hash": "a53e56a2d8729bcd141bb18b936ab567",
+    "semantic_hash": "a53e56a2d8729bcd141bb18b936ab567"
+  },
+  "frontend/src/main.jsx": {
+    "mtime": 1790430993.164286,
+    "seen": 1790436175.1351407,
+    "ast_hash": "79b1e7fd0c37d3212c36253b172d03a2",
+    "semantic_hash": "79b1e7fd0c37d3212c36253b172d03a2"
+  },
+  "frontend/src/test/setup.js": {
+    "mtime": 1790430993.164286,
+    "seen": 1790436175.1351416,
+    "ast_hash": "2b9a2baf78ecc9cb14fc15edd668f0a9",
+    "semantic_hash": "2b9a2baf78ecc9cb14fc15edd668f0a9"
+  },
+  "frontend/src/utils/currency.js": {
+    "mtime": 1790430993.165285,
+    "seen": 1790436175.1351426,
+    "ast_hash": "56af569c47f287686b990c84e94a067e",
+    "semantic_hash": "56af569c47f287686b990c84e94a067e"
+  },
+  "frontend/src/utils/fechaContabilidad.js": {
+    "mtime": 1790430993.1667976,
+    "seen": 1790436175.135144,
+    "ast_hash": "13f8a4c681ed14140b78fca7195a8bab",
+    "semantic_hash": "13f8a4c681ed14140b78fca7195a8bab"
+  },
+  "frontend/src/utils/kitchenTicket.js": {
+    "mtime": 1790430993.1673079,
+    "seen": 1790436175.135145,
+    "ast_hash": "d881a3613632626311dbcd4168877e05",
+    "semantic_hash": "d881a3613632626311dbcd4168877e05"
+  },
+  "frontend/src/utils/unitConversion.js": {
+    "mtime": 1790430993.1687918,
+    "seen": 1790436175.135146,
+    "ast_hash": "3960dffd99b36d405e688307c48a0f11",
+    "semantic_hash": "3960dffd99b36d405e688307c48a0f11"
+  },
+  "frontend/vite.config.js": {
+    "mtime": 1790430993.1687918,
+    "seen": 1790436175.135147,
+    "ast_hash": "379f70393719aa15becd7936d3aa5802",
+    "semantic_hash": "379f70393719aa15becd7936d3aa5802"
+  },
+  "verificar_sistema.sh": {
+    "mtime": 1790433290.2340434,
+    "seen": 1790436175.1351483,
+    "ast_hash": "220d0c9f85339f29902ad8b352ae309a",
+    "semantic_hash": "220d0c9f85339f29902ad8b352ae309a"
+  },
+  "README.md": {
+    "mtime": 1790433290.2320468,
+    "seen": 1790436175.1351492,
+    "ast_hash": "d5f484e7f12cb289d0222d820984599a",
+    "semantic_hash": "d5f484e7f12cb289d0222d820984599a"
+  },
+  "backend/requirements.txt": {
+    "mtime": 1790430992.9941542,
+    "seen": 1790436175.1351504,
+    "ast_hash": "97c455fe04d06f5e3c1cfd433d7baf1d",
+    "semantic_hash": "97c455fe04d06f5e3c1cfd433d7baf1d"
+  },
+  "frontend/README.md": {
+    "mtime": 1790430993.0660045,
+    "seen": 1790436175.1351514,
+    "ast_hash": "15ba3d88fd0578a054bbff2a54e9a09a",
+    "semantic_hash": "15ba3d88fd0578a054bbff2a54e9a09a"
+  },
+  "frontend/index.html": {
+    "mtime": 1790430993.0660045,
+    "seen": 1790436175.1351523,
+    "ast_hash": "6470c7d16ce0b9df0876e0a2da9ee8ad",
+    "semantic_hash": "6470c7d16ce0b9df0876e0a2da9ee8ad"
+  },
+  "requirements.txt": {
+    "mtime": 1790430993.1718676,
+    "seen": 1790436175.1351538,
+    "ast_hash": "97c455fe04d06f5e3c1cfd433d7baf1d",
+    "semantic_hash": "97c455fe04d06f5e3c1cfd433d7baf1d"
+  },
+  "frontend/public/assets/favicon-64.png": {
+    "mtime": 1790430993.0715284,
+    "seen": 1790436175.1351547,
+    "ast_hash": "b2949352ea35b63b7d4ad41fbbae4399",
+    "semantic_hash": "b2949352ea35b63b7d4ad41fbbae4399"
+  },
+  "frontend/public/assets/pwa-192x192.png": {
+    "mtime": 1790430993.0715284,
+    "seen": 1790436175.1351557,
+    "ast_hash": "caa652b9f16d05beb9bc1e512663a269",
+    "semantic_hash": "caa652b9f16d05beb9bc1e512663a269"
+  },
+  "frontend/public/assets/pwa-512x512.png": {
+    "mtime": 1790430993.0726848,
+    "seen": 1790436175.135157,
+    "ast_hash": "27cc82521e3a0dc3c9901f0bd890154a",
+    "semantic_hash": "27cc82521e3a0dc3c9901f0bd890154a"
+  },
+  "frontend/public/assets/sevens-logo.jpg": {
+    "mtime": 1790430993.073859,
+    "seen": 1790436175.135158,
+    "ast_hash": "082d540d51cc85904c3562f0efef0e83",
+    "semantic_hash": "082d540d51cc85904c3562f0efef0e83"
+  },
+  "frontend/public/assets/sevens-logo.png": {
+    "mtime": 1790430993.0759182,
+    "seen": 1790436175.1351593,
+    "ast_hash": "5cb095b44a490e8c3006ed0bad229ec0",
+    "semantic_hash": "5cb095b44a490e8c3006ed0bad229ec0"
+  },
+  "frontend/public/icon.svg": {
+    "mtime": 1790430993.0764267,
+    "seen": 1790436175.1351602,
+    "ast_hash": "056bb2670af3231a29b314bb19063de6",
+    "semantic_hash": "056bb2670af3231a29b314bb19063de6"
+  }
+}
