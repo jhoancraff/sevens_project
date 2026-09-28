@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BsAmount from './BsAmount';
 import UnsavedChangesModal from './UnsavedChangesModal';
+import RacionesPorTamanoModal from './RacionesPorTamanoModal';
 import Toast from './Toast';
 import useExchangeRate from '../hooks/useExchangeRate';
 import useUnsavedChangesGuard from '../hooks/useUnsavedChangesGuard';
@@ -47,13 +48,19 @@ function crearGrupoOpcionVacio() {
     maximoSelecciones: '',
     gramosBaseRacion: '',
     opciones: [],
+    raciones: [],
   };
+}
+
+function crearFilaRacionVacia() {
+  return { uid: nextOpcionesUid('racion'), tramo_peso: '', producto_id: '', cantidad: '' };
 }
 
 function AnalystEditProductPage({ isMobile, isAdmin, productId, onBack, onProductsChanged }) {
   const tasaCambio = useExchangeRate();
   const ingredientPickerRef = useRef(null);
   const [categories, setCategories] = useState([]);
+  const [products, setProducts] = useState([]);
   const [recetas, setRecetas] = useState([]);
   const [subrecetas, setSubrecetas] = useState([]);
   const [ingredients, setIngredients] = useState([]);
@@ -63,6 +70,7 @@ function AnalystEditProductPage({ isMobile, isAdmin, productId, onBack, onProduc
   const [ingredientes, setIngredientes] = useState([]);
   const [gruposOpciones, setGruposOpciones] = useState([]);
   const [opcionDraftByGrupo, setOpcionDraftByGrupo] = useState({});
+  const [racionesModalGrupoUid, setRacionesModalGrupoUid] = useState(null);
   const [showIngredientResults, setShowIngredientResults] = useState(false);
   const [currentImageUrl, setCurrentImageUrl] = useState('');
   const [imageFile, setImageFile] = useState(null);
@@ -117,6 +125,7 @@ function AnalystEditProductPage({ isMobile, isAdmin, productId, onBack, onProduc
         }
 
         setCategories(Array.isArray(data.categories) ? data.categories : []);
+        setProducts(Array.isArray(data.products) ? data.products : []);
         setRecetas(Array.isArray(data.recetas) ? data.recetas : []);
         setSubrecetas(Array.isArray(data.subrecetas) ? data.subrecetas : []);
         setIngredients(Array.isArray(data.ingredients) ? data.ingredients : []);
@@ -166,6 +175,12 @@ function AnalystEditProductPage({ isMobile, isAdmin, productId, onBack, onProduc
             preparacion_id: opcion.preparacion_id,
             nombre: opcion.preparacion_nombre,
             precio_adicional: opcion.precio_adicional || '0',
+          })),
+          raciones: (Array.isArray(grupo.raciones_por_tamano) ? grupo.raciones_por_tamano : []).map((fila) => ({
+            uid: nextOpcionesUid('racion'),
+            tramo_peso: fila.tramo_peso != null ? String(fila.tramo_peso) : '',
+            producto_id: fila.producto_id != null ? String(fila.producto_id) : '',
+            cantidad: fila.cantidad != null ? String(fila.cantidad) : '',
           })),
         }));
         setForm(loadedForm);
@@ -307,8 +322,28 @@ function AnalystEditProductPage({ isMobile, isAdmin, productId, onBack, onProduc
       }
       return esDinamico
         ? { ...grupo, tipo: 'dinamico', opciones: [] }
-        : { ...grupo, tipo: 'curado', categoriaOpcionesId: '', maximoSelecciones: '', obligatorio: true, seleccion_multiple: false };
+        : { ...grupo, tipo: 'curado', categoriaOpcionesId: '', maximoSelecciones: '', obligatorio: true, seleccion_multiple: false, raciones: [] };
     }));
+  };
+
+  const handleAddRacionFila = (grupoUid) => {
+    setGruposOpciones((current) => current.map((grupo) => (
+      grupo.uid === grupoUid ? { ...grupo, raciones: [...grupo.raciones, crearFilaRacionVacia()] } : grupo
+    )));
+  };
+
+  const handleRemoveRacionFila = (grupoUid, filaUid) => {
+    setGruposOpciones((current) => current.map((grupo) => (
+      grupo.uid === grupoUid ? { ...grupo, raciones: grupo.raciones.filter((fila) => fila.uid !== filaUid) } : grupo
+    )));
+  };
+
+  const handleUpdateRacionFila = (grupoUid, filaUid, field, value) => {
+    setGruposOpciones((current) => current.map((grupo) => (
+      grupo.uid === grupoUid
+        ? { ...grupo, raciones: grupo.raciones.map((fila) => (fila.uid === filaUid ? { ...fila, [field]: value } : fila)) }
+        : grupo
+    )));
   };
 
   const handleAddOpcionAGrupo = (grupoUid) => {
@@ -415,6 +450,11 @@ function AnalystEditProductPage({ isMobile, isAdmin, productId, onBack, onProduc
           categoria_opciones_id: grupo.categoriaOpcionesId,
           maximo_selecciones: grupo.maximoSelecciones || null,
           gramos_base_racion: grupo.gramosBaseRacion || null,
+          raciones_por_tamano: grupo.raciones.map((fila) => ({
+            tramo_peso: fila.tramo_peso,
+            producto_id: fila.producto_id,
+            cantidad: fila.cantidad,
+          })),
         } : {
           nombre: grupo.nombre,
           obligatorio: grupo.obligatorio,
@@ -460,6 +500,10 @@ function AnalystEditProductPage({ isMobile, isAdmin, productId, onBack, onProduc
       setSaving(false);
     }
   };
+
+  const racionesModalGrupo = racionesModalGrupoUid
+    ? gruposOpciones.find((grupo) => grupo.uid === racionesModalGrupoUid) || null
+    : null;
 
   if (!isAdmin) {
     return (
@@ -777,6 +821,16 @@ function AnalystEditProductPage({ isMobile, isAdmin, productId, onBack, onProduc
                             style={inputStyle}
                           />
                         </div>
+                        <div style={composerRowStyle(isMobile)}>
+                          <button
+                            type="button"
+                            disabled={!grupo.categoriaOpcionesId}
+                            onClick={() => setRacionesModalGrupoUid(grupo.uid)}
+                            style={secondaryButtonStyle}
+                          >
+                            Tabla de raciones por tamaño ({grupo.raciones.length})
+                          </button>
+                        </div>
                       </>
                     ) : (
                       <>
@@ -918,6 +972,18 @@ function AnalystEditProductPage({ isMobile, isAdmin, productId, onBack, onProduc
       </form>
 
       <UnsavedChangesModal open={isConfirmOpen} onConfirm={confirmLeave} onCancel={cancelLeave} />
+
+      <RacionesPorTamanoModal
+        open={racionesModalGrupoUid !== null}
+        productos={products.filter((producto) => (
+          racionesModalGrupo ? String(producto.categoria_id) === String(racionesModalGrupo.categoriaOpcionesId) : false
+        ))}
+        filas={racionesModalGrupo ? racionesModalGrupo.raciones : []}
+        onAddFila={() => handleAddRacionFila(racionesModalGrupoUid)}
+        onRemoveFila={(filaUid) => handleRemoveRacionFila(racionesModalGrupoUid, filaUid)}
+        onUpdateFila={(filaUid, field, value) => handleUpdateRacionFila(racionesModalGrupoUid, filaUid, field, value)}
+        onClose={() => setRacionesModalGrupoUid(null)}
+      />
     </section>
   );
 }
