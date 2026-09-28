@@ -17,9 +17,9 @@ export default defineConfig({
         enabled: false,
       },
       manifest: {
-        name: 'Sevens',
-        short_name: 'Sevens',
-        description: 'Acceso rápido al sistema de restaurante Sevens',
+        name: 'Seven',
+        short_name: 'Seven',
+        description: 'Acceso rápido al sistema de restaurante Seven',
         theme_color: '#140606',
         background_color: '#140606',
         display: 'standalone',
