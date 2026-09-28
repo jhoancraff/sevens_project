@@ -45,7 +45,7 @@ function SplashScreen() {
             height: 92,
             borderRadius: 30,
             margin: '0 auto 20px',
-            background: 'linear-gradient(135deg, #bf1f1f 0%, #7a0d0d 100%)',
+            background: '#fff',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -54,12 +54,12 @@ function SplashScreen() {
         >
           <img
             src="/assets/sevens-logo.png"
-            alt="Sevens logo"
+            alt="Seven logo"
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           />
         </div>
         <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: '0.01em' }}>
-          Sevens
+          Seven
         </div>
         <div style={{ marginTop: 10, color: '#d7b0b0', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
           <span>Preparando tu experiencia</span>

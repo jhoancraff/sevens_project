@@ -551,7 +551,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             width: 32,
             height: 32,
             borderRadius: 10,
-            background: 'linear-gradient(135deg, #bf1f1f 0%, #7a0d0d 100%)',
+            background: '#fff',
             overflow: 'hidden',
             flexShrink: 0,
             marginRight: 10,
@@ -567,7 +567,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             backgroundClip: 'text',
             letterSpacing: '0.04em',
           }}>
-            Sevens
+            Seven
           </div>
         </div>
 
