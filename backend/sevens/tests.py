@@ -6,17 +6,23 @@ from django.utils import timezone
 from unittest.mock import patch
 
 from sevens.models import (
+    VGAjusteInventario,
     VGCategoriaGasto,
     VGCategoriaProducto,
+    VGCierreInventario,
     VGCliente,
     VGCompra,
     VGCompraBorrador,
+    VGDetalleAjusteInventario,
     VGDetalleCompra,
     VGDetalleCompraBorrador,
     VGDetallePedido,
     VGDetallePedidoAdicional,
+    VGDetallePedidoOpcion,
     VGFactura,
     VGGasto,
+    VGGrupoOpcionProducto,
+    VGGrupoOpcionRacionPorTamano,
     VGIngrediente,
     VGMetodoPago,
     VGMovimientoInventario,
@@ -1093,6 +1099,206 @@ class PedidoCobroInventoryDeductionTests(TestCase):
         self.assertEqual(tomate.stock_actual, Decimal('3940.00'))
 
 
+class TablaRacionesPorTamanoTests(TestCase):
+    """
+    Reproduce la tabla física completa acordada con el usuario para un plato de
+    proteína a peso variable con 4 acompañantes dinámicos (3 vendidos por peso,
+    1 por unidad), verificando el descuento de inventario real vía
+    /api/pedidos/cobro/ (no solo la función de lookup por separado):
+
+        Proteína   Papas fritas  Ensalada  Yuca    Patacón
+        250g       120g          120g      150g    3 UND
+        500g       120g          200g      200g    4 UND
+        750g       180g          250g      300g    6 UND
+        1000g      360g          350g      400g    8 UND
+    """
+
+    TABLA = {
+        250: {'papas': Decimal('120'), 'ensalada': Decimal('120'), 'yuca': Decimal('150'), 'patacon': Decimal('3')},
+        500: {'papas': Decimal('120'), 'ensalada': Decimal('200'), 'yuca': Decimal('200'), 'patacon': Decimal('4')},
+        750: {'papas': Decimal('180'), 'ensalada': Decimal('250'), 'yuca': Decimal('300'), 'patacon': Decimal('6')},
+        1000: {'papas': Decimal('360'), 'ensalada': Decimal('350'), 'yuca': Decimal('400'), 'patacon': Decimal('8')},
+    }
+
+    def setUp(self):
+        self.cajero_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.user = VGUsuario.objects.create_user(
+            username='cajera_raciones',
+            password='claveCajera123',
+            cedula='33345681',
+            email='cajera_raciones@sevens.test',
+            id_role=self.cajero_role,
+        )
+        self.client.force_login(self.user)
+        self.metodo_pago, _ = VGMetodoPago.objects.get_or_create(
+            nombre='Efectivo', defaults={'es_efectivo': True},
+        )
+        self.category_platos = VGCategoriaProducto.objects.create(nombre='Platos raciones')
+        self.category_guarniciones = VGCategoriaProducto.objects.create(nombre='Guarniciones')
+
+        # Un ingrediente crudo por acompañante, para poder aislar cada descuento.
+        self.papa_ing = VGIngrediente.objects.create(
+            nombre='Papa cruda', unidad_medida='g', stock_actual='1000000', costo_unitario='0.01',
+        )
+        self.lechuga_ing = VGIngrediente.objects.create(
+            nombre='Lechuga y tomate', unidad_medida='g', stock_actual='1000000', costo_unitario='0.01',
+        )
+        self.yuca_ing = VGIngrediente.objects.create(
+            nombre='Yuca cruda', unidad_medida='g', stock_actual='1000000', costo_unitario='0.01',
+        )
+        self.platano_ing = VGIngrediente.objects.create(
+            nombre='Plátano verde', unidad_medida='unidad', stock_actual='1000', costo_unitario='0.20',
+        )
+
+        # Acompañantes con receta 1:1 (1000g de ingrediente por "1 unidad" del
+        # producto vendido por peso == 1kg; 1 unidad de ingrediente por unidad
+        # del producto vendido por unidad), para que la cantidad descontada sea
+        # EXACTAMENTE la celda de la tabla, sin factores que compliquen la aserción.
+        self.papas_fritas = VGProducto.objects.create(
+            nombre='Papas fritas', categoria=self.category_guarniciones, precio_venta='0',
+            disponible=True, venta_por_peso=True,
+        )
+        VGRecetaProducto.objects.create(
+            producto=self.papas_fritas, ingrediente=self.papa_ing, cantidad_requerida='1000.000',
+        )
+        self.ensalada = VGProducto.objects.create(
+            nombre='Ensalada', categoria=self.category_guarniciones, precio_venta='0',
+            disponible=True, venta_por_peso=True,
+        )
+        VGRecetaProducto.objects.create(
+            producto=self.ensalada, ingrediente=self.lechuga_ing, cantidad_requerida='1000.000',
+        )
+        self.yuca = VGProducto.objects.create(
+            nombre='Yuca', categoria=self.category_guarniciones, precio_venta='0',
+            disponible=True, venta_por_peso=True,
+        )
+        VGRecetaProducto.objects.create(
+            producto=self.yuca, ingrediente=self.yuca_ing, cantidad_requerida='1000.000',
+        )
+        self.patacon = VGProducto.objects.create(
+            nombre='Patacón', categoria=self.category_guarniciones, precio_venta='0',
+            disponible=True, venta_por_peso=False,
+        )
+        VGRecetaProducto.objects.create(
+            producto=self.patacon, ingrediente=self.platano_ing, cantidad_requerida='1.000',
+        )
+
+        # Plato principal a peso variable, SIN receta propia — así la única
+        # deducción de inventario del pedido es la del acompañante elegido y
+        # la aserción queda limpia.
+        self.proteina = VGProducto.objects.create(
+            nombre='Proteína', categoria=self.category_platos, precio_venta='0.02',
+            disponible=True, venta_por_peso=True,
+        )
+        self.grupo = VGGrupoOpcionProducto.objects.create(
+            producto=self.proteina, nombre='Acompañante',
+            categoria_opciones=self.category_guarniciones,
+        )
+
+        for tramo, fila in self.TABLA.items():
+            VGGrupoOpcionRacionPorTamano.objects.create(
+                grupo=self.grupo, producto=self.papas_fritas, tramo_peso_gramos=tramo, cantidad=fila['papas'],
+            )
+            VGGrupoOpcionRacionPorTamano.objects.create(
+                grupo=self.grupo, producto=self.ensalada, tramo_peso_gramos=tramo, cantidad=fila['ensalada'],
+            )
+            VGGrupoOpcionRacionPorTamano.objects.create(
+                grupo=self.grupo, producto=self.yuca, tramo_peso_gramos=tramo, cantidad=fila['yuca'],
+            )
+            VGGrupoOpcionRacionPorTamano.objects.create(
+                grupo=self.grupo, producto=self.patacon, tramo_peso_gramos=tramo, cantidad=fila['patacon'],
+            )
+
+    def _pedir_y_cobrar(self, peso_gramos, producto_acompanante, grupo=None):
+        """Crea un pedido de 1 Proteína a `peso_gramos` con `producto_acompanante`
+        de acompañante, lo cobra vía el endpoint real, y devuelve la respuesta."""
+        pedido = VGPedido.objects.create(
+            usuario=self.user, tipo_pedido='local', estado='entregado', subtotal='0.02', total='0.02',
+        )
+        detalle = VGDetallePedido.objects.create(
+            pedido=pedido, producto=self.proteina, cantidad=1, precio_unitario='0.02',
+            estado='entregado', peso_gramos=str(peso_gramos),
+        )
+        VGDetallePedidoOpcion.objects.create(
+            detalle_pedido=detalle, grupo_nombre='Acompañante', grupo=grupo or self.grupo,
+            producto=producto_acompanante, precio_unitario='0',
+        )
+        response = self.client.post(
+            '/api/pedidos/cobro/',
+            data=json.dumps({'pedido_ids': [pedido.id], 'metodo_pago_id': self.metodo_pago.id}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        return response
+
+    def test_cada_tramo_exacto_descuenta_la_celda_exacta_de_la_tabla(self):
+        casos = [
+            (250, self.papas_fritas, self.papa_ing, Decimal('120')),
+            (500, self.ensalada, self.lechuga_ing, Decimal('200')),
+            (750, self.yuca, self.yuca_ing, Decimal('300')),
+            (1000, self.patacon, self.platano_ing, Decimal('8')),
+        ]
+        for peso_gramos, producto, ingrediente, esperado in casos:
+            with self.subTest(peso=peso_gramos, producto=producto.nombre):
+                ingrediente.refresh_from_db()
+                antes = ingrediente.stock_actual
+                self._pedir_y_cobrar(peso_gramos, producto)
+                ingrediente.refresh_from_db()
+                self.assertEqual(antes - ingrediente.stock_actual, esperado)
+
+    def test_peso_intermedio_usa_el_tramo_mas_cercano(self):
+        # 600g está a 100g de 500 y a 150g de 750 -> el tramo más cercano es 500.
+        self.papa_ing.refresh_from_db()
+        antes = self.papa_ing.stock_actual
+        self._pedir_y_cobrar(600, self.papas_fritas)
+        self.papa_ing.refresh_from_db()
+        self.assertEqual(antes - self.papa_ing.stock_actual, self.TABLA[500]['papas'])
+
+    def test_peso_fuera_de_rango_por_debajo_usa_el_tramo_limite_mas_chico(self):
+        self.yuca_ing.refresh_from_db()
+        antes = self.yuca_ing.stock_actual
+        self._pedir_y_cobrar(100, self.yuca)
+        self.yuca_ing.refresh_from_db()
+        self.assertEqual(antes - self.yuca_ing.stock_actual, self.TABLA[250]['yuca'])
+
+    def test_peso_fuera_de_rango_por_encima_usa_el_tramo_limite_mas_grande(self):
+        self.platano_ing.refresh_from_db()
+        antes = self.platano_ing.stock_actual
+        self._pedir_y_cobrar(5000, self.patacon)
+        self.platano_ing.refresh_from_db()
+        self.assertEqual(antes - self.platano_ing.stock_actual, self.TABLA[1000]['patacon'])
+
+    def test_grupo_sin_tabla_configurada_sigue_el_comportamiento_de_siempre(self):
+        """
+        Retrocompatibilidad: un grupo/producto SIN ninguna fila en
+        VGGrupoOpcionRacionPorTamano debe seguir funcionando exactamente igual
+        que antes de este cambio — acá, escalando a la par del peso del plato
+        principal (sin gramos_base_racion configurado tampoco).
+        """
+        arepa_ing = VGIngrediente.objects.create(
+            nombre='Harina de maíz', unidad_medida='g', stock_actual='100000', costo_unitario='0.01',
+        )
+        arepa = VGProducto.objects.create(
+            nombre='Arepa', categoria=self.category_guarniciones, precio_venta='0',
+            disponible=True, venta_por_peso=True,
+        )
+        VGRecetaProducto.objects.create(producto=arepa, ingrediente=arepa_ing, cantidad_requerida='1000.000')
+
+        # Grupo hermano, sin ninguna fila en VGGrupoOpcionRacionPorTamano.
+        grupo_sin_tabla = VGGrupoOpcionProducto.objects.create(
+            producto=self.proteina, nombre='Acompañante sin tabla',
+            categoria_opciones=self.category_guarniciones,
+        )
+
+        arepa_ing.refresh_from_db()
+        antes = arepa_ing.stock_actual
+        self._pedir_y_cobrar(500, arepa, grupo=grupo_sin_tabla)
+        arepa_ing.refresh_from_db()
+        # Sin tabla ni gramos_base_racion: cantidad_platos = 1 x (500/1000) = 0.5 ->
+        # 1000g de receta x 0.5 = 500g descontados (mismo cálculo que antes de este cambio).
+        self.assertEqual(antes - arepa_ing.stock_actual, Decimal('500.00'))
+
+
 class UnidadesMedidaTests(TestCase):
     """
     El negocio ya no maneja kg/l: el catálogo de unidades solo admite
@@ -1477,3 +1683,173 @@ class EstadoResultadosHistoricoAcumuladoTests(TestCase):
         usd_total = gasto_1.monto + gasto_2.monto
         bs_con_tasa_actual_al_consultar = (usd_total * tasa_y.tasa).quantize(Decimal('0.01'))
         self.assertNotEqual(payload['gastos_total_bs'], str(bs_con_tasa_actual_al_consultar))
+
+
+class AjusteInventarioTests(TestCase):
+    """
+    Cubre las reglas de negocio mas delicadas del modulo de ajuste de
+    inventario (ver ajustes_inventario_views.py): guardar solo procesa lineas
+    nuevas/modificadas sin retocar lo ya aplicado, editar/quitar una linea ya
+    aplicada mueve solo el delta (o el reverso exacto) en vez de recalcular
+    todo desde cero, y el cierre mensual bloquea el mes completo.
+    """
+
+    def setUp(self):
+        self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='ajusteinventario', password='claveAdmin123', cedula='90000004',
+            email='ajusteinventario@sevens.test', id_role=self.admin_role,
+        )
+        self.client.force_login(self.admin)
+        self.harina = VGIngrediente.objects.create(
+            nombre='Harina', unidad_medida='g', stock_actual=Decimal('100.00'),
+        )
+        self.queso = VGIngrediente.objects.create(
+            nombre='Queso', unidad_medida='g', stock_actual=Decimal('50.00'),
+        )
+
+    def _agregar(self, ingrediente, tipo, cantidad, motivo=''):
+        return self.client.post(
+            '/api/admin/inventario/ajuste/agregar/',
+            data=json.dumps({
+                'ingrediente_id': ingrediente.id, 'tipo': tipo, 'cantidad': cantidad, 'motivo': motivo,
+            }),
+            content_type='application/json',
+        )
+
+    def test_guardar_aplica_deltas_y_crea_movimientos_trazables(self):
+        self._agregar(self.harina, 'suma', '30.00')
+        self._agregar(self.queso, 'resta', '10.00')
+
+        response = self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertTrue(payload['ok'])
+        ajuste_id = payload['ajuste']['id']
+
+        self.harina.refresh_from_db()
+        self.queso.refresh_from_db()
+        self.assertEqual(self.harina.stock_actual, Decimal('130.00'))
+        self.assertEqual(self.queso.stock_actual, Decimal('40.00'))
+
+        movimientos = VGMovimientoInventario.objects.filter(tipo_movimiento='ajuste', id_referencia=ajuste_id)
+        self.assertEqual(movimientos.count(), 2)
+        self.assertEqual(
+            set(movimientos.values_list('ingrediente_id', 'cantidad')),
+            {(self.harina.id, Decimal('30.00')), (self.queso.id, Decimal('-10.00'))},
+        )
+
+        for detalle in payload['ajuste']['detalles']:
+            self.assertTrue(detalle['aplicado'])
+            self.assertEqual(detalle['cantidad'], detalle['cantidad_aplicada'])
+
+    def test_guardar_de_nuevo_solo_procesa_la_linea_nueva(self):
+        self._agregar(self.harina, 'suma', '30.00')
+        self.client.post('/api/admin/inventario/ajuste/guardar/')
+
+        self._agregar(self.queso, 'resta', '5.00')
+        response = self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self.assertEqual(response.status_code, 200, response.content)
+
+        self.harina.refresh_from_db()
+        self.queso.refresh_from_db()
+        # La linea de harina YA aplicada no se vuelve a tocar/duplicar.
+        self.assertEqual(self.harina.stock_actual, Decimal('130.00'))
+        self.assertEqual(self.queso.stock_actual, Decimal('45.00'))
+
+        self.assertEqual(
+            VGMovimientoInventario.objects.filter(tipo_movimiento='ajuste', ingrediente=self.harina).count(), 1,
+        )
+        self.assertEqual(
+            VGMovimientoInventario.objects.filter(tipo_movimiento='ajuste', ingrediente=self.queso).count(), 1,
+        )
+
+    def test_editar_linea_aplicada_mueve_solo_el_delta(self):
+        self._agregar(self.harina, 'suma', '30.00')
+        self.client.post('/api/admin/inventario/ajuste/guardar/')
+
+        detalle_id = VGDetalleAjusteInventario.objects.get(ingrediente=self.harina).id
+        response = self.client.post(
+            '/api/admin/inventario/ajuste/editar/',
+            data=json.dumps({'detalle_id': detalle_id, 'cantidad': '50.00'}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+
+        self.harina.refresh_from_db()
+        # 100 base + 30 (primer guardado) + 20 de delta (50 - 30) = 150, NUNCA
+        # se revierte el aplicado original para re-sumar 50 desde cero.
+        self.assertEqual(self.harina.stock_actual, Decimal('150.00'))
+
+        movimientos = VGMovimientoInventario.objects.filter(tipo_movimiento='ajuste', ingrediente=self.harina).order_by('id')
+        self.assertEqual(list(movimientos.values_list('cantidad', flat=True)), [Decimal('30.00'), Decimal('20.00')])
+
+    def test_quitar_linea_aplicada_revierte_exactamente_lo_aplicado(self):
+        self._agregar(self.queso, 'resta', '10.00')
+        self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self.queso.refresh_from_db()
+        self.assertEqual(self.queso.stock_actual, Decimal('40.00'))
+
+        detalle_id = VGDetalleAjusteInventario.objects.get(ingrediente=self.queso).id
+        response = self.client.post(
+            '/api/admin/inventario/ajuste/quitar/',
+            data=json.dumps({'detalle_id': detalle_id}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+
+        self.queso.refresh_from_db()
+        self.assertEqual(self.queso.stock_actual, Decimal('50.00'))
+        self.assertFalse(VGDetalleAjusteInventario.objects.filter(pk=detalle_id).exists())
+
+        reversos = VGMovimientoInventario.objects.filter(tipo_movimiento='ajuste', ingrediente=self.queso).order_by('id')
+        self.assertEqual(list(reversos.values_list('cantidad', flat=True)), [Decimal('-10.00'), Decimal('10.00')])
+
+    def test_quitar_linea_no_aplicada_no_genera_movimiento(self):
+        self._agregar(self.harina, 'suma', '30.00')
+        detalle_id = VGDetalleAjusteInventario.objects.get(ingrediente=self.harina).id
+
+        response = self.client.post(
+            '/api/admin/inventario/ajuste/quitar/',
+            data=json.dumps({'detalle_id': detalle_id}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+
+        self.harina.refresh_from_db()
+        self.assertEqual(self.harina.stock_actual, Decimal('100.00'))
+        self.assertFalse(VGMovimientoInventario.objects.filter(tipo_movimiento='ajuste', ingrediente=self.harina).exists())
+
+    def test_cierre_mensual_bloquea_agregar_y_exige_lineas_guardadas(self):
+        self._agregar(self.harina, 'suma', '30.00')
+
+        # No se puede cerrar con una linea sin guardar todavia.
+        rechazo = self.client.post('/api/admin/inventario/cierre/', data=json.dumps({}), content_type='application/json')
+        self.assertEqual(rechazo.status_code, 400)
+
+        self.client.post('/api/admin/inventario/ajuste/guardar/')
+        cierre = self.client.post('/api/admin/inventario/cierre/', data=json.dumps({}), content_type='application/json')
+        self.assertEqual(cierre.status_code, 201, cierre.content)
+
+        anio = timezone.localtime(timezone.now()).year
+        mes = timezone.localtime(timezone.now()).month
+        self.assertTrue(VGCierreInventario.objects.filter(anio=anio, mes=mes).exists())
+
+        bloqueado = self._agregar(self.queso, 'resta', '5.00')
+        self.assertEqual(bloqueado.status_code, 400)
+        self.assertFalse(VGDetalleAjusteInventario.objects.filter(ingrediente=self.queso).exists())
+
+    def test_descartar_ajuste_sin_lineas_aplicadas(self):
+        self._agregar(self.harina, 'suma', '30.00')
+        response = self.client.post('/api/admin/inventario/ajuste/descartar/')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIsNone(response.json()['ajuste'])
+        self.assertFalse(VGAjusteInventario.objects.exists())
+
+    def test_descartar_rechazado_si_ya_tiene_lineas_aplicadas(self):
+        self._agregar(self.harina, 'suma', '30.00')
+        self.client.post('/api/admin/inventario/ajuste/guardar/')
+
+        response = self.client.post('/api/admin/inventario/ajuste/descartar/')
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(VGAjusteInventario.objects.exists())

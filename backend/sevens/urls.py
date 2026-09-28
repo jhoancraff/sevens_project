@@ -58,6 +58,15 @@ from .api_views import (
     reporte_margen_ganancia_view,
     tasa_cambio_view,
 )
+from .ajustes_inventario_views import (
+    admin_ajuste_inventario_agregar_view,
+    admin_ajuste_inventario_descartar_view,
+    admin_ajuste_inventario_editar_view,
+    admin_ajuste_inventario_guardar_view,
+    admin_ajuste_inventario_quitar_view,
+    admin_ajuste_inventario_view,
+    admin_cierre_inventario_view,
+)
 from .compras_views import (
     admin_compra_borrador_agregar_view,
     admin_compra_borrador_confirmar_view,
@@ -174,7 +183,16 @@ urlpatterns = [
     path('admin/compras/', admin_compras_view, name='admin_compras'),
     path('admin/compras/<int:compra_id>/', compra_detail_view, name='compra_detail'),
 
-    # --- Administracion: gastos -------------------------------------------
+    # --- Administracion: ajuste de inventario ------------------------------
+    path('admin/inventario/ajuste/agregar/', admin_ajuste_inventario_agregar_view, name='admin_ajuste_inventario_agregar'),
+    path('admin/inventario/ajuste/editar/', admin_ajuste_inventario_editar_view, name='admin_ajuste_inventario_editar'),
+    path('admin/inventario/ajuste/quitar/', admin_ajuste_inventario_quitar_view, name='admin_ajuste_inventario_quitar'),
+    path('admin/inventario/ajuste/guardar/', admin_ajuste_inventario_guardar_view, name='admin_ajuste_inventario_guardar'),
+    path('admin/inventario/ajuste/descartar/', admin_ajuste_inventario_descartar_view, name='admin_ajuste_inventario_descartar'),
+    path('admin/inventario/ajuste/', admin_ajuste_inventario_view, name='admin_ajuste_inventario'),
+    path('admin/inventario/cierre/', admin_cierre_inventario_view, name='admin_cierre_inventario'),
+
+    # --- Administracion: gastos --------------------------------------------
     path('admin/categorias-gasto/', admin_categorias_gasto_view, name='admin_categorias_gasto'),
     path('admin/gastos/', admin_gastos_view, name='admin_gastos'),
     path('admin/gastos/<int:gasto_id>/abonos/', gasto_abono_view, name='gasto_abono'),
