@@ -31,6 +31,7 @@ WorkingDirectory=/home/sevens/sevens_project/backend
 # entorno. Por eso el DB_NAME de abajo si gana.
 Environment=DB_NAME=sevensdb_test
 Environment=SEVENS_AMBIENTE=pruebas
+Environment=SESSION_COOKIE_NAME=sevens_pruebas_sessionid
 
 # Puerto propio (8001) para no chocar con produccion (8000).
 ExecStart=/home/sevens/sevens_project/backend/venv/bin/gunicorn --bind 127.0.0.1:8001 --workers 2 --timeout 60 --access-logfile - --error-logfile - core.wsgi:application

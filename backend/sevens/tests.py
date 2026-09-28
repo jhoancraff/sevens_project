@@ -684,6 +684,40 @@ class AdminUsersApiTests(TestCase):
         self.assertTrue(any(role['nombre_role'] == 'Administrador' for role in payload['roles']))
         self.assertTrue(any(user['username'] == 'meseroexistente' for user in payload['users']))
 
+    def test_contador_can_create_user_through_admin_users_endpoint(self):
+        contador_role, _ = VGRol.objects.get_or_create(nombre_role='Contador')
+        contador = VGUsuario.objects.create_user(
+            username='contadorusuarios',
+            password='claveContador999',
+            cedula='90000005',
+            id_role=contador_role,
+        )
+
+        login_response = self.client.post(
+            '/api/auth/login/',
+            data=json.dumps({'username': contador.username, 'password': 'claveContador999'}),
+            content_type='application/json',
+        )
+        self.assertEqual(login_response.status_code, 200, login_response.json())
+        self.assertTrue(login_response.json()['user']['is_admin'])
+
+        response = self.client.post(
+            '/api/admin/usuarios/',
+            data=json.dumps({
+                'action': 'create',
+                'username': 'creadoporcontador',
+                'password': 'ClaveNueva123',
+                'cedula': '90000006',
+                'role_id': self.mesero_role.id,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.json())
+        created_user = VGUsuario.objects.get(username='creadoporcontador')
+        self.assertTrue(created_user.check_password('ClaveNueva123'))
+        self.assertEqual(created_user.id_role, self.mesero_role)
+
     def test_admin_users_endpoint_creates_updates_and_deletes_user(self):
         self.client.force_login(self.admin_user)
 
