@@ -9,6 +9,8 @@ import json
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
@@ -26,6 +28,7 @@ from .models import (
     VGMetodoPago,
     VGNotaEntrega,
     VGPago,
+    VGTransferenciaCuenta,
 )
 from .tasa_cambio import tasa_cambio_para_registro
 from .reportes import (
@@ -1002,6 +1005,8 @@ def reporte_disponibilidad_cuentas_view(request):
             'gastos_acumulados': str(cuenta['gastos_acumulados']),
             'compras_acumuladas': str(cuenta['compras_acumuladas']),
             'consignado_acumulado': str(cuenta['consignado_acumulado']),
+            'transferencias_salientes_acumuladas': str(cuenta['transferencias_salientes_acumuladas']),
+            'transferencias_entrantes_acumuladas': str(cuenta['transferencias_entrantes_acumuladas']),
             'saldo_disponible': str(cuenta['saldo_disponible']),
             'saldo_disponible_bs': str(cuenta['saldo_disponible_bs'].quantize(Decimal('0.01'))) if cuenta['saldo_disponible_bs'] is not None else None,
         }
@@ -1025,6 +1030,218 @@ def reporte_disponibilidad_cuentas_view(request):
         ],
         'total_disponible': str(sum((cuenta['saldo_disponible'] for cuenta in cuentas), Decimal('0'))),
     })
+
+
+def _serialize_transferencia(transferencia):
+    return {
+        'id': transferencia.id,
+        'fecha': transferencia.fecha.isoformat(),
+        'cuenta_origen_id': transferencia.cuenta_origen_id,
+        'cuenta_origen_nombre': transferencia.cuenta_origen.nombre,
+        'cuenta_destino_id': transferencia.cuenta_destino_id,
+        'cuenta_destino_nombre': transferencia.cuenta_destino.nombre,
+        'moneda_origen': transferencia.moneda_origen,
+        'moneda_destino': transferencia.moneda_destino,
+        'monto_origen': str(transferencia.monto_origen),
+        'monto_destino': str(transferencia.monto_destino),
+        'tasa_cambio': str(transferencia.tasa_cambio) if transferencia.tasa_cambio is not None else None,
+        'monto_usd': str(transferencia.monto_usd),
+        'referencia': transferencia.referencia,
+        'concepto': transferencia.concepto,
+        'creado_por': getattr(transferencia.creado_por, 'username', None),
+        'fecha_creacion': transferencia.fecha_creacion.isoformat(),
+    }
+
+
+@csrf_exempt
+def transferencias_cuentas_view(request):
+    """
+    Transferencias manuales de dinero real entre dos cuentas/metodos de pago
+    propios (ver VGTransferenciaCuenta) — GET devuelve el historial filtrado
+    (rango de fechas, ID puntual y/o cuenta) para el reporte de historial
+    (ver frontend HistorialTransferenciasPage.jsx), POST registra una nueva
+    y la integra de inmediato en disponibilidad_por_cuenta (reportes.py).
+    """
+    if request.method not in ['GET', 'POST']:
+        return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
+
+    if not _is_admin_user(request.user):
+        return _auth_response({'ok': False, 'message': 'Debes iniciar sesion como administrador.'}, status=401)
+
+    if request.method == 'GET':
+        # Mismo criterio por defecto que cuentas_por_pagar_view (estado=pagadas):
+        # sin filtro de fechas, el mes en curso — evita traer TODO el historico
+        # de una vez cuando el analista solo abre el reporte a mirar.
+        desde_raw = request.GET.get('desde')
+        hasta_raw = request.GET.get('hasta')
+        try:
+            desde = date.fromisoformat(desde_raw) if desde_raw else timezone.localdate().replace(day=1)
+            hasta = date.fromisoformat(hasta_raw) if hasta_raw else timezone.localdate()
+        except ValueError:
+            return _auth_response({'ok': False, 'message': 'Las fechas no son validas.'}, status=400)
+        if desde > hasta:
+            return _auth_response({'ok': False, 'message': '"Desde" no puede ser posterior a "Hasta".'}, status=400)
+
+        transferencias_qs = VGTransferenciaCuenta.objects.filter(fecha__gte=desde, fecha__lte=hasta)
+
+        id_raw = request.GET.get('id')
+        if id_raw not in (None, ''):
+            try:
+                transferencias_qs = transferencias_qs.filter(pk=int(id_raw))
+            except ValueError:
+                return _auth_response({'ok': False, 'message': 'El ID no es valido.'}, status=400)
+
+        cuenta_id_raw = request.GET.get('cuenta_id')
+        if cuenta_id_raw not in (None, ''):
+            try:
+                cuenta_id = int(cuenta_id_raw)
+            except ValueError:
+                return _auth_response({'ok': False, 'message': 'La cuenta no es valida.'}, status=400)
+            transferencias_qs = transferencias_qs.filter(
+                Q(cuenta_origen_id=cuenta_id) | Q(cuenta_destino_id=cuenta_id)
+            )
+
+        transferencias = list(
+            transferencias_qs.select_related('cuenta_origen', 'cuenta_destino').order_by('-fecha', '-id')
+        )
+
+        return _auth_response({
+            'ok': True,
+            'desde': desde.isoformat(),
+            'hasta': hasta.isoformat(),
+            'transferencias': [_serialize_transferencia(transferencia) for transferencia in transferencias],
+            'total_transferencias': len(transferencias),
+            'total_usd': str(sum((transferencia.monto_usd for transferencia in transferencias), Decimal('0'))),
+        })
+
+    try:
+        data = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        return _auth_response({'ok': False, 'message': 'Formato JSON invalido.'}, status=400)
+
+    try:
+        fecha = date.fromisoformat(str(data.get('fecha')))
+    except (TypeError, ValueError):
+        return _auth_response({'ok': False, 'message': 'La fecha es invalida.'}, status=400)
+
+    try:
+        cuenta_origen = VGMetodoPago.objects.get(pk=int(data.get('cuenta_origen_id')), activo=True)
+    except (TypeError, ValueError, VGMetodoPago.DoesNotExist):
+        return _auth_response({'ok': False, 'message': 'La cuenta origen no existe o esta inactiva.'}, status=400)
+
+    try:
+        cuenta_destino = VGMetodoPago.objects.get(pk=int(data.get('cuenta_destino_id')), activo=True)
+    except (TypeError, ValueError, VGMetodoPago.DoesNotExist):
+        return _auth_response({'ok': False, 'message': 'La cuenta destino no existe o esta inactiva.'}, status=400)
+
+    if cuenta_origen.id == cuenta_destino.id:
+        return _auth_response({'ok': False, 'message': 'La cuenta origen y la cuenta destino no pueden ser la misma.'}, status=400)
+
+    try:
+        monto_origen = Decimal(str(data.get('monto_origen', '')))
+    except InvalidOperation:
+        return _auth_response({'ok': False, 'message': 'El monto a debitar no es valido.'}, status=400)
+    if monto_origen <= 0:
+        return _auth_response({'ok': False, 'message': 'El monto a debitar debe ser mayor a cero.'}, status=400)
+
+    concepto = str(data.get('concepto', '') or '').strip()
+    if not concepto:
+        return _auth_response({'ok': False, 'message': 'El concepto/motivo es obligatorio.'}, status=400)
+    referencia = str(data.get('referencia', '') or '').strip()
+
+    # NO se usa la tasa BCV automatica en ningun punto de esta vista: cuando
+    # las monedas cruzan, la tasa es la que el usuario acuerda a mano con su
+    # banco (ver docstring de VGTransferenciaCuenta) para poder cuadrar
+    # centimo a centimo, aunque no coincida con la tasa oficial del dia.
+    misma_moneda = cuenta_origen.moneda == cuenta_destino.moneda
+    tasa_cambio = None
+    monto_destino_raw = data.get('monto_destino')
+
+    if misma_moneda:
+        if monto_destino_raw in (None, ''):
+            monto_destino = monto_origen
+        else:
+            try:
+                monto_destino = Decimal(str(monto_destino_raw))
+            except InvalidOperation:
+                return _auth_response({'ok': False, 'message': 'El monto a recibir no es valido.'}, status=400)
+        if monto_destino != monto_origen:
+            return _auth_response({
+                'ok': False,
+                'message': 'Entre cuentas de la misma moneda, el monto a debitar y el monto a recibir deben ser iguales.',
+            }, status=400)
+    else:
+        try:
+            tasa_cambio = Decimal(str(data.get('tasa_cambio', '')))
+        except InvalidOperation:
+            return _auth_response({
+                'ok': False,
+                'message': 'La tasa acordada es obligatoria entre cuentas de distinta moneda.',
+            }, status=400)
+        if tasa_cambio <= 0:
+            return _auth_response({'ok': False, 'message': 'La tasa acordada debe ser mayor a cero.'}, status=400)
+
+        if monto_destino_raw in (None, ''):
+            return _auth_response({'ok': False, 'message': 'El monto a recibir es obligatorio.'}, status=400)
+        try:
+            monto_destino = Decimal(str(monto_destino_raw))
+        except InvalidOperation:
+            return _auth_response({'ok': False, 'message': 'El monto a recibir no es valido.'}, status=400)
+
+    if monto_destino <= 0:
+        return _auth_response({'ok': False, 'message': 'El monto a recibir debe ser mayor a cero.'}, status=400)
+
+    # Normaliza a dolares para el balance general (VGTransferenciaCuenta.monto_usd,
+    # ver disponibilidad_por_cuenta) — usa el lado que ya esta en USD; si los
+    # dos lados fueran VES (no deberia pasar, el sistema solo maneja USD/VES
+    # en pares distintos) se deriva con la tasa acordada.
+    if cuenta_origen.moneda == 'USD':
+        monto_usd = monto_origen
+    elif cuenta_destino.moneda == 'USD':
+        monto_usd = monto_destino
+    elif tasa_cambio:
+        monto_usd = (monto_origen / tasa_cambio).quantize(Decimal('0.01'))
+    else:
+        return _auth_response({'ok': False, 'message': 'No se pudo calcular el equivalente en dolares de esta transferencia.'}, status=400)
+
+    with transaction.atomic():
+        cuentas, _bancos = disponibilidad_por_cuenta(fecha)
+        cuenta_origen_saldo = next((cuenta for cuenta in cuentas if cuenta['id'] == cuenta_origen.id), None)
+        if cuenta_origen_saldo is None:
+            return _auth_response({'ok': False, 'message': 'La cuenta origen no existe.'}, status=400)
+
+        if cuenta_origen.moneda == 'VES':
+            saldo_disponible_origen = cuenta_origen_saldo['saldo_disponible_bs'] or Decimal('0')
+        else:
+            saldo_disponible_origen = cuenta_origen_saldo['saldo_disponible']
+
+        if monto_origen > saldo_disponible_origen:
+            return _auth_response({
+                'ok': False,
+                'message': f'La cuenta origen no tiene saldo disponible suficiente (disponible: {saldo_disponible_origen}).',
+            }, status=400)
+
+        transferencia = VGTransferenciaCuenta.objects.create(
+            fecha=fecha,
+            cuenta_origen=cuenta_origen,
+            cuenta_destino=cuenta_destino,
+            moneda_origen=cuenta_origen.moneda,
+            moneda_destino=cuenta_destino.moneda,
+            monto_origen=monto_origen,
+            monto_destino=monto_destino,
+            tasa_cambio=tasa_cambio,
+            monto_usd=monto_usd,
+            referencia=referencia,
+            concepto=concepto,
+            creado_por=request.user,
+            actualizado_por=request.user,
+        )
+
+    return _auth_response({
+        'ok': True,
+        'message': 'Transferencia registrada correctamente.',
+        'transferencia': _serialize_transferencia(transferencia),
+    }, status=201)
 
 
 def _serialize_conciliacion(conciliacion):
@@ -1327,14 +1544,18 @@ def reporte_estado_resultados_view(request):
 
 def reporte_movimiento_productos_view(request):
     """
-    Cuantas unidades (o kg, para productos por peso) de cada producto se
-    vendieron en un rango de fechas, agrupado por producto y por categoria.
-    A diferencia de reporte_margen_ganancia_view, no calcula costo ni
-    ganancia — solo el volumen de movimiento, para responder "cuanto se
-    movio cada plato" sin entrar en plata. Solo incluye pedidos pagados
-    (mismo criterio de "venta real" que el resto de los reportes de
-    contabilidad) y solo productos con al menos una venta en el rango: los
-    que no tuvieron movimiento simplemente no aparecen en la lista.
+    Detalle de cada venta individual (una fila por VGDetallePedido) de un
+    rango de fechas, agrupado por producto — a proposito NO es un resumen
+    agregado ("Tequeños: 5 unidades"): cada vez que se vendio un producto es
+    su propia fila, en orden cronologico, con el pedido y la nota de entrega
+    de origen para poder rastrearla. Solo se agrega UN total por seccion al
+    cierre (unidades o kg segun venta_por_peso).
+
+    Solo incluye pedidos pagados (mismo criterio de "venta real" que el
+    resto de los reportes de contabilidad) y solo productos con al menos
+    una venta en el rango. El rango por defecto es el DIA DE HOY (no "este
+    mes"): un reporte con filas individuales puede crecer mucho rapido si el
+    rango por defecto fuera amplio.
     """
     if request.method != 'GET':
         return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
@@ -1352,6 +1573,12 @@ def reporte_movimiento_productos_view(request):
     if desde > hasta:
         return _auth_response({'ok': False, 'message': '"Desde" no puede ser posterior a "Hasta".'}, status=400)
 
+    # select_related trae producto/categoria/pedido en el mismo JOIN;
+    # prefetch_related trae TODAS las notas de entrega de TODOS los pedidos
+    # involucrados en una sola consulta aparte (por el IN de sus ids) — sin
+    # esto, pedir detalle.pedido.notas_entrega.all() por cada fila dispararia
+    # una consulta nueva por fila (N+1), inaceptable para un reporte que
+    # puede traer cientos de filas individuales.
     detalles = (
         VGDetallePedido.objects
         .filter(
@@ -1359,83 +1586,77 @@ def reporte_movimiento_productos_view(request):
             pedido__fecha_creacion__date__gte=desde,
             pedido__fecha_creacion__date__lte=hasta,
         )
-        .select_related('producto__categoria')
+        .select_related('producto__categoria', 'pedido')
+        .prefetch_related('pedido__notas_entrega')
+        .order_by('pedido__fecha_creacion')
     )
 
-    filas_por_producto = {}
+    grupos_por_producto = {}
     for detalle in detalles:
         producto = detalle.producto
-        peso_factor = (detalle.peso_gramos / Decimal('1000')) if detalle.peso_gramos else Decimal('1')
-        cantidad_equivalente = Decimal(detalle.cantidad) * peso_factor
-
-        fila = filas_por_producto.setdefault(producto.id, {
+        grupo = grupos_por_producto.setdefault(producto.id, {
             'producto_id': producto.id,
             'nombre': producto.nombre,
-            'categoria_id': producto.categoria_id,
-            'categoria': producto.categoria.nombre if producto.categoria_id else 'Sin categoria',
+            'categoria': producto.categoria.nombre if producto.categoria_id else 'Sin categoría',
             'venta_por_peso': producto.venta_por_peso,
-            'cantidad_vendida': Decimal('0'),
-            'pedidos': set(),
+            'filas': [],
+            'total_cantidad': Decimal('0'),
         })
-        fila['cantidad_vendida'] += cantidad_equivalente
-        fila['pedidos'].add(detalle.pedido_id)
+
+        nota = next(
+            (n for n in sorted(detalle.pedido.notas_entrega.all(), key=lambda n: n.fecha_emision, reverse=True)
+             if n.estado != 'anulada'),
+            None,
+        )
+
+        if producto.venta_por_peso:
+            grupo['total_cantidad'] += (detalle.peso_gramos or Decimal('0')) / Decimal('1000')
+        else:
+            grupo['total_cantidad'] += Decimal(detalle.cantidad)
+
+        grupo['filas'].append({
+            'detalle_id': detalle.id,
+            'pedido_id': detalle.pedido_id,
+            'fecha_hora': detalle.pedido.fecha_creacion.isoformat(),
+            'cantidad': str(detalle.cantidad),
+            'peso_gramos': str(detalle.peso_gramos) if detalle.peso_gramos is not None else None,
+            'nota_entrega_codigo': nota.codigo if nota else None,
+        })
 
     productos = []
+    total_lineas = 0
     total_unidades = Decimal('0')
     total_kg = Decimal('0')
-    categorias_totales = {}
-    for fila in filas_por_producto.values():
-        if fila['venta_por_peso']:
-            total_kg += fila['cantidad_vendida']
+    for grupo in grupos_por_producto.values():
+        total_lineas += len(grupo['filas'])
+        if grupo['venta_por_peso']:
+            total_kg += grupo['total_cantidad']
         else:
-            total_unidades += fila['cantidad_vendida']
+            total_unidades += grupo['total_cantidad']
 
         productos.append({
-            'producto_id': fila['producto_id'],
-            'nombre': fila['nombre'],
-            'categoria_id': fila['categoria_id'],
-            'categoria': fila['categoria'],
-            'unidad': 'kg' if fila['venta_por_peso'] else 'unidad',
-            'cantidad_vendida': str(fila['cantidad_vendida'].quantize(Decimal('0.01'))),
-            'num_ventas': len(fila['pedidos']),
+            'producto_id': grupo['producto_id'],
+            'nombre': grupo['nombre'],
+            'categoria': grupo['categoria'],
+            'unidad': 'kg' if grupo['venta_por_peso'] else 'unidad',
+            'total_cantidad': str(grupo['total_cantidad'].quantize(Decimal('0.01'))),
+            'num_ventas': len(grupo['filas']),
+            'filas': grupo['filas'],
         })
 
-        entry = categorias_totales.setdefault(fila['categoria_id'], {
-            'categoria_id': fila['categoria_id'],
-            'categoria': fila['categoria'],
-            'cantidad_unidades': Decimal('0'),
-            'cantidad_kg': Decimal('0'),
-            'productos_distintos': 0,
-        })
-        if fila['venta_por_peso']:
-            entry['cantidad_kg'] += fila['cantidad_vendida']
-        else:
-            entry['cantidad_unidades'] += fila['cantidad_vendida']
-        entry['productos_distintos'] += 1
-
-    productos.sort(key=lambda item: Decimal(item['cantidad_vendida']), reverse=True)
-
-    categorias = sorted(
-        [
-            {
-                'categoria_id': entry['categoria_id'],
-                'categoria': entry['categoria'],
-                'cantidad_unidades': str(entry['cantidad_unidades'].quantize(Decimal('0.01'))),
-                'cantidad_kg': str(entry['cantidad_kg'].quantize(Decimal('0.01'))),
-                'productos_distintos': entry['productos_distintos'],
-            }
-            for entry in categorias_totales.values()
-        ],
-        key=lambda item: (Decimal(item['cantidad_unidades']) + Decimal(item['cantidad_kg'])), reverse=True,
-    )
+    # De mayor a menor movimiento — para eso se necesita comparar todo en la
+    # misma unidad; como cada producto ya es 100% unidades O 100% kg (nunca
+    # mezclado), alcanza con el total crudo de cada uno para el orden relativo
+    # dentro de su propio tipo, aunque compare kg contra unidades entre sí.
+    productos.sort(key=lambda item: Decimal(item['total_cantidad']), reverse=True)
 
     return _auth_response({
         'ok': True,
         'desde': desde.isoformat(),
         'hasta': hasta.isoformat(),
         'productos': productos,
-        'categorias': categorias,
         'total_productos_distintos': len(productos),
+        'total_lineas': total_lineas,
         'total_unidades_vendidas': str(total_unidades.quantize(Decimal('0.01'))),
         'total_kg_vendidos': str(total_kg.quantize(Decimal('0.01'))),
     })

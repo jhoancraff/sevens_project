@@ -143,6 +143,55 @@ class VGCorreccionMetodoPago(VGAuditoria):
         return f"{self.get_tipo_display()} #{self.registro_id}: {self.metodo_anterior} → {self.metodo_nuevo}"
 
 
+class VGTransferenciaCuenta(VGAuditoria):
+    """
+    Movimiento real de dinero entre dos cuentas/métodos de pago propios (ej.
+    de la caja física en bolívares hacia una cuenta bancaria en dólares) —
+    distinto de VGCorreccionMetodoPago, que solo reclasifica a qué cuenta
+    quedó atado un cobro/ingreso ya existente sin mover dinero de verdad.
+
+    monto_origen/monto_destino quedan cada uno en la moneda de su propia
+    cuenta (nunca se asume conversión automática): si origen y destino
+    comparten moneda, deben ser iguales; si no, el usuario escribe ambos a
+    mano (o monto_destino se deriva de `tasa_cambio`, ver
+    contabilidad_views.transferencias_cuentas_view) para que cuadre céntimo a
+    céntimo con lo que de verdad cayó en el banco, sin depender de la tasa
+    BCV automática.
+
+    monto_usd es el equivalente ya normalizado a dólares (igual a
+    monto_origen si la cuenta origen es USD, o monto_origen/tasa_cambio si es
+    VES) — se guarda aparte para no tener que rehacer esa cuenta cada vez que
+    disponibilidad_por_cuenta (reportes.py) arma el saldo general en dólares.
+    """
+    fecha = models.DateField(help_text="Fecha contable del movimiento (igual que el resto de reportes).")
+    cuenta_origen = models.ForeignKey(
+        VGMetodoPago, on_delete=models.PROTECT, related_name="transferencias_salientes",
+    )
+    cuenta_destino = models.ForeignKey(
+        VGMetodoPago, on_delete=models.PROTECT, related_name="transferencias_entrantes",
+    )
+    moneda_origen = models.CharField(max_length=3, choices=VGMetodoPago.MONEDAS)
+    moneda_destino = models.CharField(max_length=3, choices=VGMetodoPago.MONEDAS)
+    monto_origen = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
+    monto_destino = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
+    tasa_cambio = models.DecimalField(
+        max_digits=12, decimal_places=4, null=True, blank=True,
+        help_text="Tasa acordada a mano por el usuario para el cruce de monedas — nunca la BCV automática.",
+    )
+    monto_usd = models.DecimalField(max_digits=14, decimal_places=2)
+    referencia = models.CharField(max_length=100, blank=True, default='')
+    concepto = models.CharField(max_length=255)
+
+    class Meta:
+        db_table = "vg_transferencias_cuentas"
+        ordering = ["-fecha", "-id"]
+        verbose_name = "Transferencia entre cuentas"
+        verbose_name_plural = "Transferencias entre cuentas"
+
+    def __str__(self):
+        return f"Transferencia #{self.pk}: {self.cuenta_origen} → {self.cuenta_destino} ({self.fecha})"
+
+
 # ---------------------------------------------------------------------------
 # Cuadre de caja diario
 # ---------------------------------------------------------------------------
