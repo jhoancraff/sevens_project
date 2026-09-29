@@ -6,6 +6,7 @@ from .models import (
     VGIngrediente, VGPreparacion, VGRecetaPreparacion, VGRecetaProducto,
     VGCompra, VGDetalleCompra, VGMovimientoInventario, VGPedido, VGDetallePedido, VGPago, VGPromocion, VGRecomendacionChef,
     VGAjusteInventario, VGDetalleAjusteInventario, VGCierreInventario,
+    VGTransferenciaCuenta,
 )
 
 
@@ -124,3 +125,10 @@ class VGAjusteInventarioPanel(admin.ModelAdmin):
 class VGCierreInventarioPanel(admin.ModelAdmin):
     list_display = ("anio", "mes", "fecha_cierre")
     list_filter = ("anio", "mes")
+
+
+@admin.register(VGTransferenciaCuenta)
+class VGTransferenciaCuentaPanel(admin.ModelAdmin):
+    list_display = ("id", "fecha", "cuenta_origen", "cuenta_destino", "monto_origen", "monto_destino", "monto_usd")
+    list_filter = ("moneda_origen", "moneda_destino", "cuenta_origen", "cuenta_destino")
+    search_fields = ("concepto", "referencia")

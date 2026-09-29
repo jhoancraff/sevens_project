@@ -40,6 +40,13 @@ function formatMonto(value) {
   return number.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function formatFechaHora(iso) {
+  const fecha = new Date(iso);
+  const fechaTexto = fecha.toLocaleDateString('es-VE', { day: 'numeric', month: 'numeric' });
+  const horaTexto = fecha.toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit' });
+  return `${fechaTexto}, ${horaTexto}`;
+}
+
 const PRESETS = [
   { label: 'Hoy', get: () => ({ desde: todayIso(), hasta: todayIso() }) },
   { label: 'Ayer', get: () => ({ desde: yesterdayIso(), hasta: yesterdayIso() }) },
@@ -48,17 +55,15 @@ const PRESETS = [
   { label: 'Este año', get: () => ({ desde: startOfYearIso(), hasta: todayIso() }) },
 ];
 
-const CATEGORIA_TODAS = '__todas__';
-const CATEGORIA_SIN = '__sin__';
-
 function AnalystMovimientoProductosPage({ isMobile, onBack }) {
-  const [desde, setDesde] = useState(startOfMonthIso());
+  const [desde, setDesde] = useState(todayIso());
   const [hasta, setHasta] = useState(todayIso());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [categoriaFiltro, setCategoriaFiltro] = useState(CATEGORIA_TODAS);
   const [busqueda, setBusqueda] = useState('');
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [productoSeleccionadoId, setProductoSeleccionadoId] = useState(null);
 
   const loadReport = useCallback(async (desdeConsultado, hastaConsultado) => {
     setLoading(true);
@@ -86,8 +91,8 @@ function AnalystMovimientoProductosPage({ isMobile, onBack }) {
   }, [desde, hasta, loadReport]);
 
   useEffect(() => {
-    setCategoriaFiltro(CATEGORIA_TODAS);
     setBusqueda('');
+    setProductoSeleccionadoId(null);
   }, [desde, hasta]);
 
   const applyPreset = (preset) => {
@@ -96,33 +101,35 @@ function AnalystMovimientoProductosPage({ isMobile, onBack }) {
     setHasta(range.hasta);
   };
 
-  const productos = data?.productos || [];
-  const categorias = data?.categorias || [];
+  const productos = useMemo(() => data?.productos || [], [data]);
 
-  const productosFiltrados = useMemo(() => {
-    const query = busqueda.trim().toLowerCase();
-    return productos.filter((producto) => {
-      if (categoriaFiltro === CATEGORIA_SIN) {
-        if (producto.categoria_id) return false;
-      } else if (categoriaFiltro !== CATEGORIA_TODAS) {
-        if (String(producto.categoria_id) !== categoriaFiltro) return false;
-      }
-      if (query && !producto.nombre.toLowerCase().includes(query)) return false;
-      return true;
-    });
-  }, [productos, categoriaFiltro, busqueda]);
+  const busquedaQuery = busqueda.trim().toLowerCase();
+  const coincidencias = useMemo(() => {
+    if (!busquedaQuery) return [];
+    return productos.filter((producto) => producto.nombre.toLowerCase().includes(busquedaQuery)).slice(0, 5);
+  }, [productos, busquedaQuery]);
 
-  const totalesFiltrados = useMemo(() => {
-    let unidades = 0;
-    let kg = 0;
-    let ventas = 0;
-    productosFiltrados.forEach((producto) => {
-      if (producto.unidad === 'kg') kg += Number(producto.cantidad_vendida || 0);
-      else unidades += Number(producto.cantidad_vendida || 0);
-      ventas += Number(producto.num_ventas || 0);
-    });
-    return { unidades, kg, ventas };
-  }, [productosFiltrados]);
+  const handleBusquedaChange = (value) => {
+    // Escribir SIEMPRE invalida una seleccion anterior — el filtro solo se
+    // vuelve a aplicar cuando el usuario elige otra coincidencia de la lista.
+    setBusqueda(value);
+    setProductoSeleccionadoId(null);
+  };
+
+  const handleSeleccionarProducto = (producto) => {
+    setBusqueda(producto.nombre);
+    setProductoSeleccionadoId(producto.producto_id);
+    setIsSearchFocused(false);
+  };
+
+  const handleQuitarFiltro = () => {
+    setBusqueda('');
+    setProductoSeleccionadoId(null);
+  };
+
+  const productosVisibles = productoSeleccionadoId
+    ? productos.filter((producto) => producto.producto_id === productoSeleccionadoId)
+    : productos;
 
   return (
     <section style={containerStyle(isMobile)}>
@@ -166,71 +173,74 @@ function AnalystMovimientoProductosPage({ isMobile, onBack }) {
             {desde === hasta ? `Movimiento del ${desde}` : `Movimiento del ${desde} al ${hasta}`}
           </div>
 
-          {categorias.length > 0 ? (
-            <div className="no-print" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              <button
-                type="button"
-                onClick={() => setCategoriaFiltro(CATEGORIA_TODAS)}
-                style={chipButtonStyle(categoriaFiltro === CATEGORIA_TODAS)}
-              >
-                Todas las categorías
+          <div className="no-print" style={{ ...fieldStyle, position: 'relative', maxWidth: 420 }}>
+            <input
+              type="text"
+              value={busqueda}
+              onChange={(event) => handleBusquedaChange(event.target.value)}
+              onFocus={() => setIsSearchFocused(true)}
+              onBlur={() => setTimeout(() => setIsSearchFocused(false), 150)}
+              placeholder="Buscar producto por nombre..."
+              style={searchInputStyle}
+              autoComplete="off"
+            />
+            {isSearchFocused && busquedaQuery && coincidencias.length > 0 ? (
+              <div style={suggestionsPanelStyle}>
+                {coincidencias.map((producto) => (
+                  <button
+                    key={producto.producto_id}
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => handleSeleccionarProducto(producto)}
+                    style={suggestionRowStyle}
+                  >
+                    <span style={{ color: '#fff', fontWeight: 600 }}>{producto.nombre}</span>
+                    <span style={{ color: '#e8bcbc', fontSize: 12 }}>{producto.categoria}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {productoSeleccionadoId ? (
+              <button type="button" onClick={handleQuitarFiltro} style={quitarFiltroButtonStyle}>
+                ✕ Quitar filtro
               </button>
-              {categorias.map((categoria) => (
-                <button
-                  key={categoria.categoria_id ?? 'sin-categoria'}
-                  type="button"
-                  onClick={() => setCategoriaFiltro(categoria.categoria_id ? String(categoria.categoria_id) : CATEGORIA_SIN)}
-                  style={chipButtonStyle(categoriaFiltro === (categoria.categoria_id ? String(categoria.categoria_id) : CATEGORIA_SIN))}
-                >
-                  {categoria.categoria}
-                  {Number(categoria.cantidad_unidades) > 0 ? ` · ${formatMonto(categoria.cantidad_unidades)} u.` : ''}
-                  {Number(categoria.cantidad_kg) > 0 ? ` · ${formatMonto(categoria.cantidad_kg)} kg` : ''}
-                </button>
-              ))}
-            </div>
-          ) : null}
+            ) : null}
+          </div>
 
-          <input
-            type="text"
-            value={busqueda}
-            onChange={(event) => setBusqueda(event.target.value)}
-            placeholder="Buscar producto por nombre..."
-            style={searchInputStyle}
-          />
-
-          {productosFiltrados.length === 0 ? (
+          {productosVisibles.length === 0 ? (
             <div style={emptyStyle}>No hay productos con movimiento para este filtro.</div>
           ) : (
-            <div style={tableWrapStyle}>
-              <div style={tableStyle}>
-                <div style={headStyle}>Producto</div>
-                <div style={headStyle}>Categoría</div>
-                <div style={headStyle}>Cant. vendida</div>
-                <div style={headStyle}>Pedidos</div>
-                {productosFiltrados.map((producto) => (
-                  <div key={producto.producto_id} style={rowFragmentStyle}>
-                    <div style={cellStyle}>{producto.nombre}</div>
-                    <div style={cellStyle}>{producto.categoria}</div>
-                    <div style={{ ...cellStyle, fontWeight: 700, color: '#8fffb0' }}>
-                      {formatMonto(producto.cantidad_vendida)} {producto.unidad === 'kg' ? 'kg' : 'u.'}
-                    </div>
-                    <div style={cellStyle}>{producto.num_ventas}</div>
+            <div style={seccionesWrapStyle}>
+              {productosVisibles.map((producto) => (
+                <article key={producto.producto_id} style={seccionCardStyle}>
+                  <div style={seccionHeaderStyle}>
+                    <span style={seccionNombreStyle}>{producto.nombre}</span>
+                    <span style={seccionCategoriaStyle}>— {producto.categoria}</span>
                   </div>
-                ))}
-                <div style={{ ...cellStyle, fontWeight: 800 }}>Total</div>
-                <div style={cellStyle} />
-                <div style={{ ...cellStyle, fontWeight: 800, color: '#8fffb0' }}>
-                  {totalesFiltrados.unidades > 0 ? `${formatMonto(totalesFiltrados.unidades)} u.` : ''}
-                  {totalesFiltrados.unidades > 0 && totalesFiltrados.kg > 0 ? ' + ' : ''}
-                  {totalesFiltrados.kg > 0 ? `${formatMonto(totalesFiltrados.kg)} kg` : ''}
-                </div>
-                <div style={{ ...cellStyle, fontWeight: 800 }}>{formatMonto(totalesFiltrados.ventas)}</div>
-              </div>
+                  <div style={tableWrapStyle}>
+                    <div style={tableStyle}>
+                      <div style={headStyle}>Cantidad</div>
+                      <div style={headStyle}>Fecha/hora</div>
+                      <div style={headStyle}>Pedido</div>
+                      <div style={headStyle}>Nota de entrega</div>
+                      {producto.filas.map((fila) => (
+                        <FilaVenta key={fila.detalle_id} fila={fila} unidad={producto.unidad} />
+                      ))}
+                      <div style={totalCellPrimaryStyle}>
+                        {formatMonto(producto.total_cantidad)} {producto.unidad === 'kg' ? 'kg' : 'u.'}
+                      </div>
+                      <div style={totalCellStyle}>Total: {producto.num_ventas} línea{producto.num_ventas === 1 ? '' : 's'}</div>
+                      <div style={totalCellStyle} />
+                      <div style={totalCellStyle} />
+                    </div>
+                  </div>
+                </article>
+              ))}
             </div>
           )}
 
           <div style={summaryStyle}>
-            {data.total_productos_distintos} producto(s) con movimiento en el período completo
+            {data.total_productos_distintos} producto(s) con movimiento · {data.total_lineas} venta(s) en total
             {Number(data.total_unidades_vendidas) > 0 ? ` · ${formatMonto(data.total_unidades_vendidas)} unidades vendidas` : ''}
             {Number(data.total_kg_vendidos) > 0 ? ` · ${formatMonto(data.total_kg_vendidos)} kg vendidos` : ''}
           </div>
@@ -240,9 +250,23 @@ function AnalystMovimientoProductosPage({ isMobile, onBack }) {
   );
 }
 
+function FilaVenta({ fila, unidad }) {
+  const cantidadTexto = unidad === 'kg'
+    ? `${formatMonto(fila.peso_gramos)} g`
+    : `${fila.cantidad} u.`;
+
+  return (
+    <>
+      <div style={cellStyle}>{cantidadTexto}</div>
+      <div style={cellStyle}>{formatFechaHora(fila.fecha_hora)}</div>
+      <div style={cellStyle}>#{fila.pedido_id}</div>
+      <div style={cellStyle}>{fila.nota_entrega_codigo || '—'}</div>
+    </>
+  );
+}
+
 const containerStyle = (isMobile) => ({ display: 'grid', gap: 16, padding: isMobile ? 6 : 10 });
 const titleStyle = (isMobile) => ({ margin: 0, color: '#fff', fontSize: isMobile ? 28 : 34 });
-const subtitleStyle = { margin: '8px 0 0', color: '#d2c3c3', maxWidth: 640, lineHeight: 1.6 };
 const filtersRowStyle = (isMobile) => ({
   display: 'flex',
   gap: 14,
@@ -257,25 +281,28 @@ const presetButtonStyle = { border: '1px solid rgba(255,255,255,0.16)', borderRa
 const panelStyle = { display: 'grid', gap: 14, padding: 18, borderRadius: 20, border: '1px solid rgba(255,255,255,0.1)', background: 'linear-gradient(180deg, rgba(20,10,10,0.95) 0%, rgba(8,8,8,0.98) 100%)' };
 const sectionTitleStyle = { color: '#fff', fontSize: 19, fontWeight: 700 };
 const emptyStyle = { minHeight: 80, display: 'grid', placeItems: 'center', borderRadius: 14, border: '1px dashed rgba(255,255,255,0.12)', color: '#c8bbbb' };
-const tableWrapStyle = { overflowX: 'auto' };
-const tableStyle = { display: 'grid', gridTemplateColumns: 'minmax(220px,1.8fr) minmax(140px,1fr) minmax(140px,0.9fr) minmax(100px,0.6fr)', minWidth: 720, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, overflow: 'hidden' };
-const headStyle = { padding: '12px 14px', background: 'rgba(255,255,255,0.06)', color: '#ffb0b0', fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 800 };
-const cellStyle = { padding: '14px', borderTop: '1px solid rgba(255,255,255,0.08)', color: '#f2e6e6', display: 'grid', alignContent: 'center' };
-const rowFragmentStyle = { display: 'contents' };
 const noticeStyle = { padding: '12px 14px', borderRadius: 12, border: '1px solid rgba(255,145,145,0.22)', background: 'rgba(255,98,98,0.12)', color: '#ffd8d8' };
 const printButtonStyle = { border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '10px 16px', background: 'rgba(255,255,255,0.04)', color: '#fff', fontWeight: 700, cursor: 'pointer' };
 const backButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', border: 'none', borderRadius: 999, padding: '11px 18px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(37, 99, 235, 0.35)' };
-const searchInputStyle = { borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: '#161010', padding: '10px 12px', color: '#fff', fontSize: 14 };
 const summaryStyle = { color: '#c8bbbb', fontSize: 13 };
-const chipButtonStyle = (active) => ({
-  border: active ? '1px solid rgba(143,255,176,0.5)' : '1px solid rgba(255,255,255,0.16)',
-  borderRadius: 999,
-  padding: '8px 14px',
-  background: active ? 'rgba(70, 200, 120, 0.16)' : 'rgba(255,255,255,0.05)',
-  color: active ? '#8fffb0' : '#fff',
-  fontSize: 12.5,
-  fontWeight: 700,
-  cursor: 'pointer',
-});
+
+const fieldStyle = { display: 'grid', gap: 6 };
+const searchInputStyle = { width: '100%', boxSizing: 'border-box', borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: '#161010', padding: '10px 12px', color: '#fff', fontSize: 14 };
+const suggestionsPanelStyle = { position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 6, zIndex: 5, borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(10, 8, 8, 0.98)', boxShadow: '0 12px 30px rgba(0,0,0,0.4)', padding: 8, display: 'grid', gap: 4, maxHeight: 260, overflowY: 'auto' };
+const suggestionRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '8px 10px', background: 'rgba(255,255,255,0.04)', cursor: 'pointer', textAlign: 'left' };
+const quitarFiltroButtonStyle = { marginTop: 8, border: '1px solid rgba(255,126,126,0.4)', borderRadius: 999, padding: '6px 14px', background: 'rgba(145,33,33,0.25)', color: '#ffd3d3', fontWeight: 700, cursor: 'pointer', fontSize: 12.5, width: 'fit-content' };
+
+const seccionesWrapStyle = { display: 'grid', gap: 18 };
+const seccionCardStyle = { display: 'grid', gap: 10, padding: 14, borderRadius: 16, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)' };
+const seccionHeaderStyle = { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' };
+const seccionNombreStyle = { color: '#ffb0b0', fontSize: 16, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.03em' };
+const seccionCategoriaStyle = { color: '#c8bbbb', fontSize: 13 };
+
+const tableWrapStyle = { overflowX: 'auto' };
+const tableStyle = { display: 'grid', gridTemplateColumns: 'minmax(100px,0.8fr) minmax(140px,1fr) minmax(80px,0.6fr) minmax(140px,1fr)', gap: '4px 12px', alignItems: 'center', minWidth: 560 };
+const headStyle = { color: '#f0b4b4', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', padding: '4px 2px', borderBottom: '1px solid rgba(255,255,255,0.1)' };
+const cellStyle = { color: '#f2e6e6', fontSize: 13, padding: '5px 2px', borderBottom: '1px solid rgba(255,255,255,0.05)' };
+const totalCellStyle = { color: '#8fffb0', fontSize: 13, fontWeight: 800, padding: '8px 2px', borderTop: '2px solid rgba(143,255,176,0.35)', background: 'rgba(70,200,120,0.06)' };
+const totalCellPrimaryStyle = { ...totalCellStyle };
 
 export default AnalystMovimientoProductosPage;

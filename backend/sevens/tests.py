@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 from decimal import Decimal
 
 from django.test import TestCase
@@ -24,8 +25,10 @@ from sevens.models import (
     VGGrupoOpcionProducto,
     VGGrupoOpcionRacionPorTamano,
     VGIngrediente,
+    VGIngresoExtra,
     VGMetodoPago,
     VGMovimientoInventario,
+    VGNotaEntrega,
     VGPedido,
     VGPreparacion,
     VGProducto,
@@ -33,6 +36,7 @@ from sevens.models import (
     VGRecetaProducto,
     VGRol,
     VGTasaCambio,
+    VGTransferenciaCuenta,
     VGUsuario,
 )
 from sevens.api_views import _importar_ingredientes, _load_preparation_cost_map, _preview_ingrediente_row
@@ -1853,3 +1857,421 @@ class AjusteInventarioTests(TestCase):
         response = self.client.post('/api/admin/inventario/ajuste/descartar/')
         self.assertEqual(response.status_code, 400)
         self.assertTrue(VGAjusteInventario.objects.exists())
+
+
+class TransferenciaCuentasTests(TestCase):
+    """
+    Cubre la transferencia manual de dinero entre cuentas propias
+    (VGTransferenciaCuenta) y su integracion en disponibilidad_por_cuenta
+    (reportes.py) via contabilidad_views.transferencias_cuentas_view. Los
+    saldos de apertura se siembran con VGIngresoExtra (mismo mecanismo que
+    usa disponibilidad_por_cuenta para sumar dinero real entrado por cada
+    cuenta).
+    """
+
+    def setUp(self):
+        self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='transferencias_admin', password='claveAdmin123', cedula='90000005',
+            email='transferencias_admin@sevens.test', id_role=self.admin_role,
+        )
+        self.client.force_login(self.admin)
+
+        self.zelle = VGMetodoPago.objects.create(nombre='Zelle Test', moneda='USD')
+        self.binance = VGMetodoPago.objects.create(nombre='Binance Test', moneda='USD')
+        self.banesco = VGMetodoPago.objects.create(nombre='Banesco Test', moneda='VES')
+
+        self.hoy = timezone.localdate()
+
+        # Saldo de apertura: 1000 USD en Zelle.
+        VGIngresoExtra.objects.create(
+            tipo='pago_extra', monto=Decimal('1000.00'), metodo_pago=self.zelle,
+        )
+        # Saldo de apertura en Banesco: 100 USD equivalentes, congelados a una
+        # tasa de 40 Bs/USD -> 4000 Bs reales en esa cuenta.
+        VGIngresoExtra.objects.create(
+            tipo='pago_extra', monto=Decimal('100.00'), metodo_pago=self.banesco,
+            tasa_cambio_referencia=Decimal('40.0000'),
+        )
+
+    def _disponibilidad(self):
+        response = self.client.get(f'/api/admin/reportes/disponibilidad-cuentas/?fecha={self.hoy.isoformat()}')
+        self.assertEqual(response.status_code, 200, response.content)
+        return {cuenta['id']: cuenta for cuenta in response.json()['cuentas']}
+
+    def _transferir(self, **overrides):
+        body = {
+            'fecha': self.hoy.isoformat(),
+            'cuenta_origen_id': self.zelle.id,
+            'cuenta_destino_id': self.binance.id,
+            'monto_origen': '200.00',
+            'concepto': 'Reorganizando fondos',
+        }
+        body.update(overrides)
+        return self.client.post(
+            '/api/admin/transferencias-cuentas/', data=json.dumps(body), content_type='application/json',
+        )
+
+    def test_transferencia_misma_moneda_mueve_el_saldo_exacto(self):
+        response = self._transferir()
+        self.assertEqual(response.status_code, 201, response.content)
+        payload = response.json()
+        self.assertEqual(payload['transferencia']['monto_usd'], '200.00')
+
+        saldos = self._disponibilidad()
+        self.assertEqual(Decimal(saldos[self.zelle.id]['saldo_disponible']), Decimal('800.00'))
+        self.assertEqual(Decimal(saldos[self.binance.id]['saldo_disponible']), Decimal('200.00'))
+        self.assertEqual(Decimal(saldos[self.zelle.id]['transferencias_salientes_acumuladas']), Decimal('200.00'))
+        self.assertEqual(Decimal(saldos[self.binance.id]['transferencias_entrantes_acumuladas']), Decimal('200.00'))
+
+    def test_transferencia_misma_moneda_rechaza_montos_distintos(self):
+        response = self._transferir(monto_destino='150.00')
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(VGTransferenciaCuenta.objects.exists())
+
+    def test_transferencia_cruzada_usa_tasa_manual_no_bcv(self):
+        # 800 Bs de Banesco -> Zelle, a una tasa ACORDADA de 40 (coincide con
+        # la tasa congelada del saldo inicial a proposito, para que el
+        # resultado en Bs sea facil de verificar), nunca la BCV automatica.
+        response = self._transferir(
+            cuenta_origen_id=self.banesco.id,
+            cuenta_destino_id=self.zelle.id,
+            monto_origen='800.00',
+            monto_destino='20.00',
+            tasa_cambio='40.0000',
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        payload = response.json()['transferencia']
+        self.assertEqual(payload['monto_usd'], '20.00')
+        self.assertEqual(payload['tasa_cambio'], '40.0000')
+
+        saldos = self._disponibilidad()
+        # Banesco: baja 800 Bs reales Y 20 USD del saldo normalizado general.
+        self.assertEqual(Decimal(saldos[self.banesco.id]['saldo_disponible_bs']), Decimal('3200.00'))
+        self.assertEqual(Decimal(saldos[self.banesco.id]['saldo_disponible']), Decimal('80.00'))
+        # Zelle: sube 20 USD (el lado ya en dolares no tiene saldo en Bs).
+        self.assertEqual(Decimal(saldos[self.zelle.id]['saldo_disponible']), Decimal('1020.00'))
+
+    def test_transferencia_cruzada_sin_tasa_se_rechaza(self):
+        response = self._transferir(
+            cuenta_origen_id=self.banesco.id,
+            cuenta_destino_id=self.zelle.id,
+            monto_origen='800.00',
+            monto_destino='20.00',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(VGTransferenciaCuenta.objects.exists())
+
+    def test_no_permite_transferir_a_la_misma_cuenta(self):
+        response = self._transferir(cuenta_destino_id=self.zelle.id)
+        self.assertEqual(response.status_code, 400)
+
+    def test_rechaza_si_no_hay_saldo_suficiente(self):
+        response = self._transferir(monto_origen='5000.00')
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(VGTransferenciaCuenta.objects.exists())
+
+    def test_concepto_es_obligatorio(self):
+        response = self._transferir(concepto='')
+        self.assertEqual(response.status_code, 400)
+
+    def test_get_sin_filtros_devuelve_el_mes_en_curso(self):
+        self._transferir()
+        response = self.client.get('/api/admin/transferencias-cuentas/')
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertEqual(len(payload['transferencias']), 1)
+        self.assertEqual(payload['transferencias'][0]['cuenta_origen_nombre'], 'Zelle Test')
+        self.assertEqual(payload['transferencias'][0]['cuenta_destino_nombre'], 'Binance Test')
+        self.assertEqual(payload['total_usd'], '200.00')
+
+    def test_get_filtra_por_rango_de_fechas(self):
+        self._transferir()
+        ayer = (self.hoy - timedelta(days=1)).isoformat()
+        anteayer = (self.hoy - timedelta(days=2)).isoformat()
+        response = self.client.get(f'/api/admin/transferencias-cuentas/?desde={anteayer}&hasta={ayer}')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['transferencias'], [])
+
+    def test_get_filtra_por_id(self):
+        self._transferir()
+        primera_id = VGTransferenciaCuenta.objects.get().id
+        self._transferir(concepto='Otra transferencia')
+
+        response = self.client.get(f'/api/admin/transferencias-cuentas/?id={primera_id}')
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertEqual(len(payload['transferencias']), 1)
+        self.assertEqual(payload['transferencias'][0]['id'], primera_id)
+
+    def test_get_filtra_por_cuenta_como_origen_o_destino(self):
+        self._transferir()  # Zelle Test -> Binance Test
+        self._transferir(
+            cuenta_origen_id=self.banesco.id, cuenta_destino_id=self.zelle.id,
+            monto_origen='400.00', monto_destino='10.00', tasa_cambio='40.0000',
+        )  # Banesco Test -> Zelle Test
+
+        response = self.client.get(f'/api/admin/transferencias-cuentas/?cuenta_id={self.binance.id}')
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertEqual(len(payload['transferencias']), 1)
+        self.assertEqual(payload['transferencias'][0]['cuenta_destino_nombre'], 'Binance Test')
+
+        # Zelle Test participa como origen en una y como destino en la otra —
+        # el filtro por cuenta debe encontrar las dos.
+        response_zelle = self.client.get(f'/api/admin/transferencias-cuentas/?cuenta_id={self.zelle.id}')
+        self.assertEqual(len(response_zelle.json()['transferencias']), 2)
+
+
+class ReporteMovimientoProductosTests(TestCase):
+    """
+    El reporte de movimiento de productos NO agrega ventas — cada linea de
+    pedido pagada es su propia fila en la seccion de su producto. Cobra los
+    pedidos a traves del endpoint real /api/pedidos/cobro/ (igual criterio
+    que PedidoCobroInventoryDeductionTests) para probar contra datos reales,
+    no solo contra un lookup aislado.
+    """
+
+    def setUp(self):
+        self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='movimiento_admin', password='claveAdmin123', cedula='90000006',
+            email='movimiento_admin@sevens.test', id_role=self.admin_role,
+        )
+        self.client.force_login(self.admin)
+        self.categoria_entradas = VGCategoriaProducto.objects.create(nombre='Entradas')
+        self.categoria_fuertes = VGCategoriaProducto.objects.create(nombre='Platos fuertes')
+        self.metodo_pago, _ = VGMetodoPago.objects.get_or_create(
+            nombre='Efectivo', defaults={'es_efectivo': True},
+        )
+        self.tequenos = VGProducto.objects.create(
+            nombre='Tequeños', categoria=self.categoria_entradas, precio_venta='4.00', disponible=True,
+        )
+        self.carne = VGProducto.objects.create(
+            nombre='Carne a la parrilla', categoria=self.categoria_fuertes, precio_venta='10.00',
+            disponible=True, venta_por_peso=True,
+        )
+        self.hoy = timezone.localdate()
+
+    def _crear_pedido_pagado(self, lineas, estado_inicial='entregado'):
+        """lineas: [(producto, cantidad, peso_gramos|None)] — cobra via el endpoint real de cobro."""
+        pedido = VGPedido.objects.create(
+            usuario=self.admin, tipo_pedido='local', estado=estado_inicial, subtotal='0', total='0',
+        )
+        for producto, cantidad, peso in lineas:
+            VGDetallePedido.objects.create(
+                pedido=pedido, producto=producto, cantidad=cantidad, precio_unitario='1.00',
+                peso_gramos=peso, estado='entregado',
+            )
+        response = self.client.post(
+            '/api/pedidos/cobro/',
+            data=json.dumps({'pedido_ids': [pedido.id], 'metodo_pago_id': self.metodo_pago.id}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        return pedido
+
+    def _reporte(self, desde=None, hasta=None):
+        query = {}
+        if desde:
+            query['desde'] = desde
+        if hasta:
+            query['hasta'] = hasta
+        response = self.client.get('/api/admin/reportes/movimiento-productos/', data=query)
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def test_producto_por_unidad_muestra_cada_venta_como_fila_separada(self):
+        for _ in range(5):
+            self._crear_pedido_pagado([(self.tequenos, 1, None)])
+
+        payload = self._reporte(self.hoy.isoformat(), self.hoy.isoformat())
+        grupo = next(p for p in payload['productos'] if p['producto_id'] == self.tequenos.id)
+        self.assertEqual(len(grupo['filas']), 5)
+        self.assertEqual(grupo['total_cantidad'], '5.00')
+        self.assertEqual(grupo['unidad'], 'unidad')
+        # Las filas van en orden cronologico (la mas vieja primero).
+        fechas = [fila['fecha_hora'] for fila in grupo['filas']]
+        self.assertEqual(fechas, sorted(fechas))
+
+    def test_producto_por_peso_muestra_el_peso_exacto_de_cada_venta_y_suma_correcto(self):
+        self._crear_pedido_pagado([(self.carne, 1, Decimal('250.00'))])
+        self._crear_pedido_pagado([(self.carne, 1, Decimal('500.00'))])
+
+        payload = self._reporte(self.hoy.isoformat(), self.hoy.isoformat())
+        grupo = next(p for p in payload['productos'] if p['producto_id'] == self.carne.id)
+        self.assertEqual(len(grupo['filas']), 2)
+        # Cada fila trae SU PROPIO peso exacto — nunca un promedio.
+        self.assertEqual({fila['peso_gramos'] for fila in grupo['filas']}, {'250.00', '500.00'})
+        self.assertEqual(grupo['unidad'], 'kg')
+        self.assertEqual(grupo['total_cantidad'], '0.75')
+
+    def test_fila_muestra_el_codigo_de_nota_de_entrega_o_guion_si_no_tiene(self):
+        pedido_con_nota = self._crear_pedido_pagado([(self.tequenos, 1, None)])
+        nota = VGNotaEntrega.objects.get(pedidos=pedido_con_nota)
+
+        # Un pedido pagado sin nota de entrega (dato historico/de borde) no
+        # debe romper el reporte — la fila debe traer None, no un error.
+        pedido_sin_nota = VGPedido.objects.create(
+            usuario=self.admin, tipo_pedido='local', estado='pagado', subtotal='4.00', total='4.00',
+        )
+        VGDetallePedido.objects.create(
+            pedido=pedido_sin_nota, producto=self.tequenos, cantidad=1, precio_unitario='4.00', estado='entregado',
+        )
+
+        payload = self._reporte(self.hoy.isoformat(), self.hoy.isoformat())
+        grupo = next(p for p in payload['productos'] if p['producto_id'] == self.tequenos.id)
+        codigos_por_pedido = {fila['pedido_id']: fila['nota_entrega_codigo'] for fila in grupo['filas']}
+        self.assertEqual(codigos_por_pedido[pedido_con_nota.id], nota.codigo)
+        self.assertIsNone(codigos_por_pedido[pedido_sin_nota.id])
+
+    def test_rango_por_defecto_es_solo_hoy(self):
+        self._crear_pedido_pagado([(self.tequenos, 1, None)])
+
+        pedido_ayer = VGPedido.objects.create(
+            usuario=self.admin, tipo_pedido='local', estado='pagado', subtotal='4.00', total='4.00',
+        )
+        VGDetallePedido.objects.create(
+            pedido=pedido_ayer, producto=self.tequenos, cantidad=1, precio_unitario='4.00', estado='entregado',
+        )
+        VGPedido.objects.filter(pk=pedido_ayer.pk).update(fecha_creacion=timezone.now() - timedelta(days=1))
+
+        response = self.client.get('/api/admin/reportes/movimiento-productos/')
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertEqual(payload['desde'], self.hoy.isoformat())
+        self.assertEqual(payload['hasta'], self.hoy.isoformat())
+        grupo = next(p for p in payload['productos'] if p['producto_id'] == self.tequenos.id)
+        self.assertEqual(len(grupo['filas']), 1)
+
+    def test_secciones_ordenadas_de_mayor_a_menor_movimiento(self):
+        for _ in range(3):
+            self._crear_pedido_pagado([(self.tequenos, 1, None)])
+        self._crear_pedido_pagado([(self.carne, 1, Decimal('100.00'))])
+
+        payload = self._reporte(self.hoy.isoformat(), self.hoy.isoformat())
+        nombres = [producto['nombre'] for producto in payload['productos']]
+        self.assertEqual(nombres[0], 'Tequeños')
+
+
+class ReporteMargenGananciaDetalleTests(TestCase):
+    """
+    El reporte de margen de ganancia detallado debe mostrar el ingreso y el
+    costo CONGELADOS de cada venta, nunca recalculados con los precios o
+    costos de HOY — ver reporte_margen_ganancia_detalle_view (api_views.py).
+    Cobra a traves del endpoint real /api/pedidos/cobro/ (que es quien
+    congela VGDetallePedido.costo_unitario_venta al cobrar, ver
+    _snapshot_costo_venta_detalles) para probar contra el mecanismo real,
+    no contra un valor puesto a mano.
+    """
+
+    def setUp(self):
+        self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='margen_admin', password='claveAdmin123', cedula='90000007',
+            email='margen_admin@sevens.test', id_role=self.admin_role,
+        )
+        self.client.force_login(self.admin)
+        self.categoria = VGCategoriaProducto.objects.create(nombre='Platos fuertes')
+        self.metodo_pago, _ = VGMetodoPago.objects.get_or_create(
+            nombre='Efectivo', defaults={'es_efectivo': True},
+        )
+        self.carne = VGIngrediente.objects.create(
+            nombre='Carne', unidad_medida='g', stock_actual='100000', costo_unitario='0.02',
+        )
+        self.bistec = VGProducto.objects.create(
+            nombre='Bistec', categoria=self.categoria, precio_venta='10.00', disponible=True,
+        )
+        VGRecetaProducto.objects.create(producto=self.bistec, ingrediente=self.carne, cantidad_requerida='150.000')
+        self.hoy = timezone.localdate()
+
+    def _crear_pedido_pagado(self, producto, precio_unitario):
+        pedido = VGPedido.objects.create(
+            usuario=self.admin, tipo_pedido='local', estado='entregado', subtotal='0', total='0',
+        )
+        VGDetallePedido.objects.create(
+            pedido=pedido, producto=producto, cantidad=1, precio_unitario=precio_unitario, estado='entregado',
+        )
+        response = self.client.post(
+            '/api/pedidos/cobro/',
+            data=json.dumps({'pedido_ids': [pedido.id], 'metodo_pago_id': self.metodo_pago.id}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        return pedido
+
+    def _reporte(self):
+        response = self.client.get(
+            '/api/admin/reportes/margen-ganancia-detalle/',
+            data={'desde': self.hoy.isoformat(), 'hasta': self.hoy.isoformat()},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def _fila(self, payload, pedido_id):
+        grupo = next(p for p in payload['productos'] if p['producto_id'] == self.bistec.id)
+        return next(f for f in grupo['filas'] if f['pedido_id'] == pedido_id)
+
+    def test_ingreso_y_costo_quedan_congelados_aunque_cambien_despues(self):
+        pedido = self._crear_pedido_pagado(self.bistec, '10.00')
+
+        detalle = VGDetallePedido.objects.get(pedido=pedido)
+        self.assertEqual(detalle.costo_unitario_venta, Decimal('3.00'))  # 150g x $0.02/g
+
+        # Cambia el precio de venta actual del producto Y el costo actual del
+        # ingrediente — si el reporte recalculara con cualquiera de los dos,
+        # esta prueba lo detecta.
+        self.bistec.precio_venta = Decimal('999.00')
+        self.bistec.save(update_fields=['precio_venta'])
+        self.carne.costo_unitario = Decimal('5.00')
+        self.carne.save(update_fields=['costo_unitario'])
+
+        payload = self._reporte()
+        fila = self._fila(payload, pedido.id)
+        self.assertEqual(fila['ingreso'], '10.00')
+        self.assertEqual(fila['costo'], '3.00')
+        self.assertEqual(fila['ganancia_monto'], '7.00')
+        self.assertFalse(fila['costo_estimado'])
+
+    def test_venta_sin_costo_congelado_cae_a_costo_estimado(self):
+        pedido = self._crear_pedido_pagado(self.bistec, '10.00')
+        # Simula una venta vieja de antes de que existiera el snapshot de costo.
+        VGDetallePedido.objects.filter(pedido=pedido).update(costo_unitario_venta=None)
+
+        # El costo ACTUAL de la receta en este momento: 150g x $0.02/g = $3.00.
+        payload = self._reporte()
+        fila = self._fila(payload, pedido.id)
+        self.assertTrue(fila['costo_estimado'])
+        self.assertEqual(fila['costo'], '3.00')
+
+        grupo = next(p for p in payload['productos'] if p['producto_id'] == self.bistec.id)
+        self.assertTrue(grupo['tiene_estimado'])
+
+    def test_seccion_marca_estimado_solo_en_la_fila_que_corresponde(self):
+        pedido_real = self._crear_pedido_pagado(self.bistec, '10.00')
+        pedido_estimado = self._crear_pedido_pagado(self.bistec, '10.00')
+        VGDetallePedido.objects.filter(pedido=pedido_estimado).update(costo_unitario_venta=None)
+
+        payload = self._reporte()
+        fila_real = self._fila(payload, pedido_real.id)
+        fila_estimada = self._fila(payload, pedido_estimado.id)
+        self.assertFalse(fila_real['costo_estimado'])
+        self.assertTrue(fila_estimada['costo_estimado'])
+
+        grupo = next(p for p in payload['productos'] if p['producto_id'] == self.bistec.id)
+        self.assertTrue(grupo['tiene_estimado'])
+        self.assertEqual(len(grupo['filas']), 2)
+        # Los totales de la seccion siguen sumando bien aunque mezcle fuentes.
+        self.assertEqual(grupo['ingreso_total'], '20.00')
+        self.assertEqual(grupo['costo_total'], '6.00')
+
+    def test_rango_por_defecto_es_solo_hoy(self):
+        pedido = self._crear_pedido_pagado(self.bistec, '10.00')
+        VGPedido.objects.filter(pk=pedido.pk).update(fecha_creacion=timezone.now() - timedelta(days=1))
+
+        response = self.client.get('/api/admin/reportes/margen-ganancia-detalle/')
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertEqual(payload['desde'], self.hoy.isoformat())
+        self.assertEqual(payload['hasta'], self.hoy.isoformat())
+        self.assertEqual(payload['productos'], [])

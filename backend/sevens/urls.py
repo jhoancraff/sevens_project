@@ -55,6 +55,7 @@ from .api_views import (
     product_image_view,
     promociones_activas_view,
     recomendaciones_chef_activas_view,
+    reporte_margen_ganancia_detalle_view,
     reporte_margen_ganancia_view,
     tasa_cambio_view,
 )
@@ -91,6 +92,7 @@ from .contabilidad_views import (
     reporte_movimiento_productos_view,
     reporte_venta_nota_detalle_view,
     reporte_ventas_dia_view,
+    transferencias_cuentas_view,
 )
 from .devoluciones_views import (
     devolucion_crear_view,
@@ -206,6 +208,7 @@ urlpatterns = [
     # --- Reportes ---------------------------------------------------------
     path('admin/reportes/estado-resultados/', reporte_estado_resultados_view, name='reporte_estado_resultados'),
     path('admin/reportes/margen-ganancia/', reporte_margen_ganancia_view, name='reporte_margen_ganancia'),
+    path('admin/reportes/margen-ganancia-detalle/', reporte_margen_ganancia_detalle_view, name='reporte_margen_ganancia_detalle'),
     path('admin/reportes/cuadre-caja/', reporte_cuadre_caja_view, name='reporte_cuadre_caja'),
     path('admin/reportes/cuadre-caja-rango/', reporte_cuadre_caja_rango_view, name='reporte_cuadre_caja_rango'),
     path('admin/reportes/ventas-dia/', reporte_ventas_dia_view, name='reporte_ventas_dia'),
@@ -213,6 +216,7 @@ urlpatterns = [
     path('admin/reportes/cuentas-por-cobrar/', reporte_cuentas_por_cobrar_view, name='reporte_cuentas_por_cobrar'),
     path('admin/reportes/cuentas-cobradas-dia/', reporte_cuentas_cobradas_dia_view, name='reporte_cuentas_cobradas_dia'),
     path('admin/reportes/disponibilidad-cuentas/', reporte_disponibilidad_cuentas_view, name='reporte_disponibilidad_cuentas'),
+    path('admin/transferencias-cuentas/', transferencias_cuentas_view, name='transferencias_cuentas'),
     path('admin/reportes/conciliacion-bancaria/', reporte_conciliacion_bancaria_view, name='reporte_conciliacion_bancaria'),
     path('admin/reportes/movimiento-productos/', reporte_movimiento_productos_view, name='reporte_movimiento_productos'),
 
