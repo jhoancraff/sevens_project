@@ -62,6 +62,7 @@ function NewOrderPage({
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [promotionsByProductId, setPromotionsByProductId] = useState({});
   const [detailProduct, setDetailProduct] = useState(null);
+  const [cartModalOpen, setCartModalOpen] = useState(false);
   const [addonPickerFor, setAddonPickerFor] = useState(null);
   const [pesoPickerFor, setPesoPickerFor] = useState(null);
   const [opcionesPickerFor, setOpcionesPickerFor] = useState(null);
@@ -1057,18 +1058,39 @@ function NewOrderPage({
 
       {isCompact && cartItems.length > 0 ? (
         <div style={mobileCartBarStyle}>
-          <div style={{ color: '#fff', fontWeight: 700 }}>
-            {cartCount} {cartCount === 1 ? 'plato' : 'platos'} · ${subtotal.toFixed(2)}
-            <BsAmount amountUsd={subtotal} tasa={tasaCambio} style={{ color: '#e0e0e0' }} />
-          </div>
           <button
             type="button"
-            onClick={() => document.getElementById('cart-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-            style={mobileCartButtonStyle}
+            onClick={() => setCartModalOpen(true)}
+            style={cartIconButtonStyle}
+            aria-label={`Ver detalle del pedido (${cartCount} ${cartCount === 1 ? 'plato' : 'platos'})`}
           >
-            Ver pedido
+            <span aria-hidden="true" style={cartIconGlyphStyle}>🛒</span>
+            <span style={cartIconBadgeStyle}>{cartCount}</span>
+          </button>
+          <div style={{ color: '#fff', fontWeight: 700, flex: 1, minWidth: 0 }}>
+            ${subtotal.toFixed(2)}
+            <BsAmount amountUsd={subtotal} tasa={tasaCambio} style={{ color: '#e0e0e0' }} />
+          </div>
+          <button type="button" onClick={handleSubmit} style={mobileCartButtonStyle} disabled={isSubmitting}>
+            {isSubmitting ? 'Guardando...' : 'Registrar pedido'}
           </button>
         </div>
+      ) : null}
+
+      {cartModalOpen ? (
+        <CartSummaryModal
+          cartCount={cartCount}
+          subtotal={subtotal}
+          tasaCambio={tasaCambio}
+          groupedCartItems={groupedCartItems}
+          renderCartLine={renderCartLine}
+          onClose={() => setCartModalOpen(false)}
+          onSubmit={(event) => {
+            setCartModalOpen(false);
+            handleSubmit(event);
+          }}
+          isSubmitting={isSubmitting}
+        />
       ) : null}
 
       {detailProduct ? (
@@ -1123,6 +1145,68 @@ function NewOrderPage({
 
       <UnsavedChangesModal open={isConfirmOpen} onConfirm={confirmLeave} onCancel={cancelLeave} />
     </section>
+  );
+}
+
+function CartSummaryModal({ cartCount, subtotal, tasaCambio, groupedCartItems, renderCartLine, onClose, onSubmit, isSubmitting }) {
+  // Mismo patron que los demas modales de esta pantalla (ver ProductDetailModal
+  // mas abajo): mientras este componente esta montado, ya cuenta como "abierto"
+  // para el back fisico de Android.
+  useMobileBackHandler(true, onClose);
+
+  return (
+    <div style={modalBackdropStyle} onClick={onClose}>
+      <div style={cartModalCardStyle} onClick={(event) => event.stopPropagation()}>
+        <div style={cartModalHeaderStyle}>
+          <div style={cartTitleStyle}>Pedido actual</div>
+          <span style={cartCountBadgeStyle}>{cartCount} {cartCount === 1 ? 'plato' : 'platos'}</span>
+          <button type="button" onClick={onClose} style={modalCloseButtonStyle} aria-label="Cerrar">
+            ×
+          </button>
+        </div>
+
+        <div style={cartModalListStyle}>
+          {groupedCartItems.platos.length === 0 && groupedCartItems.ungrouped.length === 0 ? (
+            <div style={cartEmptyStyle}>Todavía no has agregado nada a este pedido.</div>
+          ) : (
+            <>
+              {groupedCartItems.platos.map(({ grupoId, displayNumber, items }) => (
+                <div key={`modal-plato-${grupoId}`} style={platoGroupStyle(false)}>
+                  <div style={platoGroupHeaderStyle}>
+                    <span style={platoGroupTitleRowStyle}>
+                      <span>Plato {displayNumber}</span>
+                    </span>
+                  </div>
+                  <div style={platoGroupItemsStyle}>
+                    {items.map((item) => renderCartLine(item))}
+                  </div>
+                </div>
+              ))}
+              {groupedCartItems.ungrouped.length > 0 ? (
+                <div style={ungroupedGroupStyle}>
+                  {groupedCartItems.platos.length > 0 ? <div style={ungroupedHeaderStyle}>Otros ítems (sin plato armado)</div> : null}
+                  <div style={platoGroupItemsStyle}>
+                    {groupedCartItems.ungrouped.map((item) => renderCartLine(item))}
+                  </div>
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+
+        <div style={cartTotalRowStyle}>
+          <span>Total estimado</span>
+          <span style={cartTotalValueStyle}>
+            ${subtotal.toFixed(2)}
+            <BsAmount amountUsd={subtotal} tasa={tasaCambio} />
+          </span>
+        </div>
+
+        <button type="button" onClick={onSubmit} style={primaryButtonStyle(true)} disabled={isSubmitting || cartCount === 0}>
+          {isSubmitting ? 'Guardando...' : 'Registrar pedido'}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -2266,20 +2350,55 @@ const cartTotalValueStyle = {
 // --- Barra flotante de resumen en móvil ---
 
 const mobileCartBarStyle = {
-  position: 'sticky',
-  bottom: 8,
-  marginTop: 12,
+  position: 'fixed',
+  left: 12,
+  right: 12,
+  bottom: 12,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
   gap: 10,
-  padding: '12px 14px',
-  borderRadius: 14,
-  background: 'rgba(18, 8, 8, 0.96)',
+  padding: '10px 12px',
+  borderRadius: 16,
+  background: 'rgba(18, 8, 8, 0.97)',
   backdropFilter: 'blur(2px)',
   border: '1px solid rgba(255,255,255,0.14)',
   boxShadow: '0 12px 30px rgba(0,0,0,0.4)',
-  zIndex: 5,
+  zIndex: 15,
+};
+
+const cartIconButtonStyle = {
+  position: 'relative',
+  flexShrink: 0,
+  border: '1px solid rgba(255,255,255,0.16)',
+  borderRadius: 12,
+  width: 42,
+  height: 42,
+  display: 'grid',
+  placeItems: 'center',
+  background: 'rgba(255,255,255,0.06)',
+  cursor: 'pointer',
+};
+
+const cartIconGlyphStyle = {
+  fontSize: 20,
+};
+
+const cartIconBadgeStyle = {
+  position: 'absolute',
+  top: -6,
+  right: -6,
+  minWidth: 18,
+  height: 18,
+  padding: '0 4px',
+  borderRadius: 999,
+  background: 'linear-gradient(90deg, #bf1f1f 0%, #ff4d4d 100%)',
+  color: '#fff',
+  fontSize: 11,
+  fontWeight: 800,
+  display: 'grid',
+  placeItems: 'center',
+  border: '1px solid rgba(255,255,255,0.4)',
 };
 
 const mobileCartButtonStyle = {
@@ -2333,6 +2452,35 @@ const modalCloseButtonStyle = {
   cursor: 'pointer',
   display: 'grid',
   placeItems: 'center',
+};
+
+const cartModalCardStyle = {
+  position: 'relative',
+  width: '100%',
+  maxWidth: 520,
+  maxHeight: '88vh',
+  overflowY: 'auto',
+  borderRadius: 20,
+  border: '1px solid rgba(255,255,255,0.14)',
+  background: 'linear-gradient(180deg, rgba(22, 10, 10, 0.98) 0%, rgba(10, 10, 10, 0.99) 100%)',
+  boxShadow: '0 20px 50px rgba(0,0,0,0.5)',
+  padding: 16,
+  display: 'grid',
+  gap: 12,
+};
+
+const cartModalHeaderStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  paddingRight: 40,
+};
+
+const cartModalListStyle = {
+  display: 'grid',
+  gap: 10,
+  maxHeight: '50vh',
+  overflowY: 'auto',
 };
 
 const modalImageWrapStyle = {
