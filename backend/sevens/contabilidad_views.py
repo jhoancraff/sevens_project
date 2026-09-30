@@ -35,11 +35,13 @@ from .reportes import (
     desglose_caja_por_moneda,
     detalle_cuentas_cobradas_rango,
     detalle_cuentas_por_cobrar_rango,
+    detalle_flujo_banco_dia,
     detalle_ventas_rango,
     disponibilidad_por_cuenta,
     efectivo_esperado_dia,
     gastos_efectivo_dia,
     resumen_cuadre_caja_rango,
+    resumen_flujo_banco_mes,
     resumen_ventas_rango,
     tasa_para_fecha,
     total_consignado,
@@ -1242,6 +1244,145 @@ def transferencias_cuentas_view(request):
         'message': 'Transferencia registrada correctamente.',
         'transferencia': _serialize_transferencia(transferencia),
     }, status=201)
+
+
+def _parse_metodo_pago_ids(request):
+    """
+    Parsea y valida el parametro `metodo_pago_ids` (lista separada por comas)
+    compartido por reporte_flujo_banco_view/reporte_flujo_banco_detalle_view
+    — devuelve (ids, moneda, error_response). `moneda` es None si las cuentas
+    elegidas no comparten la misma moneda (este reporte nunca mezcla monedas
+    en un mismo total, ver _movimientos_banco_mes).
+    """
+    ids_raw = request.GET.get('metodo_pago_ids', '')
+    try:
+        metodo_pago_ids = [int(valor) for valor in ids_raw.split(',') if valor.strip()]
+    except ValueError:
+        return None, None, _auth_response({'ok': False, 'message': 'Las cuentas indicadas no son validas.'}, status=400)
+    if not metodo_pago_ids:
+        return None, None, _auth_response({'ok': False, 'message': 'Selecciona al menos una cuenta.'}, status=400)
+
+    metodos = list(VGMetodoPago.objects.filter(id__in=metodo_pago_ids))
+    if len(metodos) != len(set(metodo_pago_ids)):
+        return None, None, _auth_response({'ok': False, 'message': 'Alguna de las cuentas indicadas no existe.'}, status=400)
+
+    monedas = {metodo.moneda for metodo in metodos}
+    if len(monedas) > 1:
+        return None, None, _auth_response({
+            'ok': False,
+            'message': 'Selecciona cuentas de la misma moneda — este reporte no mezcla monedas distintas en un mismo total.',
+        }, status=400)
+
+    return metodo_pago_ids, monedas.pop(), None
+
+
+def reporte_flujo_banco_view(request):
+    """
+    Entradas y salidas dia por dia de un mes completo, para una cuenta/banco
+    elegido — pensado para cuadrar contra el estado de cuenta real del
+    banco (a diferencia de reporte_disponibilidad_cuentas_view, que muestra
+    el saldo ACUMULADO hasta una fecha, no el detalle dia por dia). Solo
+    cuentas/bancos digitales: no incluye consignaciones de caja fisica, eso
+    ya lo cubre el cuadre de caja.
+    """
+    if request.method != 'GET':
+        return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
+
+    if not _is_admin_user(request.user):
+        return _auth_response({'ok': False, 'message': 'Debes iniciar sesion como administrador.'}, status=401)
+
+    try:
+        anio = int(request.GET.get('anio'))
+        mes = int(request.GET.get('mes'))
+    except (TypeError, ValueError):
+        return _auth_response({'ok': False, 'message': 'Indica un año y un mes validos.'}, status=400)
+    if mes < 1 or mes > 12:
+        return _auth_response({'ok': False, 'message': 'El mes debe estar entre 1 y 12.'}, status=400)
+
+    metodo_pago_ids, moneda, error = _parse_metodo_pago_ids(request)
+    if error:
+        return error
+
+    def _fmt(valor):
+        return str(valor.quantize(Decimal('0.01')))
+
+    dias = resumen_flujo_banco_mes(anio, mes, metodo_pago_ids)
+    total_entrada = sum((dia['entrada'] for dia in dias), Decimal('0'))
+    total_salida = sum((dia['salida'] for dia in dias), Decimal('0'))
+
+    return _auth_response({
+        'ok': True,
+        'anio': anio,
+        'mes': mes,
+        'moneda': moneda,
+        'dias': [
+            {
+                'fecha': dia['fecha'].isoformat(),
+                'entrada': _fmt(dia['entrada']),
+                'salida': _fmt(dia['salida']),
+                'entrada_local': _fmt(dia['entrada_local']) if moneda == 'VES' and dia['entrada_local_completa'] else None,
+                'salida_local': _fmt(dia['salida_local']) if moneda == 'VES' and dia['salida_local_completa'] else None,
+            }
+            for dia in dias
+        ],
+        'totales': {
+            'entrada': _fmt(total_entrada),
+            'salida': _fmt(total_salida),
+            'neto': _fmt(total_entrada - total_salida),
+        },
+    })
+
+
+def reporte_flujo_banco_detalle_view(request):
+    """
+    Movimientos individuales de un dia puntual y un tipo ('entrada' o
+    'salida') para una cuenta/banco elegido — el detalle detras de una
+    celda de reporte_flujo_banco_view. Reusa la MISMA funcion de datos
+    (detalle_flujo_banco_dia -> _movimientos_banco_mes en reportes.py) que
+    arma el resumen mensual, para que el total de una celda y la suma de
+    este detalle NUNCA se desalineen entre si.
+    """
+    if request.method != 'GET':
+        return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
+
+    if not _is_admin_user(request.user):
+        return _auth_response({'ok': False, 'message': 'Debes iniciar sesion como administrador.'}, status=401)
+
+    try:
+        fecha = date.fromisoformat(str(request.GET.get('fecha')))
+    except (TypeError, ValueError):
+        return _auth_response({'ok': False, 'message': 'Fecha invalida.'}, status=400)
+
+    tipo = request.GET.get('tipo')
+    if tipo not in ('entrada', 'salida'):
+        return _auth_response({'ok': False, 'message': 'El tipo debe ser "entrada" o "salida".'}, status=400)
+
+    metodo_pago_ids, moneda, error = _parse_metodo_pago_ids(request)
+    if error:
+        return error
+
+    filas = detalle_flujo_banco_dia(fecha.year, fecha.month, fecha.day, tipo, metodo_pago_ids)
+
+    return _auth_response({
+        'ok': True,
+        'fecha': fecha.isoformat(),
+        'tipo': tipo,
+        'moneda': moneda,
+        'movimientos': [
+            {
+                'hora': movimiento['hora'].strftime('%H:%M') if movimiento['hora'] else None,
+                'metodo_pago': movimiento['metodo_pago'],
+                'origen': movimiento['origen'],
+                'referencia': movimiento['referencia'],
+                'monto_usd': str(movimiento['monto_usd'].quantize(Decimal('0.01'))),
+                'monto_local': (
+                    str(movimiento['monto_local'].quantize(Decimal('0.01')))
+                    if movimiento['monto_local'] is not None and moneda == 'VES' else None
+                ),
+            }
+            for movimiento in filas
+        ],
+    })
 
 
 def _serialize_conciliacion(conciliacion):

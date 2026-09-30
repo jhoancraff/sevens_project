@@ -3,10 +3,12 @@ Agregaciones de solo lectura para el modulo de Contabilidad. Cada reporte nuevo
 agrega una funcion aqui que lee de las tablas operativas existentes (VGPago,
 VGPedido, VGCompra, ...) sin duplicar datos en tablas de reporte aparte.
 """
-from datetime import timedelta
+import calendar
+from datetime import date, time, timedelta
 from decimal import Decimal
 
 from django.db.models import Sum
+from django.utils import timezone
 
 from .models import (
     VGAbonoCompra,
@@ -793,3 +795,210 @@ def disponibilidad_por_cuenta(fecha):
 
     bancos = [bancos_por_clave[clave] for clave in orden_claves]
     return resultado, bancos
+
+
+# ---------------------------------------------------------------------------
+# Flujo de banco diario — entradas/salidas dia por dia para una cuenta/banco
+# elegido, pensado para cuadrar contra el estado de cuenta real del banco.
+# Distinto de disponibilidad_por_cuenta (saldo ACUMULADO hasta una fecha) y
+# de resumen_cuadre_caja_rango (solo efectivo fisico) — este es el detalle
+# dia a dia de cuentas digitales.
+# ---------------------------------------------------------------------------
+def _movimientos_banco_mes(anio, mes, metodo_pago_ids):
+    """
+    Devuelve CADA movimiento individual (entrada o salida) que afecto a
+    alguna de `metodo_pago_ids` durante anio/mes, con su fecha REAL resuelta
+    segun el criterio propio de cada tipo de movimiento:
+
+    - Entradas (VGPago, VGIngresoExtra) y salidas por compra a proveedor
+      (VGAbonoCompra): el propio abono/pago se registra el mismo dia en que
+      de verdad se cobra o se paga, asi que su timestamp automatico YA es la
+      fecha real — se usa tal cual, convertido siempre a hora local
+      (timezone.localtime) para nunca extraer la fecha de un datetime en
+      UTC crudo.
+    - Salidas por gasto operativo (VGAbonoGasto): un gasto se puede cargar
+      al sistema dias despues de haber pasado de verdad (el analista carga
+      una semana atrasada de una sola vez) — su timestamp automatico de
+      creacion NO sirve. Se usa VGGasto.fecha_gasto (el campo manual que el
+      analista escribe), nunca el momento en que se registro el abono; por
+      eso esas filas no traen una 'hora' real que mostrar.
+    - Transferencias entre cuentas propias (VGTransferenciaCuenta): entrada
+      en la cuenta destino, salida en la cuenta origen — su campo `fecha`
+      ya es un DateField sin hora.
+
+    Es la UNICA fuente de datos tanto para el resumen mes-por-dia como para
+    el detalle de un dia puntual (ver resumen_flujo_banco_mes/
+    detalle_flujo_banco_dia) — asi las dos vistas NUNCA pueden desalinearse
+    entre si, porque nunca hay dos caminos de calculo distintos para el
+    mismo dato.
+    """
+    ids = list(metodo_pago_ids)
+    desde = date(anio, mes, 1)
+    hasta = date(anio, mes, calendar.monthrange(anio, mes)[1])
+
+    movimientos = []
+
+    for pago in (
+        VGPago.objects
+        .filter(metodo_pago_id__in=ids, estado='completado', fecha_pago__date__gte=desde, fecha_pago__date__lte=hasta)
+        .select_related('metodo_pago', 'nota_entrega', 'factura')
+    ):
+        fecha_local = timezone.localtime(pago.fecha_pago)
+        tasa = pago.tasa_cambio_referencia
+        if tasa is None and pago.nota_entrega_id:
+            tasa = pago.nota_entrega.tasa_cambio_referencia
+        if tasa is None and pago.factura_id:
+            tasa = pago.factura.tasa_cambio_referencia
+        if tasa is None:
+            tasa = tasa_para_fecha(fecha_local.date())
+        if pago.nota_entrega_id:
+            origen = f'Nota de entrega {pago.nota_entrega.codigo}'
+        elif pago.factura_id:
+            origen = f'Factura #{pago.factura.numero_factura}'
+        else:
+            origen = f'Pedido #{pago.pedido_id}'
+        movimientos.append({
+            'fecha': fecha_local.date(),
+            'tipo': 'entrada',
+            'hora': fecha_local.time(),
+            'monto_usd': pago.monto,
+            'monto_local': (pago.monto * tasa) if tasa else None,
+            'metodo_pago': pago.metodo_pago.nombre,
+            'origen': origen,
+            'referencia': pago.referencia,
+        })
+
+    for ingreso in (
+        VGIngresoExtra.objects
+        .filter(metodo_pago_id__in=ids, fecha_creacion__date__gte=desde, fecha_creacion__date__lte=hasta)
+        .select_related('metodo_pago')
+    ):
+        fecha_local = timezone.localtime(ingreso.fecha_creacion)
+        tasa = ingreso.tasa_cambio_referencia or tasa_para_fecha(fecha_local.date())
+        movimientos.append({
+            'fecha': fecha_local.date(),
+            'tipo': 'entrada',
+            'hora': fecha_local.time(),
+            'monto_usd': ingreso.monto,
+            'monto_local': (ingreso.monto * tasa) if tasa else None,
+            'metodo_pago': ingreso.metodo_pago.nombre,
+            'origen': ingreso.get_tipo_display(),
+            'referencia': ingreso.descripcion,
+        })
+
+    for abono in (
+        VGAbonoGasto.objects
+        .filter(metodo_pago_id__in=ids, gasto__fecha_gasto__gte=desde, gasto__fecha_gasto__lte=hasta)
+        .select_related('gasto', 'metodo_pago')
+    ):
+        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(abono.gasto.fecha_gasto)
+        movimientos.append({
+            'fecha': abono.gasto.fecha_gasto,
+            'tipo': 'salida',
+            'hora': None,
+            'monto_usd': abono.monto,
+            'monto_local': (abono.monto * tasa) if tasa else None,
+            'metodo_pago': abono.metodo_pago.nombre,
+            'origen': f'Gasto: {abono.gasto.descripcion}',
+            'referencia': abono.referencia,
+        })
+
+    for abono in (
+        VGAbonoCompra.objects
+        .filter(metodo_pago_id__in=ids, fecha_pago__date__gte=desde, fecha_pago__date__lte=hasta)
+        .select_related('compra', 'metodo_pago')
+    ):
+        fecha_local = timezone.localtime(abono.fecha_pago)
+        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(fecha_local.date())
+        movimientos.append({
+            'fecha': fecha_local.date(),
+            'tipo': 'salida',
+            'hora': fecha_local.time(),
+            'monto_usd': abono.monto,
+            'monto_local': (abono.monto * tasa) if tasa else None,
+            'metodo_pago': abono.metodo_pago.nombre,
+            'origen': f'Compra: {abono.compra.proveedor_nombre}',
+            'referencia': abono.referencia,
+        })
+
+    for transferencia in (
+        VGTransferenciaCuenta.objects
+        .filter(cuenta_destino_id__in=ids, fecha__gte=desde, fecha__lte=hasta)
+        .select_related('cuenta_origen')
+    ):
+        movimientos.append({
+            'fecha': transferencia.fecha,
+            'tipo': 'entrada',
+            'hora': None,
+            'monto_usd': transferencia.monto_usd,
+            'monto_local': transferencia.monto_destino if transferencia.moneda_destino == 'VES' else None,
+            'metodo_pago': None,
+            'origen': f'Transferencia desde {transferencia.cuenta_origen.nombre}',
+            'referencia': transferencia.referencia,
+        })
+
+    for transferencia in (
+        VGTransferenciaCuenta.objects
+        .filter(cuenta_origen_id__in=ids, fecha__gte=desde, fecha__lte=hasta)
+        .select_related('cuenta_destino')
+    ):
+        movimientos.append({
+            'fecha': transferencia.fecha,
+            'tipo': 'salida',
+            'hora': None,
+            'monto_usd': transferencia.monto_usd,
+            'monto_local': transferencia.monto_origen if transferencia.moneda_origen == 'VES' else None,
+            'metodo_pago': None,
+            'origen': f'Transferencia hacia {transferencia.cuenta_destino.nombre}',
+            'referencia': transferencia.referencia,
+        })
+
+    return movimientos
+
+
+def resumen_flujo_banco_mes(anio, mes, metodo_pago_ids):
+    """
+    Una fila por cada dia del mes completo (aunque no haya movimiento ese
+    dia, para que el calendario se vea completo), con el total de entrada y
+    de salida de ese dia. `*_local_completa` queda en False si algun
+    movimiento de ese dia/tipo no tenia tasa disponible para convertir a
+    moneda local — el serializador (contabilidad_views.py) usa esa bandera
+    para no mostrar un total en bolivares incompleto como si fuera exacto.
+    """
+    ultimo_dia = calendar.monthrange(anio, mes)[1]
+    dias = {}
+    for dia_num in range(1, ultimo_dia + 1):
+        fecha = date(anio, mes, dia_num)
+        dias[fecha] = {
+            'fecha': fecha,
+            'entrada': Decimal('0'), 'salida': Decimal('0'),
+            'entrada_local': Decimal('0'), 'salida_local': Decimal('0'),
+            'entrada_local_completa': True, 'salida_local_completa': True,
+        }
+
+    for movimiento in _movimientos_banco_mes(anio, mes, metodo_pago_ids):
+        bucket = dias[movimiento['fecha']]
+        tipo = movimiento['tipo']
+        bucket[tipo] += movimiento['monto_usd']
+        if movimiento['monto_local'] is not None:
+            bucket[f'{tipo}_local'] += movimiento['monto_local']
+        else:
+            bucket[f'{tipo}_local_completa'] = False
+
+    return sorted(dias.values(), key=lambda item: item['fecha'])
+
+
+def detalle_flujo_banco_dia(anio, mes, dia, tipo, metodo_pago_ids):
+    """
+    Cada movimiento individual de un dia puntual y un tipo ('entrada' o
+    'salida') — reusa _movimientos_banco_mes (la MISMA funcion que arma el
+    resumen mensual) filtrando por fecha/tipo, para que el total del resumen
+    y la suma de este detalle SIEMPRE cuadren exacto entre si.
+    """
+    fecha = date(anio, mes, dia)
+    filas = [
+        movimiento for movimiento in _movimientos_banco_mes(anio, mes, metodo_pago_ids)
+        if movimiento['fecha'] == fecha and movimiento['tipo'] == tipo
+    ]
+    filas.sort(key=lambda movimiento: movimiento['hora'] or time.min)
+    return filas

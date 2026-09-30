@@ -10,6 +10,7 @@ import ReportePropinasPage from './ReportePropinasPage';
 import ReporteDevolucionesPage from './ReporteDevolucionesPage';
 import ReporteCuadreCajaRangoPage from './ReporteCuadreCajaRangoPage';
 import ReporteDisponibilidadCuentasPage from './ReporteDisponibilidadCuentasPage';
+import ReporteFlujoBancoPage from './ReporteFlujoBancoPage';
 import HistorialTransferenciasPage from './HistorialTransferenciasPage';
 import ReporteConciliacionBancariaPage from './ReporteConciliacionBancariaPage';
 import AnalystBulkPromotionPage from './AnalystBulkPromotionPage';
@@ -1152,6 +1153,11 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           />
         ) : activeView === 'historial-transferencias' ? (
           <HistorialTransferenciasPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'contabilidad-flujo-banco' ? (
+          <ReporteFlujoBancoPage
             isMobile={isMobile}
             onBack={goBackView}
           />

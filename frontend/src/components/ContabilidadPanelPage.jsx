@@ -122,6 +122,7 @@ const reportSections = [
   { id: 'contabilidad-cuadre-caja', title: 'Cuadre de caja diario', icon: CashRegisterIcon },
   { id: 'contabilidad-cuadre-caja-rango', title: 'Cuadre de caja por rango', icon: DateRangeIcon },
   { id: 'contabilidad-disponibilidad-cuentas', title: 'Disponibilidad diaria', icon: AvailabilityIcon },
+  { id: 'contabilidad-flujo-banco', title: 'Flujo de banco diario', icon: ReconciliationIcon },
   ...(CONCILIACION_BANCARIA_HABILITADA ? [{
     id: 'contabilidad-conciliacion-bancaria',
     title: 'Conciliación bancaria',

@@ -89,6 +89,8 @@ from .contabilidad_views import (
     reporte_cuentas_por_cobrar_view,
     reporte_disponibilidad_cuentas_view,
     reporte_estado_resultados_view,
+    reporte_flujo_banco_detalle_view,
+    reporte_flujo_banco_view,
     reporte_movimiento_productos_view,
     reporte_venta_nota_detalle_view,
     reporte_ventas_dia_view,
@@ -217,6 +219,8 @@ urlpatterns = [
     path('admin/reportes/cuentas-cobradas-dia/', reporte_cuentas_cobradas_dia_view, name='reporte_cuentas_cobradas_dia'),
     path('admin/reportes/disponibilidad-cuentas/', reporte_disponibilidad_cuentas_view, name='reporte_disponibilidad_cuentas'),
     path('admin/transferencias-cuentas/', transferencias_cuentas_view, name='transferencias_cuentas'),
+    path('admin/reportes/flujo-banco/', reporte_flujo_banco_view, name='reporte_flujo_banco'),
+    path('admin/reportes/flujo-banco/detalle/', reporte_flujo_banco_detalle_view, name='reporte_flujo_banco_detalle'),
     path('admin/reportes/conciliacion-bancaria/', reporte_conciliacion_bancaria_view, name='reporte_conciliacion_bancaria'),
     path('admin/reportes/movimiento-productos/', reporte_movimiento_productos_view, name='reporte_movimiento_productos'),
 
