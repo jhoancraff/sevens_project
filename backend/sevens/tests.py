@@ -1,5 +1,5 @@
 import json
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from django.test import TestCase
@@ -7,6 +7,8 @@ from django.utils import timezone
 from unittest.mock import patch
 
 from sevens.models import (
+    VGAbonoCompra,
+    VGAbonoGasto,
     VGAjusteInventario,
     VGCategoriaGasto,
     VGCategoriaProducto,
@@ -29,6 +31,7 @@ from sevens.models import (
     VGMetodoPago,
     VGMovimientoInventario,
     VGNotaEntrega,
+    VGPago,
     VGPedido,
     VGPreparacion,
     VGProducto,
@@ -2275,3 +2278,135 @@ class ReporteMargenGananciaDetalleTests(TestCase):
         self.assertEqual(payload['desde'], self.hoy.isoformat())
         self.assertEqual(payload['hasta'], self.hoy.isoformat())
         self.assertEqual(payload['productos'], [])
+
+
+class ReporteFlujoBancoTests(TestCase):
+    """
+    El reporte de flujo de banco diario debe agrupar cada salida por su
+    fecha REAL, resuelta distinto segun el tipo de movimiento — ver
+    reportes._movimientos_banco_mes. Usa un mes FIJO (no "el actual") para
+    que la prueba no dependa de en que dia del mes corra el test.
+    """
+
+    def setUp(self):
+        self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='flujo_admin', password='claveAdmin123', cedula='90000008',
+            email='flujo_admin@sevens.test', id_role=self.admin_role,
+        )
+        self.client.force_login(self.admin)
+        self.banco = VGMetodoPago.objects.create(nombre='Banesco Flujo', moneda='VES')
+        self.categoria_gasto = VGCategoriaGasto.objects.create(nombre='Servicios Flujo')
+        self.anio = 2026
+        self.mes = 6
+
+    def _reporte(self):
+        response = self.client.get('/api/admin/reportes/flujo-banco/', data={
+            'anio': self.anio, 'mes': self.mes, 'metodo_pago_ids': str(self.banco.id),
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def _detalle(self, fecha, tipo):
+        response = self.client.get('/api/admin/reportes/flujo-banco/detalle/', data={
+            'fecha': fecha.isoformat(), 'tipo': tipo, 'metodo_pago_ids': str(self.banco.id),
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def test_gasto_se_agrupa_por_fecha_manual_no_por_fecha_de_creacion_del_abono(self):
+        fecha_real = date(self.anio, self.mes, 5)
+        gasto = VGGasto.objects.create(
+            categoria=self.categoria_gasto, descripcion='Luz atrasada', monto=Decimal('80.00'),
+            saldo_pendiente=Decimal('80.00'), fecha_gasto=fecha_real,
+        )
+        # El abono se "crea" HOY (auto_now_add) — simula al analista cargando
+        # un gasto atrasado varios dias despues de que paso de verdad.
+        VGAbonoGasto.objects.create(gasto=gasto, monto=Decimal('80.00'), metodo_pago=self.banco)
+
+        payload = self._reporte()
+        dia = next(d for d in payload['dias'] if d['fecha'] == fecha_real.isoformat())
+        self.assertEqual(dia['salida'], '80.00')
+
+        detalle = self._detalle(fecha_real, 'salida')
+        self.assertEqual(len(detalle['movimientos']), 1)
+        self.assertIsNone(detalle['movimientos'][0]['hora'])  # sin hora real que mostrar
+
+    def test_compra_con_abonos_parciales_en_fechas_distintas_genera_dos_salidas_separadas(self):
+        compra = VGCompra.objects.create(
+            proveedor_nombre='Proveedor Flujo', estado='recibido',
+            total=Decimal('1000.00'), saldo_pendiente=Decimal('1000.00'),
+        )
+        abono1 = VGAbonoCompra.objects.create(compra=compra, monto=Decimal('500.00'), metodo_pago=self.banco)
+        abono2 = VGAbonoCompra.objects.create(compra=compra, monto=Decimal('500.00'), metodo_pago=self.banco)
+
+        # Forzamos el timestamp de cada abono a su propia fecha real de pago
+        # (fecha_pago es auto_now_add, normalmente no editable a mano).
+        VGAbonoCompra.objects.filter(pk=abono1.pk).update(
+            fecha_pago=timezone.make_aware(datetime(self.anio, self.mes, 5, 10, 0)),
+        )
+        VGAbonoCompra.objects.filter(pk=abono2.pk).update(
+            fecha_pago=timezone.make_aware(datetime(self.anio, self.mes, 12, 15, 0)),
+        )
+
+        payload = self._reporte()
+        dia5 = next(d for d in payload['dias'] if d['fecha'] == date(self.anio, self.mes, 5).isoformat())
+        dia12 = next(d for d in payload['dias'] if d['fecha'] == date(self.anio, self.mes, 12).isoformat())
+        self.assertEqual(dia5['salida'], '500.00')
+        self.assertEqual(dia12['salida'], '500.00')
+
+        # La fecha de la FACTURA (hoy, VGCompra.fecha_compra es auto_now_add)
+        # no agrupa nada — cada abono vive en su propia fecha real.
+        detalle_dia5 = self._detalle(date(self.anio, self.mes, 5), 'salida')
+        self.assertEqual(len(detalle_dia5['movimientos']), 1)
+        self.assertEqual(detalle_dia5['movimientos'][0]['monto_usd'], '500.00')
+
+    def test_total_del_dia_coincide_con_el_detalle_en_el_limite_de_medianoche(self):
+        pedido = VGPedido.objects.create(
+            usuario=self.admin, tipo_pedido='local', estado='pagado', subtotal='0', total='0',
+        )
+        pago = VGPago.objects.create(
+            pedido=pedido, monto=Decimal('120.00'), metodo_pago=self.banco, estado='completado',
+        )
+        VGPago.objects.filter(pk=pago.pk).update(
+            fecha_pago=timezone.make_aware(datetime(self.anio, self.mes, 5, 23, 59, 59)),
+        )
+
+        payload = self._reporte()
+        dia5 = next(d for d in payload['dias'] if d['fecha'] == date(self.anio, self.mes, 5).isoformat())
+        detalle = self._detalle(date(self.anio, self.mes, 5), 'entrada')
+        suma_detalle = sum((Decimal(m['monto_usd']) for m in detalle['movimientos']), Decimal('0'))
+        self.assertEqual(Decimal(dia5['entrada']), suma_detalle)
+        self.assertEqual(dia5['entrada'], '120.00')
+
+    def test_movimiento_ves_usa_tasa_congelada_no_la_tasa_bcv_actual(self):
+        pedido = VGPedido.objects.create(
+            usuario=self.admin, tipo_pedido='local', estado='pagado', subtotal='0', total='0',
+        )
+        pago = VGPago.objects.create(
+            pedido=pedido, monto=Decimal('10.00'), metodo_pago=self.banco, estado='completado',
+            tasa_cambio_referencia=Decimal('40.0000'),
+        )
+        VGPago.objects.filter(pk=pago.pk).update(
+            fecha_pago=timezone.make_aware(datetime(self.anio, self.mes, 8, 12, 0)),
+        )
+
+        # La tasa BCV "oficial" cambia DESPUES de la venta.
+        VGTasaCambio.objects.update_or_create(
+            fecha=timezone.localdate(), defaults={'tasa': Decimal('999.0000'), 'fuente': 'BCV'},
+        )
+
+        payload = self._reporte()
+        dia8 = next(d for d in payload['dias'] if d['fecha'] == date(self.anio, self.mes, 8).isoformat())
+        self.assertEqual(dia8['entrada_local'], '400.00')  # 10 x 40 (congelada), nunca 10 x 999
+
+        detalle = self._detalle(date(self.anio, self.mes, 8), 'entrada')
+        self.assertEqual(detalle['movimientos'][0]['monto_local'], '400.00')
+
+    def test_endpoint_rechaza_cuentas_de_moneda_mixta(self):
+        cuenta_usd = VGMetodoPago.objects.create(nombre='Zelle Flujo', moneda='USD')
+        response = self.client.get('/api/admin/reportes/flujo-banco/', data={
+            'anio': self.anio, 'mes': self.mes,
+            'metodo_pago_ids': f'{self.banco.id},{cuenta_usd.id}',
+        })
+        self.assertEqual(response.status_code, 400)
