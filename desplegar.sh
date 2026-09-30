@@ -49,7 +49,7 @@ if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
 fi
 ok "arbol limpio"
 
-paso "3. Migraciones pendientes"
+paso "3. Migraciones"
 cd "$BACKEND"
 if out=$("$PY" manage.py makemigrations --check --dry-run 2>&1); then
   ok "no hay cambios de modelo pendientes"
@@ -59,6 +59,21 @@ else
   echo "    Crear con:  ./entorno.sh produccion manage.py makemigrations"
   exit 1
 fi
+
+# Ojo: makemigrations --check solo avisa de modelos NUEVOS sin migracion. No
+# ve las migraciones que ya estan en el codigo pero faltan aplicar en la base,
+# que es justo lo que rompio el reporte de flujo bancario en el entorno de
+# pruebas: la migracion 0066 existia pero no se habia corrido, asi que la
+# tabla vg_transferencias_cuentas no existia y el reporte daba error 500.
+PENDIENTES=("$("$PY" manage.py showmigrations 2>/dev/null | grep -c '\[ \]')")
+if [ "${PENDIENTES[0]}" != "0" ]; then
+  mal "hay ${PENDIENTES[0]} migracion(es) sin aplicar en PRODUCCION:"
+  "$PY" manage.py showmigrations 2>/dev/null | grep '\[ \]' | head -8 | sed 's/^/          /'
+  echo "    Aplicar con:  ./entorno.sh produccion manage.py migrate"
+  echo "    Y en pruebas:  ./entorno.sh prueba manage.py migrate"
+  exit 1
+fi
+ok "todas las migraciones aplicadas en produccion"
 
 paso "4. Compilando el frontend"
 cd "$FRONTEND"
