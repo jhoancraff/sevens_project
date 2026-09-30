@@ -1,4 +1,6 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
+import ActionMenuSelect from './ActionMenuSelect';
+import IngresoNoFacturadoModal from './IngresoNoFacturadoModal';
 import Toast from './Toast';
 import TransferenciaCuentasModal from './TransferenciaCuentasModal';
 import useToast from '../hooks/useToast';
@@ -15,12 +17,13 @@ function formatMonto(value) {
   return number.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTransferencias }) {
+function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTransferencias, onViewHistorialIngresos }) {
   const [fecha, setFecha] = useState(todayIso());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [transferenciaModalOpen, setTransferenciaModalOpen] = useState(false);
+  const [ingresoModalOpen, setIngresoModalOpen] = useState(false);
   const { toast, showSuccess, hideToast } = useToast();
 
   const loadReport = useCallback(async (fechaConsultada) => {
@@ -57,6 +60,12 @@ function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTra
     loadReport(fecha);
   };
 
+  const handleIngresoSuccess = (resultado) => {
+    setIngresoModalOpen(false);
+    showSuccess(resultado.message || 'Ingreso registrado correctamente.');
+    loadReport(fecha);
+  };
+
   return (
     <section style={containerStyle(isMobile)}>
       <Toast toast={toast} onClose={hideToast} />
@@ -66,18 +75,41 @@ function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTra
         onClose={() => setTransferenciaModalOpen(false)}
         onSuccess={handleTransferenciaSuccess}
       />
+      <IngresoNoFacturadoModal
+        open={ingresoModalOpen}
+        onClose={() => setIngresoModalOpen(false)}
+        onSuccess={handleIngresoSuccess}
+      />
 
       <div className="no-print" style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <button type="button" onClick={onBack} style={backButtonStyle}>
           ← Volver a Contabilidad
         </button>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <button type="button" onClick={() => setTransferenciaModalOpen(true)} style={transferButtonStyle}>
-            ⇄ Transferencia entre cuentas
-          </button>
-          <button type="button" onClick={onViewHistorialTransferencias} style={historialButtonStyle}>
-            Historial de transferencias
-          </button>
+          <ActionMenuSelect
+            label="⇄ Transferencias"
+            accentColor="#6d28d9"
+            options={[
+              { value: 'nueva', label: '+ Registrar transferencia' },
+              { value: 'historial', label: 'Ver historial' },
+            ]}
+            onSelect={(value) => {
+              if (value === 'nueva') setTransferenciaModalOpen(true);
+              if (value === 'historial') onViewHistorialTransferencias();
+            }}
+          />
+          <ActionMenuSelect
+            label="+ Ingresos parciales"
+            accentColor="#0d9488"
+            options={[
+              { value: 'nuevo', label: '+ Registrar ingreso' },
+              { value: 'historial', label: 'Ver historial' },
+            ]}
+            onSelect={(value) => {
+              if (value === 'nuevo') setIngresoModalOpen(true);
+              if (value === 'historial') onViewHistorialIngresos();
+            }}
+          />
           <button type="button" onClick={() => window.print()} style={printButtonStyle}>
             Imprimir / Guardar PDF
           </button>
@@ -248,8 +280,6 @@ const headStyle = { padding: '12px 14px', background: 'rgba(255,255,255,0.06)', 
 const cellStyle = { padding: '14px', borderTop: '1px solid rgba(255,255,255,0.08)', color: '#f2e6e6', display: 'grid', alignContent: 'center' };
 
 const printButtonStyle = { border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '10px 16px', background: 'rgba(255,255,255,0.04)', color: '#fff', fontWeight: 700, cursor: 'pointer' };
-const transferButtonStyle = { border: 'none', borderRadius: 999, padding: '10px 16px', background: 'linear-gradient(90deg, #6d28d9 0%, #4f46e5 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(79, 70, 229, 0.35)' };
-const historialButtonStyle = { border: '1px solid rgba(150, 145, 255, 0.4)', borderRadius: 999, padding: '10px 16px', background: 'rgba(109, 40, 217, 0.14)', color: '#d9ccff', fontWeight: 700, cursor: 'pointer' };
 const backButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', border: 'none', borderRadius: 999, padding: '11px 18px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(37, 99, 235, 0.35)' };
 
 export default ReporteDisponibilidadCuentasPage;

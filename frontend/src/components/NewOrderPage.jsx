@@ -63,6 +63,30 @@ function NewOrderPage({
   const [promotionsByProductId, setPromotionsByProductId] = useState({});
   const [detailProduct, setDetailProduct] = useState(null);
   const [cartModalOpen, setCartModalOpen] = useState(false);
+  // En movil, `position: fixed` se ancla al viewport DE LAYOUT, que la mayoria
+  // de navegadores NO encoge cuando aparece el teclado (solo encogen el
+  // viewport VISUAL) — el resultado es que la barra queda "pegada" detras del
+  // teclado, fuera de lo que se ve, y hay que scrollear para alcanzarla.
+  // window.visualViewport SI reporta el tamaño real visible; con eso
+  // calculamos cuanto tapa el teclado y subimos la barra esa misma distancia.
+  const [keyboardOffset, setKeyboardOffset] = useState(0);
+  useEffect(() => {
+    const visualViewport = window.visualViewport;
+    if (!visualViewport) {
+      return undefined;
+    }
+    const handleViewportResize = () => {
+      const offset = window.innerHeight - visualViewport.height - visualViewport.offsetTop;
+      setKeyboardOffset(Math.max(0, Math.round(offset)));
+    };
+    visualViewport.addEventListener('resize', handleViewportResize);
+    visualViewport.addEventListener('scroll', handleViewportResize);
+    handleViewportResize();
+    return () => {
+      visualViewport.removeEventListener('resize', handleViewportResize);
+      visualViewport.removeEventListener('scroll', handleViewportResize);
+    };
+  }, []);
   const [addonPickerFor, setAddonPickerFor] = useState(null);
   const [pesoPickerFor, setPesoPickerFor] = useState(null);
   const [opcionesPickerFor, setOpcionesPickerFor] = useState(null);
@@ -1057,7 +1081,7 @@ function NewOrderPage({
       </form>
 
       {isCompact && cartItems.length > 0 ? (
-        <div style={mobileCartBarStyle}>
+        <div style={{ ...mobileCartBarStyle, bottom: 12 + keyboardOffset }}>
           <button
             type="button"
             onClick={() => setCartModalOpen(true)}

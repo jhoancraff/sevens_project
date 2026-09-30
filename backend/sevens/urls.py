@@ -79,6 +79,7 @@ from .compras_views import (
     cuentas_por_pagar_view,
 )
 from .contabilidad_views import (
+    admin_ingresos_no_facturados_view,
     admin_metodos_pago_view,
     ingresos_extra_view,
     metodos_pago_activos_view,
@@ -205,6 +206,7 @@ urlpatterns = [
     # --- Administracion: metodos de pago e ingresos extra ------------------
     path('admin/metodos-pago/', admin_metodos_pago_view, name='admin_metodos_pago'),
     path('contabilidad/ingresos-extra/', ingresos_extra_view, name='ingresos_extra'),
+    path('admin/ingresos-no-facturados/', admin_ingresos_no_facturados_view, name='admin_ingresos_no_facturados'),
     path('metodos-pago/', metodos_pago_activos_view, name='metodos_pago_activos'),
 
     # --- Reportes ---------------------------------------------------------
