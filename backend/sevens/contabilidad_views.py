@@ -123,6 +123,17 @@ def ingresos_extra_view(request):
     if tipo not in {clave for clave, _ in VGIngresoExtra.TIPOS}:
         return _auth_response({'ok': False, 'message': 'Tipo invalido.'}, status=400)
 
+    descripcion = str(data.get('descripcion', '') or '').strip()
+    # Unica diferencia de validacion entre tipos: un ingreso no facturado (sin
+    # cobro de venta detras) solo se puede documentar con su descripcion — sin
+    # eso no hay forma de saber despues de donde salio ese dinero. Propina/
+    # pago_extra siguen con descripcion opcional, sin cambios.
+    if tipo == 'ingreso_no_facturado' and not descripcion:
+        return _auth_response({
+            'ok': False,
+            'message': 'La descripción es obligatoria para un ingreso no facturado.',
+        }, status=400)
+
     try:
         monto_input = Decimal(str(data.get('monto', '')))
     except InvalidOperation:
@@ -160,15 +171,67 @@ def ingresos_extra_view(request):
         tipo=tipo,
         monto=monto,
         tasa_cambio_referencia=tasa_conversion,
-        descripcion=str(data.get('descripcion', '') or '').strip(),
+        descripcion=descripcion,
         metodo_pago=metodo_pago,
         creado_por=request.user,
     )
+    # 'Propina' es femenino, 'Pago extra'/'Ingreso no facturado' son
+    # masculinos — un solo f-string con "registrada" fijo quedaba mal
+    # concordado para estos dos ultimos.
+    participio = 'registrada' if tipo == 'propina' else 'registrado'
     return _auth_response({
         'ok': True,
-        'message': f'{ingreso.get_tipo_display()} registrada correctamente.',
+        'message': f'{ingreso.get_tipo_display()} {participio} correctamente.',
         'ingreso': _serialize_ingreso_extra(ingreso),
     }, status=201)
+
+
+def admin_ingresos_no_facturados_view(request):
+    """
+    Historial administrativo de ingresos no facturados (VGIngresoExtra,
+    tipo='ingreso_no_facturado') — a diferencia de ingresos_extra_view (que
+    solo trae los de HOY, pensado para que la cajera revise su turno en
+    Cobro), este es el historial completo por rango de fechas y cuenta, solo
+    para administradores. Nunca mezcla con propina/pago_extra.
+    """
+    if request.method != 'GET':
+        return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
+
+    if not _is_admin_user(request.user):
+        return _auth_response({'ok': False, 'message': 'Debes iniciar sesion como administrador.'}, status=401)
+
+    desde_raw = request.GET.get('desde')
+    hasta_raw = request.GET.get('hasta')
+    try:
+        desde = date.fromisoformat(desde_raw) if desde_raw else timezone.localdate().replace(day=1)
+        hasta = date.fromisoformat(hasta_raw) if hasta_raw else timezone.localdate()
+    except ValueError:
+        return _auth_response({'ok': False, 'message': 'Las fechas no son validas.'}, status=400)
+    if desde > hasta:
+        return _auth_response({'ok': False, 'message': '"Desde" no puede ser posterior a "Hasta".'}, status=400)
+
+    ingresos_qs = (
+        VGIngresoExtra.objects
+        .filter(tipo='ingreso_no_facturado', fecha_creacion__date__gte=desde, fecha_creacion__date__lte=hasta)
+        .select_related('metodo_pago', 'creado_por')
+    )
+
+    metodo_pago_id_raw = request.GET.get('metodo_pago_id')
+    if metodo_pago_id_raw not in (None, ''):
+        try:
+            ingresos_qs = ingresos_qs.filter(metodo_pago_id=int(metodo_pago_id_raw))
+        except ValueError:
+            return _auth_response({'ok': False, 'message': 'La cuenta indicada no es valida.'}, status=400)
+
+    ingresos = list(ingresos_qs.order_by('-fecha_creacion'))
+
+    return _auth_response({
+        'ok': True,
+        'desde': desde.isoformat(),
+        'hasta': hasta.isoformat(),
+        'ingresos': [_serialize_ingreso_extra(ingreso) for ingreso in ingresos],
+        'total': str(sum((ingreso.monto for ingreso in ingresos), Decimal('0')).quantize(Decimal('0.01'))),
+    })
 
 
 @csrf_exempt

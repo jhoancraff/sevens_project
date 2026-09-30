@@ -2410,3 +2410,115 @@ class ReporteFlujoBancoTests(TestCase):
             'metodo_pago_ids': f'{self.banco.id},{cuenta_usd.id}',
         })
         self.assertEqual(response.status_code, 400)
+
+
+class IngresoNoFacturadoTests(TestCase):
+    """
+    Tercer tipo de VGIngresoExtra ('ingreso_no_facturado'): dinero que entra a
+    una cuenta sin pasar por un cobro de venta. Reusa el mismo endpoint de
+    propina/pago_extra (ingresos_extra_view) — la unica diferencia de
+    validacion es que la descripcion es obligatoria para este tipo.
+    """
+
+    def setUp(self):
+        self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='ingreso_admin', password='claveAdmin123', cedula='90000009',
+            email='ingreso_admin@sevens.test', id_role=self.admin_role,
+        )
+        self.client.force_login(self.admin)
+        self.cuenta_usd = VGMetodoPago.objects.create(nombre='Zelle Ingreso', moneda='USD')
+        self.cuenta_ves = VGMetodoPago.objects.create(nombre='Pago Movil Ingreso', moneda='VES')
+
+    def _registrar(self, **overrides):
+        body = {
+            'tipo': 'ingreso_no_facturado', 'monto': '100', 'metodo_pago_id': self.cuenta_usd.id,
+            'descripcion': 'Deposito de un socio',
+        }
+        body.update(overrides)
+        return self.client.post(
+            '/api/contabilidad/ingresos-extra/', data=json.dumps(body), content_type='application/json',
+        )
+
+    def test_rechaza_sin_descripcion(self):
+        response = self._registrar(descripcion='')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('descripción', response.json()['message'].lower())
+        self.assertFalse(VGIngresoExtra.objects.exists())
+
+    def test_crea_con_descripcion(self):
+        response = self._registrar()
+        self.assertEqual(response.status_code, 201, response.content)
+        ingreso = VGIngresoExtra.objects.get()
+        self.assertEqual(ingreso.tipo, 'ingreso_no_facturado')
+        self.assertEqual(ingreso.descripcion, 'Deposito de un socio')
+
+    def test_propina_sigue_sin_exigir_descripcion(self):
+        response = self._registrar(tipo='propina', descripcion='')
+        self.assertEqual(response.status_code, 201, response.content)
+
+    def test_monto_en_cuenta_ves_se_reconstruye_exacto_con_tasa_congelada(self):
+        _set_tasa_actual('40.0000')
+        response = self._registrar(metodo_pago_id=self.cuenta_ves.id, monto='4000.00')
+        self.assertEqual(response.status_code, 201, response.content)
+        ingreso = VGIngresoExtra.objects.get()
+        self.assertIsNotNone(ingreso.tasa_cambio_referencia)
+
+        # La tasa "oficial" cambia DESPUES de registrar.
+        _set_tasa_actual('999.0000')
+
+        reconstruido = (ingreso.monto * ingreso.tasa_cambio_referencia).quantize(Decimal('0.01'))
+        self.assertEqual(reconstruido, Decimal('4000.00'))
+
+    def test_saldo_de_la_cuenta_sube_exactamente_ese_monto(self):
+        hoy = timezone.localdate().isoformat()
+        antes = self.client.get(f'/api/admin/reportes/disponibilidad-cuentas/?fecha={hoy}').json()
+        saldo_antes = Decimal(next(c for c in antes['cuentas'] if c['id'] == self.cuenta_usd.id)['saldo_disponible'])
+
+        self._registrar(monto='250.00')
+
+        despues = self.client.get(f'/api/admin/reportes/disponibilidad-cuentas/?fecha={hoy}').json()
+        saldo_despues = Decimal(next(c for c in despues['cuentas'] if c['id'] == self.cuenta_usd.id)['saldo_disponible'])
+        self.assertEqual(saldo_despues - saldo_antes, Decimal('250.00'))
+
+    def test_aparece_en_flujo_de_banco_diario_con_su_descripcion(self):
+        self._registrar(descripcion='Reembolso de proveedor')
+        hoy = timezone.localdate()
+        response = self.client.get('/api/admin/reportes/flujo-banco/', data={
+            'anio': hoy.year, 'mes': hoy.month, 'metodo_pago_ids': str(self.cuenta_usd.id),
+        })
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        dia = next(d for d in payload['dias'] if d['fecha'] == hoy.isoformat())
+        self.assertEqual(dia['entrada'], '100.00')
+
+        detalle = self.client.get('/api/admin/reportes/flujo-banco/detalle/', data={
+            'fecha': hoy.isoformat(), 'tipo': 'entrada', 'metodo_pago_ids': str(self.cuenta_usd.id),
+        })
+        movimiento = detalle.json()['movimientos'][0]
+        self.assertEqual(movimiento['origen'], 'Ingreso no facturado')
+        self.assertEqual(movimiento['referencia'], 'Reembolso de proveedor')
+
+    def test_historial_filtra_por_rango_y_cuenta(self):
+        self._registrar(descripcion='Uno')
+        self._registrar(metodo_pago_id=self.cuenta_ves.id, monto='1000', descripcion='Dos')
+        # Un registro del mes pasado no debe aparecer en el default (mes actual).
+        fuera = VGIngresoExtra.objects.create(
+            tipo='ingreso_no_facturado', monto=Decimal('10'), descripcion='Viejo', metodo_pago=self.cuenta_usd,
+        )
+        mes_pasado = timezone.localdate().replace(day=1) - timedelta(days=1)
+        VGIngresoExtra.objects.filter(pk=fuera.pk).update(
+            fecha_creacion=timezone.make_aware(datetime.combine(mes_pasado, datetime.min.time())),
+        )
+
+        response = self.client.get('/api/admin/ingresos-no-facturados/')
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertEqual(len(payload['ingresos']), 2)
+
+        response_filtrado = self.client.get(
+            '/api/admin/ingresos-no-facturados/', data={'metodo_pago_id': self.cuenta_usd.id},
+        )
+        payload_filtrado = response_filtrado.json()
+        self.assertEqual(len(payload_filtrado['ingresos']), 1)
+        self.assertEqual(payload_filtrado['ingresos'][0]['descripcion'], 'Uno')
