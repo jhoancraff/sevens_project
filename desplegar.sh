@@ -122,6 +122,6 @@ for url in "http://$IP/" "http://$IP:8080/"; do
 done
 
 echo
-echo "  \033[1mEn el celular: si no ves el cambio, borra la app de la"
-echo "  pantalla de inicio y vuelve a abrirla. El service worker guarda el"
-echo "  bundle viejo en cache aunque el servidor ya tenga el nuevo."
+printf '  \033[1mEn el celular:\033[0m si no ves el cambio, borra la app de la\n'
+printf '  pantalla de inicio y vuelve a abrirla. El service worker guarda el\n'
+printf '  bundle viejo en cache aunque el servidor ya tenga el nuevo.\n'
