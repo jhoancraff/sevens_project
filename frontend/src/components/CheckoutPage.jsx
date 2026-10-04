@@ -5,6 +5,7 @@ import ConfirmModal from './ConfirmModal';
 import CuentasPorCobrarPage from './CuentasPorCobrarPage';
 import useMobileBackHandler from '../hooks/useMobileBackHandler';
 import FacturasHistorialPage from './FacturasHistorialPage';
+import MoneyInput from './MoneyInput';
 import NotasEntregaHistorialPage from './NotasEntregaHistorialPage';
 import Toast from './Toast';
 import useExchangeRate from '../hooks/useExchangeRate';
@@ -337,7 +338,23 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
   const selectedGroupFullTotal = selectedGroup
     ? selectedGroup.pedidos.reduce((sum, pedido) => sum + Number(pedido.total), 0)
     : 0;
-  const cliente = selectedGroup ? (clienteByGroup[selectedGroup.key] || emptyCliente) : emptyCliente;
+  // Lo que escribio el mesero al tomar el pedido (cedula y nombre del cliente) llega
+  // precargado a la caja; la cajera solo lo edita si hace falta. Una vez que ella
+  // toca algun campo, manda lo que haya en clienteByGroup.
+  const clienteDelMesero = (group) => {
+    const pedidoConCedula = group.pedidos.find((pedido) => pedido.cliente_cedula);
+    const origen = pedidoConCedula || group.pedidos.find((pedido) => pedido.cliente) || null;
+    if (!origen) {
+      return emptyCliente;
+    }
+    return {
+      cedula: origen.cliente_cedula || '',
+      apellido: origen.cliente_apellido || '',
+      nombre: origen.cliente || '',
+      registrado: false,
+    };
+  };
+  const cliente = selectedGroup ? (clienteByGroup[selectedGroup.key] || clienteDelMesero(selectedGroup)) : emptyCliente;
   const prefactura = selectedGroup ? prefacturaByGroup[selectedGroup.key] : null;
   const isBusy = selectedGroup ? busyGroup === selectedGroup.key : false;
 
@@ -399,14 +416,14 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
   const updateCliente = (groupKey, field, value, extra = {}) => {
     setClienteByGroup((current) => ({
       ...current,
-      [groupKey]: { ...(current[groupKey] || emptyCliente), [field]: value, ...extra },
+      [groupKey]: { ...(current[groupKey] || clienteDelMesero(groups.find((group) => group.key === groupKey) || { pedidos: [] })), [field]: value, ...extra },
     }));
   };
 
   // Cédula (siempre tipo V) y nombre son obligatorios para generar la nota de
   // entrega (y la factura directa si está habilitada); el apellido es opcional.
   const validateCliente = (group) => {
-    const cliente = clienteByGroup[group.key] || emptyCliente;
+    const cliente = clienteByGroup[group.key] || clienteDelMesero(group);
     if (!cliente.cedula.trim()) {
       showError(`Indica la cédula del cliente de ${group.label}.`);
       return false;
@@ -566,7 +583,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
     if (selectedIds.length === 0) {
       return;
     }
-    const cliente = clienteByGroup[group.key] || emptyCliente;
+    const cliente = clienteByGroup[group.key] || clienteDelMesero(group);
 
     // montoCobrar es el monto FINAL a cobrar (no lo que se resta) — vacío/no
     // activo significa "sin descuento", se cobra el total completo (el
@@ -709,7 +726,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
     if (selectedIds.length === 0) {
       return;
     }
-    const cliente = clienteByGroup[group.key] || emptyCliente;
+    const cliente = clienteByGroup[group.key] || clienteDelMesero(group);
     const metodoPagoId = metodosPago[0] && metodosPago[0].id;
 
     setBusyGroup(group.key);
@@ -1289,13 +1306,10 @@ function DescuentoManualBlock({ group, activo, monto, motivo, onActivar, onDesac
       </label>
       {activo ? (
         <div style={descuentoFieldsRowStyle}>
-          <input
-            type="number"
-            min="0"
-            step="0.01"
+          <MoneyInput
             placeholder="Monto final a cobrar ($, vacío = cobrar el total)"
             value={monto}
-            onChange={(event) => onMontoChange(event.target.value)}
+            onChange={onMontoChange}
             style={inputStyle}
           />
           <input
@@ -1355,12 +1369,9 @@ function IngresoExtraModal({ tipo, metodosPago, submitting, onClose, onSubmit })
 
         <label style={ingresoFieldLabelStyle}>
           Monto ({esBs ? 'Bs' : '$'})
-          <input
-            type="number"
-            min="0.01"
-            step="0.01"
+          <MoneyInput
             value={monto}
-            onChange={(event) => setMonto(event.target.value)}
+            onChange={setMonto}
             style={ingresoInputStyle}
             placeholder="0.00"
           />

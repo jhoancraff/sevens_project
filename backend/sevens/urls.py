@@ -76,10 +76,14 @@ from .compras_views import (
     admin_compra_borrador_quitar_view,
     admin_compra_borrador_view,
     compra_abono_view,
+    compra_nota_credito_anular_view,
+    compra_nota_credito_view,
+    reporte_notas_credito_compra_view,
     cuentas_por_pagar_view,
 )
 from .contabilidad_views import (
     admin_ingresos_no_facturados_view,
+    admin_lotes_pos_view,
     admin_metodos_pago_view,
     ingresos_extra_view,
     metodos_pago_activos_view,
@@ -206,6 +210,7 @@ urlpatterns = [
 
     # --- Administracion: metodos de pago e ingresos extra ------------------
     path('admin/metodos-pago/', admin_metodos_pago_view, name='admin_metodos_pago'),
+    path('admin/lotes-pos/', admin_lotes_pos_view, name='admin_lotes_pos'),
     path('contabilidad/ingresos-extra/', ingresos_extra_view, name='ingresos_extra'),
     path('admin/ingresos-no-facturados/', admin_ingresos_no_facturados_view, name='admin_ingresos_no_facturados'),
     path('metodos-pago/', metodos_pago_activos_view, name='metodos_pago_activos'),
@@ -253,4 +258,7 @@ urlpatterns = [
     # --- Cuentas por pagar ------------------------------------------------
     path('cuentas-por-pagar/', cuentas_por_pagar_view, name='cuentas_por_pagar'),
     path('admin/compras/<int:compra_id>/abonos/', compra_abono_view, name='compra_abono'),
+    path('admin/compras/<int:compra_id>/notas-credito/', compra_nota_credito_view, name='compra_nota_credito'),
+    path('admin/compras/notas-credito/<int:nota_id>/anular/', compra_nota_credito_anular_view, name='compra_nota_credito_anular'),
+    path('admin/reportes/notas-credito-compra/', reporte_notas_credito_compra_view, name='reporte_notas_credito_compra'),
 ]

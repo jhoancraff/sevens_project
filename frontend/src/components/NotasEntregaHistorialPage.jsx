@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ConfirmModal from './ConfirmModal';
+import MoneyInput from './MoneyInput';
 import useExchangeRate from '../hooks/useExchangeRate';
 import { formatBs, formatBsRaw, formatMontoDocumento } from '../utils/currency';
 
@@ -1078,14 +1079,10 @@ function AbonoForm({
       <label style={dateFieldStyle}>
         <span style={dateLabelStyle}>Monto a cobrar ({esBs ? 'Bs' : '$'})</span>
         <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            type="number"
-            min="0.01"
-            step="0.01"
-            inputMode="decimal"
+          <MoneyInput
             placeholder={esBs ? 'Monto en Bs' : 'Monto en $'}
             value={montoAbono}
-            onChange={(event) => setMontoAbono(event.target.value)}
+            onChange={setMontoAbono}
             style={{ ...inputStyle, flex: 1 }}
           />
           <button

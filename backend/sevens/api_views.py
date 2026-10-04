@@ -1526,21 +1526,39 @@ def _resolve_or_create_cliente(nombre, cedula, telefono):
     """
     Resuelve el cliente por cédula cuando se da (identificador confiable para
     historial de movimientos y futuros sorteos): si ya existe un VGCliente con
-    esa cédula, se reutiliza tal cual (no se pisa nombre/teléfono ya guardados
-    con lo que haya escrito el mesero esta vez). Si no existe, se crea con los
-    datos capturados ahora. Sin cédula, cae al comportamiento previo
-    (get_or_create solo por nombre), ya que no hay forma confiable de saber si
-    es el mismo cliente.
+    esa cédula SE REUTILIZA — nunca se crea otro — y si el nombre (o el
+    teléfono) que llega ahora es distinto al guardado, se ACTUALIZA el
+    registro existente (el mesero corrigió o completó el nombre; antes esto
+    chocaba y obligaba a cambiar una letra para poder registrar la ronda).
+    Un dato vacío nunca borra uno ya guardado. Sin cédula, se reutiliza el
+    cliente de ese mismo nombre (sin distinguir mayúsculas) o se crea uno; ya
+    no puede fallar si hay varios con el mismo nombre (se toma el más
+    antiguo), que es lo que tumbaba el registro con `get_or_create(nombre=...)`
+    (MultipleObjectsReturned).
     """
+    nombre = nombre.strip()
     cedula = cedula.strip()
+    telefono = telefono.strip()
     if cedula:
-        cliente, _ = VGCliente.objects.get_or_create(
+        cliente, creado = VGCliente.objects.get_or_create(
             tipo_documento='V',
             numero_documento=cedula,
             defaults={'nombre': nombre, 'telefono': telefono},
         )
+        if not creado:
+            cambios = []
+            if nombre and cliente.nombre != nombre:
+                cliente.nombre = nombre
+                cambios.append('nombre')
+            if telefono and cliente.telefono != telefono:
+                cliente.telefono = telefono
+                cambios.append('telefono')
+            if cambios:
+                cliente.save(update_fields=cambios)
         return cliente
-    cliente, _ = VGCliente.objects.get_or_create(nombre=nombre)
+    cliente = VGCliente.objects.filter(nombre__iexact=nombre).order_by('id').first()
+    if cliente is None:
+        cliente = VGCliente.objects.create(nombre=nombre, telefono=telefono)
     return cliente
 
 
@@ -3674,6 +3692,24 @@ def _serialize_abono_compra(abono):
     }
 
 
+def _serialize_nota_credito_compra(nota):
+    return {
+        'id': nota.id,
+        'numero': nota.numero,
+        'codigo': f'NCC-{nota.numero:06d}',
+        'numero_documento_proveedor': nota.numero_documento_proveedor,
+        'fecha': nota.fecha.isoformat(),
+        'monto': str(nota.monto),
+        'monto_bs': str(nota.monto_bs) if nota.monto_bs is not None else None,
+        'tasa_cambio_referencia': str(nota.tasa_cambio_referencia) if nota.tasa_cambio_referencia is not None else None,
+        'motivo': nota.motivo,
+        'estado': nota.estado,
+        'motivo_anulacion': nota.motivo_anulacion,
+        'registrada_por': (nota.creado_por.get_full_name() or nota.creado_por.username) if nota.creado_por else '',
+        'fecha_creacion': nota.fecha_creacion.isoformat(),
+    }
+
+
 def _serialize_compra(compra, incluir_detalle=False):
     # Si esta compra tiene un total_bs_factura (el analista escribió el monto
     # EXACTO de la factura en bolívares al confirmar, ver _importar_ingredientes),
@@ -3699,10 +3735,27 @@ def _serialize_compra(compra, incluir_detalle=False):
         # que haya en caché, sin forzar una consulta nueva al BCV), en vez de
         # quedarse pegado a la tasa del día en que se cargó la factura — igual
         # que ya hace _serialize_gasto para un gasto en dólares.
+        #
+        # Solo el SALDO PENDIENTE sigue a la tasa de hoy. Lo que ya se pago queda
+        # fijo en los bolivares de cada abono (con SU tasa congelada), asi que
+        # total_bs = lo abonado (fijo) + lo que falta (a tasa de hoy): una vez
+        # saldada la cuenta el total deja de moverse, en vez de seguir subiendo
+        # con el BCV semana tras semana (reportado 2026-10).
         tasa_actual = obtener_tasa_actual()
         tasa_para_bs = tasa_actual.tasa if tasa_actual else compra.tasa_cambio_referencia
-        total_bs = (compra.total * tasa_para_bs).quantize(Decimal('0.01')) if tasa_para_bs else None
-        saldo_pendiente_bs = (compra.saldo_pendiente * tasa_para_bs).quantize(Decimal('0.01')) if tasa_para_bs else None
+        if tasa_para_bs:
+            abonado_bs = sum(
+                (abono.monto * (abono.tasa_cambio_referencia or tasa_para_bs) for abono in compra.abonos.all()),
+                Decimal('0'),
+            )
+            saldo_pendiente_bs = (
+                Decimal('0.00') if compra.estado_pago == 'pagada'
+                else (compra.saldo_pendiente * tasa_para_bs).quantize(Decimal('0.01'))
+            )
+            total_bs = (abonado_bs + saldo_pendiente_bs).quantize(Decimal('0.01'))
+        else:
+            total_bs = None
+            saldo_pendiente_bs = None
     else:
         tasa_para_bs = compra.tasa_cambio_referencia
         total_bs = (compra.total * tasa_para_bs).quantize(Decimal('0.01')) if tasa_para_bs else None
@@ -3725,7 +3778,14 @@ def _serialize_compra(compra, incluir_detalle=False):
         'creado_por': (compra.creado_por.get_full_name() or compra.creado_por.username) if compra.creado_por else '',
         'cantidad_items': compra.detalles.count() if incluir_detalle else None,
     }
+    # Notas de credito del proveedor (vigentes): el total y el saldo ya vienen rebajados;
+    # total_original es lo que se cargo antes de ellas.
+    notas_vigentes = [nota for nota in compra.notas_credito.all() if nota.estado == 'vigente']
+    monto_notas = sum((nota.monto for nota in notas_vigentes), Decimal('0'))
+    data['monto_notas_credito'] = str(monto_notas)
+    data['total_original'] = str(compra.total + monto_notas)
     if incluir_detalle:
+        data['notas_credito'] = [_serialize_nota_credito_compra(nota) for nota in compra.notas_credito.all()]
         data['detalles'] = [
             {
                 'id': detalle.id,
@@ -3785,7 +3845,7 @@ def compra_detail_view(request, compra_id):
         return _auth_response({'ok': False, 'message': 'Debes iniciar sesion como administrador.'}, status=401)
 
     try:
-        compra = VGCompra.objects.select_related('creado_por').prefetch_related('detalles__ingrediente').get(pk=compra_id)
+        compra = VGCompra.objects.select_related('creado_por').prefetch_related('detalles__ingrediente', 'notas_credito__creado_por').get(pk=compra_id)
     except VGCompra.DoesNotExist:
         return _auth_response({'ok': False, 'message': 'El lote de compra no existe.'}, status=404)
 
@@ -5814,6 +5874,8 @@ def mesas_atendidas_view(request):
                 {
                     'id': p.id,
                     'cliente': p.cliente.nombre if p.cliente else '',
+                    'cliente_cedula': p.cliente.numero_documento if p.cliente else '',
+                    'cliente_telefono': p.cliente.telefono if p.cliente else '',
                     'estado': p.estado,
                     'total': str(p.total),
                     'notas': p.notas,
@@ -6203,6 +6265,8 @@ def pedidos_cobro_view(request):
                     'grupo_id': pedido.grupo_pedido_id or pedido.id,
                     'cliente_id': pedido.cliente_id,
                     'cliente': pedido.cliente.nombre if pedido.cliente else '',
+                    'cliente_apellido': pedido.cliente.apellido if pedido.cliente else '',
+                    'cliente_cedula': pedido.cliente.numero_documento if pedido.cliente else '',
                     'mesero': pedido.usuario.username,
                     'notas': pedido.notas,
                     'subtotal': str(pedido.subtotal),
@@ -6384,12 +6448,24 @@ def pedidos_cobro_view(request):
         # quedan guardados aparte para que quede constancia de cuánto se
         # descontó y por qué (auditoría) sin perder el total original de los
         # pedidos, que sigue viviendo en cada VGPedido.total.
-        cliente = VGCliente.objects.filter(tipo_documento='V', numero_documento=cedula).first()
-        if cliente is None:
-            cliente = VGCliente.objects.create(
-                tipo_documento='V', numero_documento=cedula,
-                nombre=cliente_nombre, apellido=cliente_apellido,
-            )
+        cliente, cliente_creado = VGCliente.objects.get_or_create(
+            tipo_documento='V',
+            numero_documento=cedula,
+            defaults={'nombre': cliente_nombre, 'apellido': cliente_apellido},
+        )
+        if not cliente_creado:
+            # Cedula ya registrada: se reutiliza y, si la cajera corrigio el
+            # nombre/apellido, se actualiza el mismo registro (nunca se crea
+            # otro). Un campo vacio no borra uno ya guardado.
+            cambios = []
+            if cliente_nombre and cliente.nombre != cliente_nombre:
+                cliente.nombre = cliente_nombre
+                cambios.append('nombre')
+            if cliente_apellido and cliente.apellido != cliente_apellido:
+                cliente.apellido = cliente_apellido
+                cambios.append('apellido')
+            if cambios:
+                cliente.save(update_fields=cambios)
         nota_entrega = VGNotaEntrega.objects.create(
             cliente=cliente,
             metodo_pago=metodo_pago,
