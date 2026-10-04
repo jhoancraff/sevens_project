@@ -26,7 +26,13 @@ from .api_views import (
     _snapshot_costo_venta_detalles,
 )
 from .auth_helpers import _auth_response, _is_admin_user, _is_cajera_user, _is_owner_or_contador_user
-from .impresion_lpd import imprimir_factura_caja, imprimir_nota_entrega_caja, imprimir_prefactura_caja
+from .impresion_lpd import (
+    codigo_cobro,
+    imprimir_factura_caja,
+    imprimir_nota_cobro,
+    imprimir_nota_entrega_caja,
+    imprimir_prefactura_caja,
+)
 from .models import (
     VGCliente,
     VGCorrelativoFiscal,
@@ -317,6 +323,8 @@ def _serialize_cliente(cliente):
     return {
         'id': cliente.id,
         'nombre': cliente.nombre,
+        'apellido': cliente.apellido,
+        'nombre_completo': cliente.nombre_completo,
         'tipo_documento': cliente.tipo_documento,
         'numero_documento': cliente.numero_documento,
         'direccion_fiscal': cliente.direccion_fiscal,
@@ -373,6 +381,9 @@ def _serialize_pago(pago):
         'fecha_pago': pago.fecha_pago.isoformat(),
         'tasa_cambio_referencia': str(pago.tasa_cambio_referencia) if pago.tasa_cambio_referencia is not None else None,
         'creado_por': (pago.creado_por.get_full_name() or pago.creado_por.username) if pago.creado_por else '',
+        'numero_cobro': pago.numero_cobro,
+        'codigo_cobro': codigo_cobro(pago.numero_cobro),
+        'saldo_posterior': str(pago.saldo_posterior) if pago.saldo_posterior is not None else None,
     }
 
 
@@ -444,7 +455,11 @@ def clientes_buscar_view(request):
     query = str(request.GET.get('q', '') or '').strip()
     clientes = VGCliente.objects.all().order_by('nombre')
     if query:
-        clientes = clientes.filter(models.Q(nombre__icontains=query) | models.Q(numero_documento__icontains=query))
+        clientes = clientes.filter(
+            models.Q(nombre__icontains=query)
+            | models.Q(apellido__icontains=query)
+            | models.Q(numero_documento__icontains=query)
+        )
 
     return _auth_response({'ok': True, 'clientes': [_serialize_cliente(cliente) for cliente in clientes[:20]]})
 
@@ -536,9 +551,9 @@ def prefacturas_view(request):
     except (TypeError, ValueError):
         return _auth_response({'ok': False, 'message': 'Hay un pedido invalido en la seleccion.'}, status=400)
 
-    cliente, error = _resolve_cliente(data)
-    if error:
-        return _auth_response({'ok': False, 'message': error}, status=400)
+    # La pre-factura es solo la cuenta que se le muestra al cliente: no lleva
+    # datos de cliente (se ignoran si el frontend los manda).
+    cliente = None
 
     moneda, error = _resolve_moneda(data)
     if error:
@@ -1020,6 +1035,7 @@ def _serialize_nota_entrega(nota, incluir_detalle=True, tasa_pago_actual=None):
         'metodo_pago': nota.metodo_pago.nombre,
         'metodo_pago_id': nota.metodo_pago_id,
         'referencia': nota.referencia,
+        'cliente': _serialize_cliente(nota.cliente),
         'descuento_monto': str(nota.descuento_monto),
         'descuento_motivo': nota.descuento_motivo,
         'motivo_anulacion': nota.motivo_anulacion,
@@ -1035,13 +1051,18 @@ def _serialize_nota_entrega(nota, incluir_detalle=True, tasa_pago_actual=None):
         # diferencia por la devaluacion ya calculada) en vez de enterarse
         # despues de que el abono no le cuadro. En una nota de hoy da lo
         # mismo que tasa_cambio_referencia (es la misma tasa).
+        # Siempre se calcula como si se fuera a cobrar en bolívares (aunque la
+        # nota sea en USD): la cajera elige el método al cobrar.
         tasa_vigente = _tasa_conversion_vigente(
-            nota.moneda, nota.fecha_emision, nota.tasa_cambio_referencia, tasa_pago_actual,
+            'VES', nota.fecha_emision, nota.tasa_cambio_referencia, tasa_pago_actual,
         )
         data['tasa_cobro_vigente'] = str(tasa_vigente) if tasa_vigente else None
         data['saldo_pendiente_bs_vigente'] = (
             str((nota.saldo_pendiente * tasa_vigente).quantize(Decimal('0.01')))
-            if nota.moneda == 'VES' and tasa_vigente else None
+            if tasa_vigente else None
+        )
+        data['total_bs_vigente'] = (
+            str((nota.total * tasa_vigente).quantize(Decimal('0.01'))) if tasa_vigente else None
         )
     if incluir_detalle:
         data['pagos'] = [
@@ -1083,7 +1104,7 @@ def notas_entrega_view(request):
         return _auth_response({'ok': False, 'message': '"Desde" no puede ser posterior a "Hasta".'}, status=400)
 
     notas = (
-        VGNotaEntrega.objects.select_related('metodo_pago')
+        VGNotaEntrega.objects.select_related('metodo_pago', 'cliente')
         .prefetch_related('pedidos')
         .order_by('-fecha_emision')
     )
@@ -1111,7 +1132,7 @@ def nota_entrega_detail_view(request, nota_id):
 
     try:
         nota = (
-            VGNotaEntrega.objects.select_related('metodo_pago')
+            VGNotaEntrega.objects.select_related('metodo_pago', 'cliente')
             .prefetch_related('pedidos', 'pagos__metodo_pago', 'pagos__creado_por')
             .get(pk=nota_id)
         )
@@ -1170,23 +1191,26 @@ def nota_entrega_abono_view(request, nota_id):
         if nota.estado in ('pagada', 'anulada'):
             return _auth_response({'ok': False, 'message': 'Esta nota de entrega ya no admite cobros.'}, status=409)
 
-        # La nota se emitio con un metodo "declarado" (lo que se imprimio en
-        # el momento del cobro rapido — ver pedidos_cobro_view), pero el
-        # cliente puede terminar pagando con una cuenta distinta (p. ej. se
-        # declaro Efectivo pero paga por Pago Movil). Eso mueve la plata a
-        # otra cuenta bancaria real, asi que se le pide confirmacion explicita
-        # a la cajera antes de aplicarlo — si no confirma, no se registra
-        # nada todavia y el frontend le muestra la alerta.
-        cambia_metodo = metodo_pago.id != nota.metodo_pago_id
-        if cambia_metodo and not confirma_cambio_metodo:
+        # La nota nace sin método de pago real. Solo se pide confirmación cuando
+        # ya hay cobros completados con OTRA cuenta (el primer cobro nunca
+        # pregunta): mover el resto de la plata a otra cuenta bancaria debe ser
+        # una decisión explícita de la cajera.
+        pago_otra_cuenta = (
+            nota.pagos.filter(estado='completado')
+            .exclude(metodo_pago_id=metodo_pago.id)
+            .select_related('metodo_pago')
+            .order_by('-fecha_pago', '-id')
+            .first()
+        )
+        if pago_otra_cuenta is not None and not confirma_cambio_metodo:
             return _auth_response({
                 'ok': False,
                 'requiere_confirmacion': True,
-                'metodo_anterior': nota.metodo_pago.nombre,
+                'metodo_anterior': pago_otra_cuenta.metodo_pago.nombre,
                 'metodo_nuevo': metodo_pago.nombre,
                 'message': (
-                    f'Esta nota se generó con «{nota.metodo_pago.nombre}» y la estás '
-                    f'cobrando con «{metodo_pago.nombre}». ¿Confirmas el cambio de cuenta?'
+                    f'Esta nota se cobró con «{pago_otra_cuenta.metodo_pago.nombre}» y ahora '
+                    f'usas «{metodo_pago.nombre}». ¿Confirmas el cambio de cuenta?'
                 ),
             }, status=409)
 
@@ -1245,6 +1269,7 @@ def nota_entrega_abono_view(request, nota_id):
                 else (tasa_pago_actual.tasa if tasa_pago_actual else None)
             ),
             creado_por=request.user,
+            numero_cobro=VGCorrelativoFiscal.siguiente('NOTA_COBRO'),
         )
 
         # Ver el comentario equivalente en factura_abono_view: se redondea a 6
@@ -1261,22 +1286,25 @@ def nota_entrega_abono_view(request, nota_id):
         )
         nota.estado = 'pagada' if nota.saldo_pendiente <= 0 else 'abonada_parcial'
         nota.actualizado_por = request.user
+        pago.saldo_posterior = nota.saldo_pendiente
+        pago.save(update_fields=['saldo_posterior'])
         update_fields = ['saldo_pendiente', 'estado', 'actualizado_por', 'fecha_actualizacion']
-        if cambia_metodo:
-            # Confirmado por la cajera arriba: la nota pasa a declarar la
-            # cuenta con la que de verdad se esta cobrando, para que el resto
-            # del saldo (si queda pendiente) se siga cotizando en la moneda
-            # correcta de aqui en adelante.
-            nota.metodo_pago = metodo_pago
-            nota.moneda = metodo_pago.moneda
-            update_fields += ['metodo_pago', 'moneda']
         nota.save(update_fields=update_fields)
+
+    # Fuera de la transacción: un fallo de impresora nunca deshace el cobro.
+    try:
+        impreso, motivo_no_impreso = imprimir_nota_cobro(pago)
+    except Exception as exc:
+        logger.exception('Fallo al imprimir la nota de cobro %s', pago.id)
+        impreso, motivo_no_impreso = False, f'No se pudo imprimir: {exc}'
 
     return _auth_response({
         'ok': True,
         'message': 'Abono registrado correctamente.',
         'nota_entrega': _serialize_nota_entrega(nota, tasa_pago_actual=tasa_pago_actual),
         'pago': _serialize_pago(pago),
+        'impreso': bool(impreso),
+        'motivo_no_impreso': motivo_no_impreso or '',
     }, status=201)
 
 
@@ -1303,4 +1331,32 @@ def nota_entrega_reimprimir_view(request, nota_id):
     return _auth_response({
         'ok': True,
         'message': f'Nota de entrega {nota.codigo} reenviada a la impresora.',
+    })
+
+
+@csrf_exempt
+def nota_entrega_abono_reimprimir_view(request, nota_id, pago_id):
+    if request.method != 'POST':
+        return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
+
+    if not (_is_admin_user(request.user) or _is_cajera_user(request.user)):
+        return _auth_response({'ok': False, 'message': 'No tienes permiso para reimprimir cobros.'}, status=401)
+
+    pago = (
+        VGPago.objects.select_related('nota_entrega__cliente', 'metodo_pago', 'creado_por')
+        .filter(pk=pago_id, nota_entrega_id=nota_id).first()
+    )
+    if pago is None:
+        return _auth_response({'ok': False, 'message': 'El cobro no existe.'}, status=404)
+
+    exito, motivo = imprimir_nota_cobro(pago, es_reimpresion=True)
+    if not exito:
+        return _auth_response({
+            'ok': False,
+            'message': motivo or 'No se pudo reimprimir la nota de cobro.',
+        }, status=502)
+
+    return _auth_response({
+        'ok': True,
+        'message': f'Nota de cobro {codigo_cobro(pago.numero_cobro) or pago.id} reenviada a la impresora.',
     })

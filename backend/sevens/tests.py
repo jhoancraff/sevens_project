@@ -917,7 +917,7 @@ class PedidoCobroInventoryDeductionTests(TestCase):
     def _cobrar(self, pedido_ids):
         return self.client.post(
             '/api/pedidos/cobro/',
-            data=json.dumps({'pedido_ids': pedido_ids, 'metodo_pago_id': self.metodo_pago.id}),
+            data=json.dumps({'pedido_ids': pedido_ids, 'cliente_cedula': '12345678', 'cliente_nombre': 'Cliente Prueba'}),
             content_type='application/json',
         )
 
@@ -1232,7 +1232,7 @@ class TablaRacionesPorTamanoTests(TestCase):
         )
         response = self.client.post(
             '/api/pedidos/cobro/',
-            data=json.dumps({'pedido_ids': [pedido.id], 'metodo_pago_id': self.metodo_pago.id}),
+            data=json.dumps({'pedido_ids': [pedido.id], 'cliente_cedula': '12345678', 'cliente_nombre': 'Cliente Prueba'}),
             content_type='application/json',
         )
         self.assertEqual(response.status_code, 201, response.content)
@@ -2068,7 +2068,7 @@ class ReporteMovimientoProductosTests(TestCase):
             )
         response = self.client.post(
             '/api/pedidos/cobro/',
-            data=json.dumps({'pedido_ids': [pedido.id], 'metodo_pago_id': self.metodo_pago.id}),
+            data=json.dumps({'pedido_ids': [pedido.id], 'cliente_cedula': '12345678', 'cliente_nombre': 'Cliente Prueba'}),
             content_type='application/json',
         )
         self.assertEqual(response.status_code, 201, response.content)
@@ -2197,7 +2197,7 @@ class ReporteMargenGananciaDetalleTests(TestCase):
         )
         response = self.client.post(
             '/api/pedidos/cobro/',
-            data=json.dumps({'pedido_ids': [pedido.id], 'metodo_pago_id': self.metodo_pago.id}),
+            data=json.dumps({'pedido_ids': [pedido.id], 'cliente_cedula': '12345678', 'cliente_nombre': 'Cliente Prueba'}),
             content_type='application/json',
         )
         self.assertEqual(response.status_code, 201, response.content)
@@ -2522,3 +2522,186 @@ class IngresoNoFacturadoTests(TestCase):
         payload_filtrado = response_filtrado.json()
         self.assertEqual(len(payload_filtrado['ingresos']), 1)
         self.assertEqual(payload_filtrado['ingresos'][0]['descripcion'], 'Uno')
+
+
+class NotaEntregaCobroFlujoTests(TestCase):
+    """
+    Flujo rehecho de nota de entrega y cobro: cliente obligatorio al emitir,
+    método elegido al cobrar, notas de cobro (COB-xxxxxx) y NC en bolívares.
+    Todo a través de los endpoints reales.
+    """
+
+    def setUp(self):
+        from sevens.models import VGImpresoraCaja
+        self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='cobro_admin', password='claveAdmin123', cedula='90000099',
+            email='cobro_admin@sevens.test', id_role=self.admin_role,
+        )
+        self.client.force_login(self.admin)
+        self.efectivo, _ = VGMetodoPago.objects.get_or_create(
+            nombre='Efectivo USD', defaults={'es_efectivo': True, 'moneda': 'USD'},
+        )
+        self.pagomovil = VGMetodoPago.objects.create(nombre='Pago movil test', es_efectivo=False, moneda='VES')
+        self.binance = VGMetodoPago.objects.create(nombre='Binance test', es_efectivo=False, moneda='USD')
+        self.categoria = VGCategoriaProducto.objects.create(nombre='Cat cobro')
+        self.producto = VGProducto.objects.create(
+            nombre='Plato cobro', categoria=self.categoria, precio_venta='10.00', disponible=True,
+        )
+        _set_tasa_actual(250)
+        self.VGImpresoraCaja = VGImpresoraCaja
+
+    def _pedido(self, precio='10.00'):
+        pedido = VGPedido.objects.create(
+            usuario=self.admin, tipo_pedido='local', estado='entregado', subtotal='0', total='0',
+        )
+        VGDetallePedido.objects.create(
+            pedido=pedido, producto=self.producto, cantidad=1, precio_unitario=precio, estado='entregado',
+        )
+        VGPedido.objects.filter(pk=pedido.pk).update(subtotal=precio, total=precio)
+        pedido.refresh_from_db()
+        return pedido
+
+    def _emitir(self, pedido, **extra):
+        body = {'pedido_ids': [pedido.id], 'cliente_cedula': '12345678', 'cliente_nombre': 'Ana'}
+        body.update(extra)
+        return self.client.post('/api/pedidos/cobro/', data=json.dumps(body), content_type='application/json')
+
+    def _abonar(self, nota_id, metodo, monto, referencia='', confirmar=False):
+        return self.client.post(
+            f'/api/notas-entrega/{nota_id}/abonos/',
+            data=json.dumps({
+                'monto': str(monto), 'metodo_pago_id': metodo.id, 'referencia': referencia,
+                'confirmar_cambio_metodo': confirmar,
+            }),
+            content_type='application/json',
+        )
+
+    def test_emision_exige_cedula_y_nombre_y_reutiliza_cliente(self):
+        p1 = self._pedido()
+        r = self._emitir(p1, cliente_cedula='')
+        self.assertEqual(r.status_code, 400)
+        r = self._emitir(p1, cliente_nombre='')
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(VGNotaEntrega.objects.count(), 0)
+
+        r = self._emitir(p1, cliente_apellido='Perez')
+        self.assertEqual(r.status_code, 201, r.content)
+        nota = VGNotaEntrega.objects.get()
+        self.assertEqual(nota.moneda, 'USD')
+        self.assertEqual(nota.cliente.nombre, 'Ana')
+        self.assertEqual(nota.cliente.apellido, 'Perez')
+        self.assertEqual(nota.cliente.tipo_documento, 'V')
+        self.assertEqual(r.json()['nota_entrega']['moneda'], 'USD')
+
+        p2 = self._pedido()
+        r = self._emitir(p2, cliente_nombre='Otro Nombre', cliente_apellido='X')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(VGCliente.objects.filter(numero_documento='12345678').count(), 1)
+        cliente = VGCliente.objects.get(numero_documento='12345678')
+        self.assertEqual((cliente.nombre, cliente.apellido), ('Ana', 'Perez'))
+        self.assertEqual(VGNotaEntrega.objects.filter(cliente=cliente).count(), 2)
+
+    def test_abonos_numero_cobro_cambio_de_cuenta_y_tickets(self):
+        from sevens.impresion_lpd import _build_nota_cobro_bytes
+        pedido = self._pedido('10.00')
+        self._emitir(pedido)
+        nota = VGNotaEntrega.objects.get()
+        self.assertEqual(nota.saldo_pendiente, Decimal('10.00'))
+
+        # Primer abono en Bs (1.250 Bs a 250 = $5): no pide confirmación.
+        r = self._abonar(nota.id, self.pagomovil, '1250')
+        self.assertEqual(r.status_code, 400)  # falta referencia
+        r = self._abonar(nota.id, self.pagomovil, '1250', referencia='REF9988')
+        self.assertEqual(r.status_code, 201, r.content)
+        data = r.json()
+        self.assertEqual(data['pago']['codigo_cobro'], 'COB-000001')
+        self.assertIn('impreso', data)
+        self.assertEqual(Decimal(data['nota_entrega']['saldo_pendiente']), Decimal('5'))
+
+        # Segundo abono con otra cuenta: pide confirmación.
+        r = self._abonar(nota.id, self.efectivo, '5')
+        self.assertEqual(r.status_code, 409)
+        self.assertTrue(r.json()['requiere_confirmacion'])
+        r = self._abonar(nota.id, self.efectivo, '5', confirmar=True)
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()['pago']['codigo_cobro'], 'COB-000002')
+        nota.refresh_from_db()
+        self.assertEqual(nota.estado, 'pagada')
+        self.assertEqual(nota.moneda, 'USD')
+
+        pagos = list(nota.pagos.order_by('numero_cobro'))
+        self.assertEqual([p.numero_cobro for p in pagos], [1, 2])
+        self.assertEqual(pagos[0].saldo_posterior, Decimal('5'))
+        self.assertEqual(pagos[1].saldo_posterior, Decimal('0'))
+
+        t_bs = _build_nota_cobro_bytes(pagos[0]).decode('cp1252')
+        for texto in ('NOTA DE COBRO', 'COB-000001', 'Bs. 1.250,00', '250,00', 'REF9988', nota.codigo,
+                      'Saldo pendiente: Bs. 1.250,00', 'Ana', 'V-12345678', 'Documento sin efecto fiscal'):
+            self.assertIn(texto, t_bs)
+        self.assertNotIn('REIMPRESION', t_bs)
+        t_usd = _build_nota_cobro_bytes(pagos[1], es_reimpresion=True).decode('cp1252')
+        self.assertIn('$5.00', t_usd)
+        self.assertIn('SALDADA', t_usd)
+        self.assertIn('REIMPRESION', t_usd)
+        self.assertNotIn('Bs.', t_usd)
+
+    def test_fiado_dias_anteriores_cobra_a_tasa_de_hoy(self):
+        pedido = self._pedido('10.00')
+        self._emitir(pedido)
+        nota = VGNotaEntrega.objects.get()
+        VGNotaEntrega.objects.filter(pk=nota.pk).update(
+            fecha_emision=timezone.now() - timedelta(days=3), tasa_cambio_referencia=Decimal('200'),
+        )
+        _set_tasa_actual(300)
+        data = self.client.get(f'/api/notas-entrega/{nota.id}/').json()['nota_entrega']
+        self.assertEqual(Decimal(data['tasa_cobro_vigente']), Decimal('300'))
+        self.assertEqual(Decimal(data['saldo_pendiente_bs_vigente']), Decimal('3000.00'))
+        r = self._abonar(nota.id, self.pagomovil, data['saldo_pendiente_bs_vigente'], referencia='R1')
+        self.assertEqual(r.status_code, 201, r.content)
+        nota.refresh_from_db()
+        self.assertEqual(nota.estado, 'pagada')
+
+    def test_notas_de_credito_en_bolivares(self):
+        from sevens.models import VGNotaCredito
+        pedido = self._pedido('20.00')
+        self._emitir(pedido)
+        nota = VGNotaEntrega.objects.get()
+        self.assertEqual(self._abonar(nota.id, self.efectivo, '10').status_code, 201)
+        VGNotaEntrega.objects.filter(pk=nota.pk).update(tasa_cambio_referencia=Decimal('250'))
+
+        r = self.client.post('/api/devoluciones/', data=json.dumps({
+            'documento_tipo': 'nota_entrega', 'documento_id': nota.id, 'motivo': 'otro',
+            'tipo_resolucion': 'ajuste_parcial', 'monto_ajuste': '10.00',
+            'autorizador_username': 'cobro_admin', 'autorizador_password': 'claveAdmin123',
+        }), content_type='application/json')
+        self.assertIn(r.status_code, (200, 201), r.content)
+        data = r.json()
+        self.assertEqual(data['nota_credito']['moneda'], 'VES')
+        self.assertEqual(data['nota_credito']['monto_bs'], '2500.00')
+        self.assertEqual(VGNotaCredito.objects.get().moneda, 'VES')
+
+        hoy = timezone.localdate().isoformat()
+        rep = self.client.get('/api/notas-credito/', data={'desde': hoy, 'hasta': hoy})
+        self.assertEqual(rep.status_code, 200, rep.content)
+        self.assertEqual(rep.json()['analisis']['total_devuelto_bs'], '2500.00')
+        self.assertEqual(rep.json()['notas_credito'][0]['monto_bs'], '2500.00')
+
+    def test_reimprimir_cobro(self):
+        pedido = self._pedido('10.00')
+        self._emitir(pedido)
+        nota = VGNotaEntrega.objects.get()
+        r = self._abonar(nota.id, self.efectivo, '4')
+        pago_id = r.json()['pago']['id']
+        url = f'/api/notas-entrega/{nota.id}/abonos/{pago_id}/reimprimir/'
+
+        r = self.client.post(url)
+        self.assertEqual(r.status_code, 502)
+        self.assertTrue(r.json()['message'])
+
+        self.VGImpresoraCaja.objects.create(ip='127.0.0.1', puerto=515, cola='caja', activo=True)
+        with patch('sevens.impresion_lpd.enviar_trabajo_lpd') as enviar:
+            r = self.client.post(url)
+        self.assertEqual(r.status_code, 200, r.content)
+        enviar.assert_called_once()
+        self.assertEqual(self.client.post(f'/api/notas-entrega/{nota.id}/abonos/99999/reimprimir/').status_code, 404)

@@ -114,6 +114,7 @@ from .facturacion_views import (
     nota_entrega_abono_view,
     nota_entrega_detail_view,
     nota_entrega_reimprimir_view,
+    nota_entrega_abono_reimprimir_view,
     notas_entrega_view,
     prefactura_anular_view,
     prefactura_convertir_view,
@@ -241,6 +242,7 @@ urlpatterns = [
     path('notas-entrega/', notas_entrega_view, name='notas_entrega'),
     path('notas-entrega/<int:nota_id>/abonos/', nota_entrega_abono_view, name='nota_entrega_abono'),
     path('notas-entrega/<int:nota_id>/reimprimir/', nota_entrega_reimprimir_view, name='nota_entrega_reimprimir'),
+    path('notas-entrega/<int:nota_id>/abonos/<int:pago_id>/reimprimir/', nota_entrega_abono_reimprimir_view, name='nota_entrega_abono_reimprimir'),
     path('notas-entrega/<int:nota_id>/', nota_entrega_detail_view, name='nota_entrega_detail'),
 
     # --- Devoluciones y notas de credito ----------------------------------

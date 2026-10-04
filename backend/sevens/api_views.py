@@ -6246,10 +6246,23 @@ def pedidos_cobro_view(request):
     except (TypeError, ValueError):
         return _auth_response({'ok': False, 'message': 'Hay un pedido invalido en la selección.'}, status=400)
 
-    try:
-        metodo_pago = VGMetodoPago.objects.get(pk=int(data.get('metodo_pago_id')), activo=True)
-    except (TypeError, ValueError, VGMetodoPago.DoesNotExist):
-        return _auth_response({'ok': False, 'message': 'El metodo de pago es invalido.'}, status=400)
+    # Cliente obligatorio: cédula + nombre (apellido opcional). Siempre tipo "V".
+    cedula = ''.join(ch for ch in str(data.get('cliente_cedula', '') or '') if ch.isalnum()).upper()
+    cliente_nombre = ' '.join(str(data.get('cliente_nombre', '') or '').split())
+    cliente_apellido = ' '.join(str(data.get('cliente_apellido', '') or '').split())
+    if not cedula:
+        return _auth_response({'ok': False, 'message': 'La cédula del cliente es obligatoria.'}, status=400)
+    if not cliente_nombre:
+        return _auth_response({'ok': False, 'message': 'El nombre del cliente es obligatorio.'}, status=400)
+
+    # La nota nace SIN método de pago: el FK es obligatorio en el modelo, así que
+    # se usa una cuenta USD activa (efectivo primero) como relleno interno. El
+    # método real se elige al cobrar (nota_entrega_abono_view).
+    metodo_pago = (
+        VGMetodoPago.objects.filter(activo=True, moneda='USD').order_by('-es_efectivo', 'id').first()
+    )
+    if metodo_pago is None:
+        return _auth_response({'ok': False, 'message': 'No hay ninguna cuenta en dólares activa configurada.'}, status=400)
 
     # Descuento manual opcional (ej. cliente frecuente, cortesía, negociación en
     # dólares) — `monto_cobrar` es el monto FINAL que se le va a cobrar al
@@ -6270,12 +6283,8 @@ def pedidos_cobro_view(request):
 
     descuento_motivo = str(data.get('descuento_motivo', '') or '').strip()
 
-    # A esta altura la nota de entrega todavia no tiene un cobro real: metodo_pago
-    # es solo el metodo declarado al emitirla (define en que moneda se imprime),
-    # el dinero se registra aparte en uno o varios abonos — ver
-    # nota_entrega_abono_view, donde el numero de referencia del pago SI es
-    # obligatorio para metodos que no son efectivo. Acá no se le pide nada al
-    # usuario; solo se genera un valor de relleno para no dejar el campo vacío.
+    # A esta altura la nota de entrega todavia no tiene un cobro real: el dinero
+    # se registra aparte en uno o varios abonos (nota_entrega_abono_view).
     referencia = f'COBRO-{timezone.now().strftime("%Y%m%d%H%M%S")}-{pedido_ids[0]}'
 
     with transaction.atomic():
@@ -6375,12 +6384,19 @@ def pedidos_cobro_view(request):
         # quedan guardados aparte para que quede constancia de cuánto se
         # descontó y por qué (auditoría) sin perder el total original de los
         # pedidos, que sigue viviendo en cada VGPedido.total.
+        cliente = VGCliente.objects.filter(tipo_documento='V', numero_documento=cedula).first()
+        if cliente is None:
+            cliente = VGCliente.objects.create(
+                tipo_documento='V', numero_documento=cedula,
+                nombre=cliente_nombre, apellido=cliente_apellido,
+            )
         nota_entrega = VGNotaEntrega.objects.create(
+            cliente=cliente,
             metodo_pago=metodo_pago,
             total=total_con_descuento,
             saldo_pendiente=total_con_descuento,
             estado='pendiente_pago',
-            moneda=metodo_pago.moneda,
+            moneda='USD',
             tasa_cambio_referencia=tasa_cambio_pago,
             referencia=referencia,
             descuento_monto=descuento_monto,
@@ -6405,7 +6421,9 @@ def pedidos_cobro_view(request):
             'total': str(total_con_descuento),
             'saldo_pendiente': str(nota_entrega.saldo_pendiente),
             'estado': nota_entrega.estado,
-            'moneda': metodo_pago.moneda,
+            'moneda': nota_entrega.moneda,
+            'tasa_cambio_referencia': str(nota_entrega.tasa_cambio_referencia or ''),
+            'cliente': {'id': cliente.id, 'nombre': cliente.nombre, 'apellido': cliente.apellido, 'documento': f'V-{cliente.numero_documento}'},
             'descuento_monto': str(descuento_monto),
             'descuento_motivo': descuento_motivo,
             'pedidos': [pedido.id for pedido in pedidos],
