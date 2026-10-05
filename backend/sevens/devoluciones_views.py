@@ -187,7 +187,7 @@ def aplicar_ajuste_parcial(documento_tipo, documento_id, usuario, motivo, motivo
         nota_entrega=documento if documento_tipo == 'nota_entrega' else None,
         factura=documento if documento_tipo == 'factura' else None,
         monto=monto_ajuste.quantize(Decimal('0.000001')),
-        moneda=getattr(documento, 'moneda', 'USD'),
+        moneda='VES',
         motivo=motivo,
         motivo_detalle=motivo_detalle,
         tipo_resolucion='ajuste_parcial',
@@ -289,7 +289,7 @@ def aplicar_canje_item(documento_tipo, documento_id, usuario, motivo, motivo_det
         nota_entrega=documento if documento_tipo == 'nota_entrega' else None,
         factura=documento if documento_tipo == 'factura' else None,
         monto=(monto_ajuste if monto_ajuste > 0 else detalle.subtotal).quantize(Decimal('0.000001')),
-        moneda=getattr(documento, 'moneda', 'USD'),
+        moneda='VES',
         motivo=motivo,
         motivo_detalle=motivo_detalle,
         tipo_resolucion='canje_item',
@@ -411,7 +411,7 @@ def revertir_y_reabrir_pedido(documento_tipo, documento_id, usuario, motivo, mot
         nota_entrega=documento if documento_tipo == 'nota_entrega' else None,
         factura=documento if documento_tipo == 'factura' else None,
         monto=total_documento,
-        moneda=getattr(documento, 'moneda', 'USD'),
+        moneda='VES',
         motivo=motivo,
         motivo_detalle=motivo_detalle,
         tipo_resolucion=tipo_resolucion,
@@ -489,9 +489,29 @@ def revertir_y_reabrir_pedido(documento_tipo, documento_id, usuario, motivo, mot
 # ---------------------------------------------------------------------------
 # Serializacion para el reporte interactivo
 # ---------------------------------------------------------------------------
+def _monto_bs_nota_credito(nota_credito):
+    """
+    Monto de la NC en bolívares: monto (USD) × tasa congelada del documento
+    original; si ese documento no la guardó, la tasa vigente el día de su
+    emisión. None si no hay ninguna tasa disponible.
+    """
+    documento = nota_credito.documento_original
+    if documento is None:
+        return None
+    tasa = documento.tasa_cambio_referencia
+    if not tasa:
+        from .reportes import tasa_para_fecha
+        tasa = tasa_para_fecha(timezone.localtime(documento.fecha_emision).date())
+    if not tasa:
+        return None
+    return (nota_credito.monto * tasa).quantize(Decimal('0.01'))
+
+
 def _serialize_nota_credito_resumen(nota_credito):
     documento = nota_credito.documento_original
+    monto_bs = _monto_bs_nota_credito(nota_credito)
     return {
+        'monto_bs': str(monto_bs) if monto_bs is not None else None,
         'id': nota_credito.id,
         'codigo': nota_credito.codigo,
         'numero': nota_credito.numero,
@@ -765,6 +785,21 @@ def notas_credito_view(request):
     notas = list(queryset)
 
     total_devuelto = sum((nc.monto for nc in notas), Decimal('0'))
+    total_devuelto_bs = sum((_monto_bs_nota_credito(nc) or Decimal('0') for nc in notas), Decimal('0'))
+    todas_en_rango = list(
+        VGNotaCredito.objects
+        .filter(fecha_emision__date__gte=desde, fecha_emision__date__lte=hasta)
+        .select_related('nota_entrega', 'factura')
+    )
+    bs_por_motivo = {}
+    bs_por_dia = {}
+    bs_por_autorizador = {}
+    for nc in todas_en_rango:
+        bs = _monto_bs_nota_credito(nc) or Decimal('0')
+        bs_por_motivo[nc.motivo] = bs_por_motivo.get(nc.motivo, Decimal('0')) + bs
+        dia = str(timezone.localtime(nc.fecha_emision).date())
+        bs_por_dia[dia] = bs_por_dia.get(dia, Decimal('0')) + bs
+        bs_por_autorizador[nc.autorizado_por_id] = bs_por_autorizador.get(nc.autorizado_por_id, Decimal('0')) + bs
     por_motivo = (
         VGNotaCredito.objects
         .filter(fecha_emision__date__gte=desde, fecha_emision__date__lte=hasta)
@@ -790,7 +825,7 @@ def notas_credito_view(request):
     top_autorizadores = (
         VGNotaCredito.objects
         .filter(fecha_emision__date__gte=desde, fecha_emision__date__lte=hasta)
-        .values('autorizado_por__username', 'autorizado_por__first_name', 'autorizado_por__last_name')
+        .values('autorizado_por_id', 'autorizado_por__username', 'autorizado_por__first_name', 'autorizado_por__last_name')
         .annotate(cantidad=Count('id'), monto=Sum('monto'))
         .order_by('-cantidad')
     )
@@ -806,6 +841,7 @@ def notas_credito_view(request):
         ],
         'analisis': {
             'total_devuelto': str(total_devuelto),
+            'total_devuelto_bs': str(total_devuelto_bs),
             'cantidad_total': len(notas),
             'por_motivo': [
                 {
@@ -813,11 +849,12 @@ def notas_credito_view(request):
                     'motivo_display': dict(VGNotaCredito.MOTIVOS).get(fila['motivo'], fila['motivo']),
                     'cantidad': fila['cantidad'],
                     'monto': str(fila['monto'] or Decimal('0')),
+                    'monto_bs': str(bs_por_motivo.get(fila['motivo'], Decimal('0'))),
                 }
                 for fila in por_motivo
             ],
             'por_dia': [
-                {'dia': str(fila['dia']), 'cantidad': fila['cantidad'], 'monto': str(fila['monto'] or Decimal('0'))}
+                {'dia': str(fila['dia']), 'cantidad': fila['cantidad'], 'monto': str(fila['monto'] or Decimal('0')), 'monto_bs': str(bs_por_dia.get(str(fila['dia']), Decimal('0')))}
                 for fila in por_dia
             ],
             'top_productos_merma': [
@@ -837,6 +874,7 @@ def notas_credito_view(request):
                     ),
                     'cantidad': fila['cantidad'],
                     'monto': str(fila['monto'] or Decimal('0')),
+                    'monto_bs': str(bs_por_autorizador.get(fila['autorizado_por_id'], Decimal('0'))),
                 }
                 for fila in top_autorizadores
             ],

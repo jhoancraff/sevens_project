@@ -80,6 +80,7 @@ class VGCliente(models.Model):
         ("P", "Pasaporte (P)"),
     ]
     nombre = models.CharField(max_length=150)
+    apellido = models.CharField(max_length=150, blank=True)
     telefono = models.CharField(max_length=20, blank=True)
     correo = models.EmailField(blank=True)
     tipo_documento = models.CharField(max_length=1, choices=TIPOS_DOCUMENTO, blank=True)
@@ -99,6 +100,10 @@ class VGCliente(models.Model):
                 name="uniq_cliente_documento",
             ),
         ]
+
+    @property
+    def nombre_completo(self):
+        return f"{self.nombre} {self.apellido}".strip()
 
     def __str__(self):
         return self.nombre
@@ -1158,6 +1163,14 @@ class VGPago(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
     )
     tasa_cambio_referencia = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    numero_cobro = models.PositiveIntegerField(
+        null=True, blank=True, unique=True,
+        help_text="Correlativo de la 'nota de cobro' (serie NOTA_COBRO). Visible como COB-000001.",
+    )
+    saldo_posterior = models.DecimalField(
+        max_digits=14, decimal_places=6, null=True, blank=True,
+        help_text="Saldo pendiente de la nota (USD) justo después de este abono.",
+    )
     anulado_por_nota_credito = models.ForeignKey(
         "sevens.VGNotaCredito", on_delete=models.SET_NULL, null=True, blank=True, related_name="pagos_revertidos",
         help_text="Si no es None, este pago quedó en estado 'anulado' porque una devolución revirtió el documento al que pertenecía — así el cuadre de caja (reportes.py) deja de contarlo automáticamente al filtrar estado='completado', sin perder de qué cuenta/método salió originalmente.",

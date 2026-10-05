@@ -9,9 +9,9 @@ import NotasEntregaHistorialPage from './NotasEntregaHistorialPage';
 import Toast from './Toast';
 import useExchangeRate from '../hooks/useExchangeRate';
 import useToast from '../hooks/useToast';
-import { formatMontoDocumento } from '../utils/currency';
+import { formatBs, formatMontoDocumento } from '../utils/currency';
 
-const emptyCliente = { nombre: '', tipo_documento: '', numero_documento: '' };
+const emptyCliente = { cedula: '', apellido: '', nombre: '', registrado: false };
 
 // El SENIAT aun esta homologando el sistema para facturacion fiscal (2026-09) —
 // mientras tanto solo se puede cobrar con nota de entrega (sin efecto fiscal).
@@ -20,13 +20,18 @@ const emptyCliente = { nombre: '', tipo_documento: '', numero_documento: '' };
 // solo queda oculto detras de esta bandera.
 const FACTURACION_HABILITADA = false;
 
+// "$X · Bs Y" — total de una nota/cuenta sin moneda elegida todavía.
+function montoDual(amountUsd, tasa) {
+  const bs = formatBs(amountUsd, tasa);
+  return bs ? `$${Number(amountUsd).toFixed(2)} · ${bs}` : `$${Number(amountUsd).toFixed(2)}`;
+}
+
 function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestionarItems = false, mesasCatalogo = [], onArmarCanje }) {
   const tasaCambio = useExchangeRate();
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selectedByGroup, setSelectedByGroup] = useState({});
-  const [metodoByGroup, setMetodoByGroup] = useState({});
   const [clienteByGroup, setClienteByGroup] = useState({});
   const [prefacturaByGroup, setPrefacturaByGroup] = useState({});
   // Descuento manual opcional al cobrar (ver pedidos_cobro_view/VGNotaEntrega):
@@ -391,26 +396,59 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
     siguienteAccion();
   };
 
-  const updateCliente = (groupKey, field, value) => {
+  const updateCliente = (groupKey, field, value, extra = {}) => {
     setClienteByGroup((current) => ({
       ...current,
-      [groupKey]: { ...(current[groupKey] || emptyCliente), [field]: value },
+      [groupKey]: { ...(current[groupKey] || emptyCliente), [field]: value, ...extra },
     }));
   };
 
-  // La nota de entrega no lleva numeracion fiscal, asi que no necesita
-  // documento del cliente — pero una pre-factura o factura si, para poder
-  // identificar al cliente en el documento fiscal. Se valida en el frontend
-  // antes de llamar al backend (que hoy acepta el documento vacio y cae a
-  // "Consumidor Final") para forzar la politica del negocio de siempre
-  // pedirlo en estos dos flujos.
-  const validateClienteDocumento = (group) => {
+  // Cédula (siempre tipo V) y nombre son obligatorios para generar la nota de
+  // entrega (y la factura directa si está habilitada); el apellido es opcional.
+  const validateCliente = (group) => {
     const cliente = clienteByGroup[group.key] || emptyCliente;
-    if (!cliente.tipo_documento || !cliente.numero_documento.trim()) {
-      showError(`Indica el tipo y número de documento del cliente de ${group.label} antes de generar la cuenta del cliente o factura.`);
+    if (!cliente.cedula.trim()) {
+      showError(`Indica la cédula del cliente de ${group.label}.`);
+      return false;
+    }
+    if (!cliente.nombre.trim()) {
+      showError(`Indica el nombre del cliente de ${group.label}.`);
       return false;
     }
     return true;
+  };
+
+  // Al salir del campo cédula se busca el cliente con el endpoint de búsqueda
+  // existente; solo una coincidencia EXACTA de número autocompleta nombre y apellido.
+  const buscarClientePorCedula = async (groupKey) => {
+    const cedula = ((clienteByGroup[groupKey] || emptyCliente).cedula || '').trim();
+    if (!cedula) {
+      return;
+    }
+    try {
+      const response = await fetch(`/api/clientes/buscar/?q=${encodeURIComponent(cedula)}`, { credentials: 'include', cache: 'no-store' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        return;
+      }
+      const exacto = (data.clientes || []).find(
+        (item) => item.numero_documento === cedula && (item.tipo_documento || 'V') === 'V',
+      );
+      setClienteByGroup((current) => {
+        const actual = current[groupKey] || emptyCliente;
+        if (actual.cedula.trim() !== cedula) {
+          return current;
+        }
+        return {
+          ...current,
+          [groupKey]: exacto
+            ? { ...actual, nombre: exacto.nombre, apellido: exacto.apellido || '', registrado: true }
+            : { ...actual, registrado: false },
+        };
+      });
+    } catch (requestError) {
+      // Sin red la cajera simplemente escribe los datos a mano.
+    }
   };
 
   const clearGroupState = (groupKey) => {
@@ -487,9 +525,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
       showError(`Selecciona al menos un pedido de ${group.label} para registrar la nota de entrega.`);
       return;
     }
-    const metodoPagoId = metodoByGroup[group.key] || (metodosPago[0] && metodosPago[0].id);
-    if (!metodoPagoId) {
-      showError('No hay métodos de pago activos configurados.');
+    if (!validateCliente(group)) {
       return;
     }
     if (descuentoActivoByGroup[group.key]) {
@@ -530,11 +566,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
     if (selectedIds.length === 0) {
       return;
     }
-    const metodoPagoId = metodoByGroup[group.key] || (metodosPago[0] && metodosPago[0].id);
-    if (!metodoPagoId) {
-      showError('No hay metodos de pago activos configurados.');
-      return;
-    }
+    const cliente = clienteByGroup[group.key] || emptyCliente;
 
     // montoCobrar es el monto FINAL a cobrar (no lo que se resta) — vacío/no
     // activo significa "sin descuento", se cobra el total completo (el
@@ -555,7 +587,9 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
         credentials: 'include',
         body: JSON.stringify({
           pedido_ids: selectedIds,
-          metodo_pago_id: metodoPagoId,
+          cliente_cedula: cliente.cedula.trim(),
+          cliente_apellido: cliente.apellido.trim(),
+          cliente_nombre: cliente.nombre.trim(),
           monto_cobrar: montoCobrar,
           descuento_motivo: descuentoMotivo,
         }),
@@ -570,10 +604,10 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
       const descuentoAplicado = Number(data.nota_entrega.descuento_monto || 0);
       showSuccess(
         `Nota de entrega ${data.nota_entrega.codigo} registrada: `
-        + `${formatMontoDocumento(data.nota_entrega.total, data.nota_entrega.moneda, tasaCambio)} `
+        + `${montoDual(data.nota_entrega.total, data.nota_entrega.tasa_cambio_referencia || tasaCambio)} `
         + `(${data.nota_entrega.pedidos.length} pedido(s))`
         + `${descuentoAplicado > 0 ? ` con descuento de $${descuentoAplicado.toFixed(2)}` : ''}. Pendiente de cobro — `
-        + `abona desde el reporte de notas de entrega.`,
+        + `cóbrala desde el reporte de notas de entrega.`,
       );
       setNotasRefreshToken((current) => current + 1);
       clearGroupState(group.key);
@@ -601,7 +635,6 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
     if (selectedIds.length === 0) {
       return;
     }
-    const cliente = clienteByGroup[group.key] || emptyCliente;
 
     setBusyGroup(group.key);
     try {
@@ -611,9 +644,6 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
         credentials: 'include',
         body: JSON.stringify({
           pedido_ids: selectedIds,
-          cliente_nombre: cliente.nombre,
-          cliente_tipo_documento: cliente.tipo_documento,
-          cliente_numero_documento: cliente.numero_documento,
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -680,7 +710,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
       return;
     }
     const cliente = clienteByGroup[group.key] || emptyCliente;
-    const metodoPagoId = metodoByGroup[group.key] || (metodosPago[0] && metodosPago[0].id);
+    const metodoPagoId = metodosPago[0] && metodosPago[0].id;
 
     setBusyGroup(group.key);
     try {
@@ -690,9 +720,9 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
         credentials: 'include',
         body: JSON.stringify({
           pedido_ids: selectedIds,
-          cliente_nombre: cliente.nombre,
-          cliente_tipo_documento: cliente.tipo_documento,
-          cliente_numero_documento: cliente.numero_documento,
+          cliente_nombre: `${cliente.nombre} ${cliente.apellido}`.trim(),
+          cliente_tipo_documento: 'V',
+          cliente_numero_documento: cliente.cedula.trim(),
           metodo_pago_id: metodoPagoId,
         }),
       });
@@ -776,9 +806,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
     const selectedTotal = group.pedidos
       .filter((pedido) => selectedSet.has(pedido.id))
       .reduce((sum, pedido) => sum + Number(pedido.total), 0);
-    const metodoSeleccionadoId = metodoByGroup[group.key] || (metodosPago[0] && metodosPago[0].id);
-    const metodoSeleccionado = metodosPago.find((metodo) => metodo.id === metodoSeleccionadoId);
-    const totalLabel = formatMontoDocumento(selectedTotal, metodoSeleccionado ? metodoSeleccionado.moneda : 'USD', tasaCambio);
+    const totalLabel = montoDual(selectedTotal, tasaCambio);
 
     if (action === 'nota') {
       const montoRaw = descuentoActivoByGroup[group.key] ? descuentoMontoByGroup[group.key] : '';
@@ -786,7 +814,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
       const montoCobrar = tieneMontoCobrar ? Number(montoRaw) : selectedTotal;
       const hayDescuento = tieneMontoCobrar && montoCobrar < selectedTotal;
       const montoCobrarLabel = tieneMontoCobrar
-        ? formatMontoDocumento(montoCobrar, metodoSeleccionado ? metodoSeleccionado.moneda : 'USD', tasaCambio)
+        ? montoDual(montoCobrar, tasaCambio)
         : null;
       return {
         title: 'Registrar nota de entrega',
@@ -795,7 +823,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
             ? `, pero con el monto puesto se va a cobrar ${montoCobrarLabel} (descuento de $${(selectedTotal - montoCobrar).toFixed(2)})`
             : tieneMontoCobrar ? ` (sin descuento real: el monto puesto es igual al total)` : '')
           + ' con una nota de entrega (sin factura fiscal). '
-          + 'El número de referencia del pago se registra luego, al abonarla desde el reporte de notas de entrega. ¿Confirmas?',
+          + 'El método de pago y la referencia se registran luego, al cobrarla desde el reporte de notas de entrega. ¿Confirmas?',
         confirmLabel: 'Sí, registrar',
       };
     }
@@ -1031,35 +1059,30 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                   <div style={footerSectionStyle}>
                     <div style={clienteFormStyle}>
                       <input
-                        placeholder="Cliente (opcional)"
+                        placeholder="Cédula (obligatoria)"
+                        inputMode="numeric"
+                        value={cliente.cedula}
+                        onChange={(event) => updateCliente(selectedGroup.key, 'cedula', event.target.value.replace(/[^0-9a-zA-Z]/g, ''), { registrado: false })}
+                        onBlur={() => buscarClientePorCedula(selectedGroup.key)}
+                        style={inputStyle}
+                      />
+                      <input
+                        placeholder="Apellido (opcional)"
+                        value={cliente.apellido}
+                        onChange={(event) => updateCliente(selectedGroup.key, 'apellido', event.target.value)}
+                        style={inputStyle}
+                      />
+                      <input
+                        placeholder="Nombre (obligatorio)"
                         value={cliente.nombre}
                         onChange={(event) => updateCliente(selectedGroup.key, 'nombre', event.target.value)}
                         style={inputStyle}
                       />
-                      <select
-                        value={cliente.tipo_documento}
-                        onChange={(event) => updateCliente(selectedGroup.key, 'tipo_documento', event.target.value)}
-                        style={selectStyle}
-                        className="admin-dark-select"
-                      >
-                        <option value="">Sin documento</option>
-                        <option value="V">V - Cédula</option>
-                        <option value="E">E - Cédula extranjero</option>
-                        <option value="J">J - RIF jurídico</option>
-                        <option value="G">G - RIF gubernamental</option>
-                        <option value="P">P - Pasaporte</option>
-                      </select>
-                      <input
-                        placeholder="Número de documento"
-                        value={cliente.numero_documento}
-                        onChange={(event) => updateCliente(selectedGroup.key, 'numero_documento', event.target.value)}
-                        style={inputStyle}
-                      />
                     </div>
                     <p style={clienteHintStyle}>
-                      {FACTURACION_HABILITADA
-                        ? 'El tipo y número de documento son obligatorios para generar factura fiscal (no aplica a la cuenta del cliente ni a la nota de entrega).'
-                        : 'Opcional: solo para que el nombre del cliente aparezca en la cuenta que se le entrega.'}
+                      {cliente.registrado
+                        ? 'Cliente ya registrado: se usarán sus datos guardados.'
+                        : 'La cédula y el nombre son obligatorios para registrar la nota de entrega.'}
                     </p>
 
                     <div style={groupFooterStyle(isMobile)}>
@@ -1067,16 +1090,6 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                         Total seleccionado: ${selectedTotal.toFixed(2)}
                         <BsAmount amountUsd={selectedTotal} tasa={tasaCambio} />
                       </div>
-                      <select
-                        value={metodoByGroup[selectedGroup.key] || (metodosPago[0] && metodosPago[0].id) || ''}
-                        onChange={(event) => setMetodoByGroup((current) => ({ ...current, [selectedGroup.key]: Number(event.target.value) }))}
-                        style={selectStyle}
-                        className="admin-dark-select"
-                      >
-                        {metodosPago.map((metodo) => (
-                          <option key={metodo.id} value={metodo.id}>{metodo.nombre}</option>
-                        ))}
-                      </select>
                     </div>
 
                     <DescuentoManualBlock
@@ -1111,7 +1124,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                         <button
                           type="button"
                           onClick={() => continuarConSeleccionParcial(selectedGroup, () => {
-                            if (!validateClienteDocumento(selectedGroup)) return;
+                            if (!validateCliente(selectedGroup)) return;
                             setPendingConfirm({ action: 'factura', group: selectedGroup });
                           })}
                           style={primaryButtonStyle}
@@ -1127,31 +1140,17 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                     <div style={{ color: '#ffb0b0', fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                       Cuenta del cliente {prefactura.codigo}
                     </div>
-                    <div style={{ color: '#d2c4c4', fontSize: 13 }}>
-                      Cliente: {prefactura.cliente ? prefactura.cliente.nombre : 'Consumidor Final'}
-                    </div>
                     <div style={{ display: 'grid', gap: 4 }}>
                       {prefactura.lineas.map((linea) => (
                         <div key={linea.id} style={lineaRowStyle}>
                           <span>{linea.cantidad}x {linea.descripcion}</span>
-                          <span>{formatMontoDocumento(linea.subtotal, prefactura.moneda, prefactura.tasa_cambio_referencia || tasaCambio)}</span>
+                          <span>{montoDual(linea.subtotal, prefactura.tasa_cambio_referencia || tasaCambio)}</span>
                         </div>
                       ))}
                     </div>
                     <div style={detailTotalsStyle}>
-                      <span style={{ fontWeight: 800, color: '#fff' }}>Total: {formatMontoDocumento(prefactura.total, prefactura.moneda, prefactura.tasa_cambio_referencia || tasaCambio)}</span>
+                      <span style={{ fontWeight: 800, color: '#fff' }}>Total: {montoDual(prefactura.total, prefactura.tasa_cambio_referencia || tasaCambio)}</span>
                     </div>
-
-                    <DescuentoManualBlock
-                      group={selectedGroup}
-                      activo={Boolean(descuentoActivoByGroup[selectedGroup.key])}
-                      monto={descuentoMontoByGroup[selectedGroup.key] || ''}
-                      motivo={descuentoMotivoByGroup[selectedGroup.key] || ''}
-                      onActivar={() => handleClickActivarDescuento(selectedGroup)}
-                      onDesactivar={() => handleDesactivarDescuento(selectedGroup.key)}
-                      onMontoChange={(value) => setDescuentoMontoByGroup((current) => ({ ...current, [selectedGroup.key]: value }))}
-                      onMotivoChange={(value) => setDescuentoMotivoByGroup((current) => ({ ...current, [selectedGroup.key]: value }))}
-                    />
 
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <button
@@ -1160,15 +1159,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                         style={secondaryButtonStyle}
                         disabled={isBusy}
                       >
-                        Descartar (usar otra opción)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => continuarConSeleccionParcial(selectedGroup, () => handleClickNotaEntrega(selectedGroup))}
-                        style={checkoutButtonStyle}
-                        disabled={isBusy}
-                      >
-                        {isBusy ? 'Procesando...' : 'Nota de entrega'}
+                        ← Volver
                       </button>
                       {FACTURACION_HABILITADA ? (
                         <button

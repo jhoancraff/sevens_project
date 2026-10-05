@@ -15,7 +15,10 @@ los bytes ESC/POS tal cual, sin reformatear — el equivalente LPD de "impresió
 Sin dependencias externas: solo `socket`, igual que impresion_termica.py.
 """
 import logging
+import re
 import socket
+import textwrap
+from decimal import Decimal
 
 from django.utils import timezone
 
@@ -164,6 +167,14 @@ def _monto_texto_ambas_monedas(valor_usd, tasa):
     return f'${valor_usd:.2f}'
 
 
+def _lineas_envueltas(texto):
+    """Parte un texto largo en líneas de LINE_WIDTH caracteres (ticket de 32 columnas)."""
+    out = bytearray()
+    for linea in textwrap.wrap(str(texto or ''), LINE_WIDTH) or ['']:
+        out += _text(linea) + FEED
+    return bytes(out)
+
+
 def _producto_label(detalle):
     producto = getattr(detalle, 'producto', None)
     if producto is None:
@@ -206,10 +217,12 @@ def _metodo_pago_para_impresion(nota):
 def _build_recibo_bytes(
     pedidos, metodo_pago, referencia, total, tasa, titulo='RECIBO DE CAJA', codigo=None,
     descuento_manual=None, descuento_manual_motivo='',
+    moneda=None, cliente=None, total_ambas_monedas=False,
 ):
     hora = timezone.localtime().strftime('%d/%m/%Y %H:%M')
-    metodo_label = metodo_pago.nombre
-    moneda = metodo_pago.moneda
+    metodo_label = metodo_pago.nombre if metodo_pago is not None else None
+    if moneda is None:
+        moneda = metodo_pago.moneda
 
     out = bytearray()
     out += INIT
@@ -224,8 +237,13 @@ def _build_recibo_bytes(
         out += _text(f'Nº {codigo}') + FEED
     out += ALIGN_LEFT
     out += _text('-' * LINE_WIDTH) + FEED
-    out += _text(f'Referencia: {referencia}') + FEED
+    if referencia:
+        out += _text(f'Referencia: {referencia}') + FEED
     out += _text(hora) + FEED
+    if cliente is not None:
+        out += _lineas_envueltas(f'Cliente: {cliente.nombre_completo}')
+        if cliente.numero_documento:
+            out += _text(f'{cliente.tipo_documento or "V"}-{cliente.numero_documento}') + FEED
 
     subtotal_total = 0
     impuesto_total = 0
@@ -271,9 +289,15 @@ def _build_recibo_bytes(
     if propina_total > 0:
         out += _text(f'Propina: {_monto_texto(propina_total, moneda, tasa)}') + FEED
     out += BOLD_ON
-    out += _text(f'TOTAL: {_monto_texto(total, moneda, tasa)}') + FEED
+    if total_ambas_monedas:
+        out += _text(f'TOTAL: ${total:.2f}') + FEED
+        if tasa:
+            out += _text(f'       Bs. {_formatear_bs(total * tasa)}') + FEED
+    else:
+        out += _text(f'TOTAL: {_monto_texto(total, moneda, tasa)}') + FEED
     out += BOLD_OFF
-    out += _text(f'Metodo de pago: {metodo_label}') + FEED
+    if metodo_label:
+        out += _text(f'Metodo de pago: {metodo_label}') + FEED
     out += ALIGN_CENTER
     out += _text('¡Gracias por su visita!') + FEED
     out += ALIGN_LEFT
@@ -306,7 +330,11 @@ def imprimir_nota_entrega_caja(nota, es_reimpresion=False):
         logger.warning('Impresora de caja activa pero sin IP/cola configurada; se omite la nota de entrega.')
         return False, 'La impresora de caja no tiene IP o cola configurada.'
 
-    metodo_pago = _metodo_pago_para_impresion(nota)
+    # Las notas nuevas nacen en USD sin método de pago (se elige al cobrar), así
+    # que el ticket no menciona ningún método; solo las notas viejas en
+    # bolívares conservan la línea de método y el total en Bs.
+    es_legacy_ves = nota.moneda == 'VES'
+    metodo_pago = _metodo_pago_para_impresion(nota) if es_legacy_ves else None
     pedidos = list(
         nota.pedidos.select_related('mesa')
         .prefetch_related('detalles__producto', 'detalles__opciones', 'detalles__adicionales__preparacion')
@@ -317,9 +345,12 @@ def imprimir_nota_entrega_caja(nota, es_reimpresion=False):
     destino = f'{config.ip}:{config.puerto} (cola "{config.cola}")'
     try:
         ticket = _build_recibo_bytes(
-            pedidos, metodo_pago, nota.referencia, nota.total, nota.tasa_cambio_referencia,
+            pedidos, metodo_pago, nota.referencia if es_legacy_ves else None, nota.total,
+            nota.tasa_cambio_referencia,
             titulo=titulo, codigo=nota.codigo,
             descuento_manual=nota.descuento_monto, descuento_manual_motivo=nota.descuento_motivo,
+            moneda=nota.moneda, cliente=nota.cliente,
+            total_ambas_monedas=not es_legacy_ves,
         )
         logger.info('Enviando nota de entrega %s a %s (%s bytes)', nota.codigo, destino, len(ticket))
         enviar_trabajo_lpd(
@@ -330,6 +361,121 @@ def imprimir_nota_entrega_caja(nota, es_reimpresion=False):
         return True, None
     except Exception as exc:
         logger.exception('No se pudo imprimir la nota de entrega %s hacia %s', nota.codigo, destino)
+        return False, f'No se pudo enviar el trabajo de impresion: {exc}'
+
+
+# ---------------------------------------------------------------------------
+# Nota de cobro (comprobante de un abono/cobro de una nota de entrega)
+# ---------------------------------------------------------------------------
+_REFERENCIA_AUTOGENERADA = re.compile(r'^(COBRO|ABONO)-\d{14}-\d+$')
+
+
+def codigo_cobro(numero_cobro):
+    return f'COB-{numero_cobro:06d}' if numero_cobro else ''
+
+
+def _build_nota_cobro_bytes(pago, es_reimpresion=False):
+    nota = pago.nota_entrega
+    metodo = pago.metodo_pago
+    es_bs = metodo.moneda == 'VES' and bool(pago.tasa_cambio_referencia)
+    tasa = pago.tasa_cambio_referencia if es_bs else None
+    moneda_texto = 'Bolívares' if es_bs else 'Dólares'
+
+    def monto(valor_usd):
+        return f'Bs. {_formatear_bs(valor_usd * tasa)}' if es_bs else f'${valor_usd:.2f}'
+
+    saldo = pago.saldo_posterior if pago.saldo_posterior is not None else nota.saldo_pendiente
+    datos = VGDatosFiscalesEmisor.objects.first()
+    fecha = timezone.localtime(pago.fecha_pago).strftime('%d/%m/%Y %H:%M:%S')
+    cajero = ''
+    if pago.creado_por:
+        cajero = pago.creado_por.get_full_name() or pago.creado_por.username
+
+    out = bytearray()
+    out += INIT
+    out += KANJI_OFF
+    out += ESC_POS_WCP1252
+    out += ALIGN_CENTER
+    out += BOLD_ON
+    out += _lineas_envueltas((datos.nombre_comercial if datos and datos.nombre_comercial else None) or 'SEVENS')
+    out += BOLD_OFF
+    if datos:
+        if datos.razon_social:
+            out += _lineas_envueltas(datos.razon_social)
+        if datos.rif:
+            out += _lineas_envueltas(f'RIF: {datos.rif}')
+        if datos.domicilio_fiscal:
+            out += _lineas_envueltas(datos.domicilio_fiscal)
+        if datos.telefono:
+            out += _lineas_envueltas(f'Tel: {datos.telefono}')
+    out += _text('-' * LINE_WIDTH) + FEED
+    out += BOLD_ON
+    out += _text('NOTA DE COBRO') + FEED
+    out += BOLD_OFF
+    out += _text(f'Nº {codigo_cobro(pago.numero_cobro)}' + (' (REIMPRESION)' if es_reimpresion else '')) + FEED
+    out += ALIGN_LEFT
+    out += _text('-' * LINE_WIDTH) + FEED
+    out += _text(fecha) + FEED
+    out += _text(f'Nota de entrega: {nota.codigo}') + FEED
+    cliente = nota.cliente
+    if cliente is not None:
+        out += _lineas_envueltas(f'Cliente: {cliente.nombre_completo}')
+        if cliente.numero_documento:
+            out += _text(f'{cliente.tipo_documento or "V"}-{cliente.numero_documento}') + FEED
+    out += _text('-' * LINE_WIDTH) + FEED
+    out += _lineas_envueltas(f'Metodo: {metodo.nombre}')
+    out += _text(f'Moneda: {moneda_texto}') + FEED
+    if pago.referencia and not _REFERENCIA_AUTOGENERADA.match(pago.referencia):
+        out += _lineas_envueltas(f'Referencia: {pago.referencia}')
+    if es_bs:
+        out += _text(f'Tasa: Bs. {_formatear_bs(tasa)}/$') + FEED
+    out += _text('-' * LINE_WIDTH) + FEED
+    out += _text(f'Total nota: {monto(nota.total)}') + FEED
+    out += BOLD_ON
+    out += _text(f'MONTO COBRADO: {monto(pago.monto)}') + FEED
+    out += BOLD_OFF
+    if saldo is not None and saldo > Decimal('0.005'):
+        out += _text(f'Saldo pendiente: {monto(saldo)}') + FEED
+    else:
+        out += BOLD_ON
+        out += _text('Nota de entrega SALDADA') + FEED
+        out += BOLD_OFF
+    out += _text('-' * LINE_WIDTH) + FEED
+    if cajero:
+        out += _lineas_envueltas(f'Cajero: {cajero}')
+    out += ALIGN_CENTER
+    out += _text('Documento sin efecto fiscal') + FEED
+    out += _text('¡Gracias por su visita!') + FEED
+    out += ALIGN_LEFT
+    out += FEED + FEED + FEED + FEED
+    out += CUT
+    return bytes(out)
+
+
+def imprimir_nota_cobro(pago, es_reimpresion=False):
+    """
+    Imprime (o reimprime) la NOTA DE COBRO de un VGPago de una nota de entrega.
+    Devuelve (exito, motivo) sin propagar excepciones: un fallo de impresora
+    nunca debe tumbar un cobro ya registrado.
+    """
+    config = VGImpresoraCaja.obtener_config()
+    if config is None or not config.activo:
+        return False, 'No hay una impresora de caja activa configurada.'
+    if not config.ip or not config.cola:
+        return False, 'La impresora de caja no tiene IP o cola configurada.'
+
+    codigo = codigo_cobro(pago.numero_cobro) or f'pago {pago.id}'
+    destino = f'{config.ip}:{config.puerto} (cola "{config.cola}")'
+    try:
+        ticket = _build_nota_cobro_bytes(pago, es_reimpresion=es_reimpresion)
+        enviar_trabajo_lpd(
+            config.ip, config.puerto, config.cola, ticket,
+            job_id=pago.id, nombre_trabajo=f'Cobro {codigo}',
+        )
+        logger.info('Nota de cobro %s enviada a %s', codigo, destino)
+        return True, None
+    except Exception as exc:
+        logger.exception('No se pudo imprimir la nota de cobro %s hacia %s', codigo, destino)
         return False, f'No se pudo enviar el trabajo de impresion: {exc}'
 
 
