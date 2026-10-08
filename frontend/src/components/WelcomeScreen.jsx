@@ -52,12 +52,14 @@ import AnalystAjusteInventarioPage from './AnalystAjusteInventarioPage';
 import CuentasPorCobrarPage from './CuentasPorCobrarPage';
 import CuentasPorPagarPage from './CuentasPorPagarPage';
 import AnalystGastosPage from './AnalystGastosPage';
+import ReporteGastosPage from './ReporteGastosPage';
 import ComprobantePagoPage from './ComprobantePagoPage';
 import EstadoResultadosPage from './EstadoResultadosPage';
 import HistorialFacturasPage from './HistorialFacturasPage';
 import AnalystDatosFiscalesPage from './AnalystDatosFiscalesPage';
 import AnalystComprasPage from './AnalystComprasPage';
 import AnalystMargenGananciaPage from './AnalystMargenGananciaPage';
+import AnalystMargenGananciaDetalladoPage from './AnalystMargenGananciaDetalladoPage';
 import AnalystMovimientoProductosPage from './AnalystMovimientoProductosPage';
 import AnalystConfiguracionCosteoPage from './AnalystConfiguracionCosteoPage';
 import EditOrderPage from './EditOrderPage';
@@ -1049,6 +1051,13 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           <AnalystGastosPage
             isMobile={isMobile}
             onBack={goBackView}
+            onVerReporte={() => goToView('gastos-reporte')}
+            onVerComprobante={(tipo, documentoId, abonoId) => goToView(`comprobante-pago:${tipo}:${documentoId}:${abonoId}`)}
+          />
+        ) : activeView === 'gastos-reporte' ? (
+          <ReporteGastosPage
+            isMobile={isMobile}
+            onBack={goBackView}
             onVerComprobante={(tipo, documentoId, abonoId) => goToView(`comprobante-pago:${tipo}:${documentoId}:${abonoId}`)}
           />
         ) : activeView.startsWith('comprobante-pago:') ? (
@@ -1066,6 +1075,12 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           />
         ) : activeView === 'margen-ganancia' ? (
           <AnalystMargenGananciaPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onVerDetalle={() => goToView('margen-ganancia-detallado')}
+          />
+        ) : activeView === 'margen-ganancia-detallado' ? (
+          <AnalystMargenGananciaDetalladoPage
             isMobile={isMobile}
             onBack={goBackView}
           />

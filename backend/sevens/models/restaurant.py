@@ -698,6 +698,11 @@ class VGAbonoCompra(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
     )
     tasa_cambio_referencia = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    # True cuando quien pago escribio SU tasa (la que le cobro el proveedor o con la que
+    # compro los Bs en el banco) en vez de la de la factura/BCV. Los Bs de este abono son
+    # monto * esa tasa y NO se tocan despues, aunque no cuadren con la tasa de la factura:
+    # lo que cuenta es lo que de verdad salio del banco.
+    tasa_manual = models.BooleanField(default=False)
 
     class Meta:
         db_table = "vg_abonos_compra"
@@ -929,6 +934,10 @@ class VGDetallePedido(models.Model):
     costo_unitario_venta = models.DecimalField(
         max_digits=12, decimal_places=4, null=True, blank=True,
         help_text="Costo de receta por unidad (o por kg si venta_por_peso), congelado en el momento del cobro con los costos de ingredientes vigentes ese día. Vacío para pedidos cobrados antes de que este campo existiera — el reporte de margen cae al costo actual para esos casos.",
+    )
+    margen_produccion_pct_venta = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text="Margen de producción (VGConfiguracionCosteo.rendimiento_receta_pct) vigente en el momento del cobro, congelado junto a costo_unitario_venta. Permite separar el costo puro de receta del margen y sumarlo sin contarlo dos veces. Vacío para ventas cobradas antes de que existiera.",
     )
     estado = models.CharField(max_length=20, choices=ESTADOS, default="pendiente")
     notas = models.CharField(max_length=255, blank=True)

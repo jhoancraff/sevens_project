@@ -162,7 +162,7 @@ function EstadoResultadosPage({ isMobile, onBack, onNavigate }) {
                 {onNavigate ? (
                   <button
                     type="button"
-                    onClick={() => onNavigate('gastos-operativos')}
+                    onClick={() => onNavigate('gastos-reporte')}
                     style={verDetalleGastosButtonStyle}
                     className="no-print"
                   >

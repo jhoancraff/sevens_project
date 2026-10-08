@@ -57,6 +57,7 @@ from .api_views import (
     recomendaciones_chef_activas_view,
     reporte_margen_ganancia_detalle_view,
     reporte_margen_ganancia_view,
+    reporte_margen_productos_view,
     tasa_cambio_view,
 )
 from .ajustes_inventario_views import (
@@ -219,6 +220,7 @@ urlpatterns = [
     path('admin/reportes/estado-resultados/', reporte_estado_resultados_view, name='reporte_estado_resultados'),
     path('admin/reportes/margen-ganancia/', reporte_margen_ganancia_view, name='reporte_margen_ganancia'),
     path('admin/reportes/margen-ganancia-detalle/', reporte_margen_ganancia_detalle_view, name='reporte_margen_ganancia_detalle'),
+    path('admin/reportes/margen-productos/', reporte_margen_productos_view, name='reporte_margen_productos'),
     path('admin/reportes/cuadre-caja/', reporte_cuadre_caja_view, name='reporte_cuadre_caja'),
     path('admin/reportes/cuadre-caja-rango/', reporte_cuadre_caja_rango_view, name='reporte_cuadre_caja_rango'),
     path('admin/reportes/ventas-dia/', reporte_ventas_dia_view, name='reporte_ventas_dia'),
