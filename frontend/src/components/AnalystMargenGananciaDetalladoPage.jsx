@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { RangoFechas } from './FiltroFechas';
 
 function toIso(date) {
   const offset = date.getTimezoneOffset();
@@ -8,31 +9,6 @@ function toIso(date) {
 
 function todayIso() {
   return toIso(new Date());
-}
-
-function startOfWeekIso() {
-  const now = new Date();
-  const day = now.getDay();
-  const diff = day === 0 ? 6 : day - 1;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - diff);
-  return toIso(monday);
-}
-
-function startOfMonthIso() {
-  const now = new Date();
-  return toIso(new Date(now.getFullYear(), now.getMonth(), 1));
-}
-
-function startOfYearIso() {
-  const now = new Date();
-  return toIso(new Date(now.getFullYear(), 0, 1));
-}
-
-function yesterdayIso() {
-  const now = new Date();
-  now.setDate(now.getDate() - 1);
-  return toIso(now);
 }
 
 function formatMonto(value) {
@@ -46,14 +22,6 @@ function formatFechaHora(iso) {
   const horaTexto = fecha.toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit' });
   return `${fechaTexto}, ${horaTexto}`;
 }
-
-const PRESETS = [
-  { label: 'Hoy', get: () => ({ desde: todayIso(), hasta: todayIso() }) },
-  { label: 'Ayer', get: () => ({ desde: yesterdayIso(), hasta: yesterdayIso() }) },
-  { label: 'Esta semana', get: () => ({ desde: startOfWeekIso(), hasta: todayIso() }) },
-  { label: 'Este mes', get: () => ({ desde: startOfMonthIso(), hasta: todayIso() }) },
-  { label: 'Este año', get: () => ({ desde: startOfYearIso(), hasta: todayIso() }) },
-];
 
 // Detalle de margen de ganancia POR PLATO, venta por venta (con el costo congelado al cobrar), segun el
 // rango de fechas elegido. Se abre desde el boton "Ver detalles de margen de ganancia por plato" de
@@ -97,12 +65,6 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
     setBusqueda('');
     setProductoSeleccionadoId(null);
   }, [desde, hasta]);
-
-  const applyPreset = (preset) => {
-    const range = preset.get();
-    setDesde(range.desde);
-    setHasta(range.hasta);
-  };
 
   const productos = useMemo(() => data?.productos || [], [data]);
 
@@ -166,23 +128,14 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
         <h2 style={titleStyle(isMobile)}>Detalles de margen de ganancia por plato</h2>
       </div>
 
-      <div className="no-print" style={filtersRowStyle(isMobile)}>
-        <label style={dateLabelStyle}>
-          Desde
-          <input type="date" value={desde} max={hasta} onChange={(event) => setDesde(event.target.value)} style={dateInputStyle} />
-        </label>
-        <label style={dateLabelStyle}>
-          Hasta
-          <input type="date" value={hasta} max={todayIso()} onChange={(event) => setHasta(event.target.value)} style={dateInputStyle} />
-        </label>
-        <div style={presetsWrapStyle}>
-          {PRESETS.map((preset) => (
-            <button key={preset.label} type="button" onClick={() => applyPreset(preset)} style={presetButtonStyle}>
-              {preset.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <RangoFechas
+        desde={desde}
+        hasta={hasta}
+        onChange={(rango) => {
+          setDesde(rango.desde);
+          setHasta(rango.hasta);
+        }}
+      />
 
       {loading ? <div style={emptyStyle}>Cargando reporte...</div> : null}
       {!loading && error ? <div style={noticeStyle}>{error}</div> : null}
@@ -351,17 +304,6 @@ function FilaVenta({ fila }) {
 
 const containerStyle = (isMobile) => ({ display: 'grid', gap: 16, padding: isMobile ? 6 : 10 });
 const titleStyle = (isMobile) => ({ margin: 0, color: '#fff', fontSize: isMobile ? 28 : 34 });
-const filtersRowStyle = (isMobile) => ({
-  display: 'flex',
-  gap: 14,
-  flexWrap: 'wrap',
-  alignItems: isMobile ? 'stretch' : 'flex-end',
-  flexDirection: isMobile ? 'column' : 'row',
-});
-const dateLabelStyle = { display: 'flex', flexDirection: 'column', gap: 6, color: '#f2e6e6', fontSize: 13, fontWeight: 700 };
-const dateInputStyle = { borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: '#161010', padding: '10px 12px', color: '#fff' };
-const presetsWrapStyle = { display: 'flex', gap: 8, flexWrap: 'wrap' };
-const presetButtonStyle = { border: '1px solid rgba(255,255,255,0.16)', borderRadius: 999, padding: '9px 14px', background: 'rgba(255,255,255,0.05)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' };
 const panelStyle = { display: 'grid', gap: 14, padding: 18, borderRadius: 20, border: '1px solid rgba(255,255,255,0.1)', background: 'linear-gradient(180deg, rgba(20,10,10,0.95) 0%, rgba(8,8,8,0.98) 100%)' };
 const sectionTitleStyle = { color: '#fff', fontSize: 19, fontWeight: 700 };
 const emptyStyle = { minHeight: 80, display: 'grid', placeItems: 'center', borderRadius: 14, border: '1px dashed rgba(255,255,255,0.12)', color: '#c8bbbb' };
