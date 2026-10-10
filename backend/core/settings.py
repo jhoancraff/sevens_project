@@ -117,6 +117,10 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 LANGUAGE_CODE = 'es-es'
 TIME_ZONE = 'UTC'
+
+# Minutos que se respeta la tasa de una pre-factura al emitir la nota de entrega / factura de esos
+# mismos pedidos (ver sevens/tasa_cuenta.py).
+VENTANA_TASA_PREFACTURA_MIN = int(os.getenv('VENTANA_TASA_PREFACTURA_MIN', '60'))
 USE_I18N = True
 USE_TZ = True
 

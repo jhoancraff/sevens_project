@@ -3941,3 +3941,484 @@ class MargenDetalladoReporteTests(TestCase):
         self.assertEqual(Decimal(f['costo']), Decimal('0.98'))
         self.assertEqual(Decimal(f['costo_con_margen']), Decimal('1.47'))
         self.assertFalse(f['margen_estimado'])
+
+
+class ReporteInventarioPdfTests(TestCase):
+    URL = '/api/admin/reportes/inventario-pdf/'
+
+    def setUp(self):
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='pdf_admin', password='claveAdmin123', cedula='95000001', email='pdf_admin@sevens.test', id_role=admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='pdf_cajera', password='claveCajera123', cedula='95000002', email='pdf_cajera@sevens.test', id_role=cajera_role,
+        )
+
+    def test_solo_administradores_pueden_descargarlo(self):
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+
+    def test_responde_un_pdf_descargable(self):
+        from sevens.models import VGIngrediente
+        VGIngrediente.objects.create(nombre='Carne PDF test', unidad_medida='g', stock_actual='1500', costo_unitario='0.0068')
+        self.client.force_login(self.admin)
+        r = self.client.get(self.URL)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r['Content-Type'], 'application/pdf')
+        self.assertIn('attachment; filename="inventario-actual-', r['Content-Disposition'])
+        self.assertTrue(r.content.startswith(b'%PDF'))
+
+    def test_un_inventario_vacio_tambien_genera_pdf(self):
+        from sevens.models import VGIngrediente
+        VGIngrediente.objects.all().delete()
+        self.client.force_login(self.admin)
+        r = self.client.get(self.URL)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.content.startswith(b'%PDF'))
+
+    def test_usa_el_costo_efectivo_y_omite_los_ingredientes_ocultos(self):
+        from unittest import mock
+        from sevens.models import VGIngrediente
+        # costo_unitario desincronizado (0.5) pero el envase dice 10 / 1000 = 0.01 por gramo
+        VGIngrediente.objects.create(
+            nombre='Harina PDF test', unidad_medida='g', stock_actual='2000', costo_unitario='0.5',
+            contenido_envase='1000', peso_real='1000', precio_compra='10.00',
+        )
+        VGIngrediente.objects.create(id=285, nombre='Oculto PDF test', unidad_medida='g', stock_actual='1', costo_unitario='1')
+        self.client.force_login(self.admin)
+        with mock.patch('sevens.reportes_pdf_views.generar_pdf_inventario', return_value=b'%PDF-falso') as generar:
+            r = self.client.get(self.URL)
+        self.assertEqual(r.status_code, 200)
+        enviados = {i['nombre']: i for i in generar.call_args.args[0]}
+        self.assertNotIn('Oculto PDF test', enviados)
+        self.assertEqual(Decimal(enviados['Harina PDF test']['costo_unitario']), Decimal('0.01'))
+
+    def test_calcula_valor_total_orden_y_total_del_inventario(self):
+        from sevens.pdf_reportes import armar_filas_inventario
+        filas, total = armar_filas_inventario([
+            {'nombre': 'zanahoria', 'unidad_medida': 'g', 'stock_actual': Decimal('100'), 'costo_unitario': Decimal('0.00125')},
+            {'nombre': 'Aceite', 'unidad_medida': 'ml', 'stock_actual': Decimal('6000'), 'costo_unitario': Decimal('0.0065')},
+            {'nombre': '7UP', 'unidad_medida': 'unidad', 'stock_actual': Decimal('48'), 'costo_unitario': Decimal('0.58')},
+        ])
+        self.assertEqual([f['nombre'] for f in filas], ['7UP', 'Aceite', 'zanahoria'])
+        self.assertEqual([f['unidad'] for f in filas], ['Unidad', 'Mililitros', 'Gramos'])
+        self.assertEqual([f['valor_total'] for f in filas], [Decimal('27.84'), Decimal('39.00'), Decimal('0.13')])
+        self.assertEqual(total, Decimal('66.97'))
+
+    def test_formato_de_numeros_como_el_resto_del_sistema(self):
+        from sevens.pdf_reportes import formatear_numero
+        self.assertEqual(formatear_numero(Decimal('1234.5')), '1.234,50')
+        self.assertEqual(formatear_numero(Decimal('0.0068'), 2, 6), '0,0068')
+        self.assertEqual(formatear_numero(Decimal('0.58'), 2, 6), '0,58')
+        self.assertEqual(formatear_numero(Decimal('0'), 2, 6), '0,00')
+        self.assertEqual(formatear_numero(Decimal('1022819.95'), 0, 2), '1.022.819,95')
+        self.assertEqual(formatear_numero(Decimal('6000'), 0, 2), '6.000')
+        self.assertEqual(formatear_numero(Decimal('-3239.27')), '-3.239,27')
+
+
+class BaseReportesPdfTests(TestCase):
+    """Lo comun a todos los reportes PDF (pdf_reportes/base.py y las ayudas de reportes_pdf_views.py)."""
+
+    def columnas(self):
+        from sevens.pdf_reportes import Columna
+        return [Columna('Concepto', 0.6), Columna('Monto ($)', 0.4, 'derecha')]
+
+    def test_genera_pdf_vertical_y_horizontal(self):
+        from sevens.pdf_reportes import generar_pdf_tabla
+        filas = [['Alquiler', '500,00'], ['Luz', '120,50']]
+        vertical = generar_pdf_tabla(titulo='Gastos', columnas=self.columnas(), filas=filas)
+        horizontal = generar_pdf_tabla(titulo='Gastos', columnas=self.columnas(), filas=filas, orientacion='horizontal')
+        self.assertTrue(vertical.startswith(b'%PDF'))
+        self.assertTrue(horizontal.startswith(b'%PDF'))
+        # A4 vertical es 595 x 842 pt; apaisado es 842 x 595.
+        self.assertIn(b'/MediaBox [ 0 0 595.2', vertical)
+        self.assertIn(b'/MediaBox [ 0 0 841.8', horizontal)
+
+    def test_acepta_resumen_total_subtitulo_y_textos_con_simbolos(self):
+        from sevens.pdf_reportes import escapar, generar_pdf_tabla
+        pdf = generar_pdf_tabla(
+            titulo='Gastos <del mes> & más',
+            subtitulo='Del 01/10/2026 al 08/10/2026',
+            columnas=self.columnas(),
+            filas=[['Pan & Queso <extra>', '10,00']],
+            resumen=(f'<b>1</b> gasto de {escapar("Café & Té")}', 'Total: <b>$ 10,00</b>'),
+            fila_total=['Total', '$ 10,00'],
+        )
+        self.assertTrue(pdf.startswith(b'%PDF'))
+
+    def test_una_tabla_vacia_tambien_genera_pdf(self):
+        from sevens.pdf_reportes import generar_pdf_tabla
+        pdf = generar_pdf_tabla(titulo='Vacio', columnas=self.columnas(), filas=[], fila_total=['Total', '$ 0,00'])
+        self.assertTrue(pdf.startswith(b'%PDF'))
+
+    def test_una_tabla_larga_ocupa_varias_paginas(self):
+        from sevens.pdf_reportes import generar_pdf_tabla
+        pdf = generar_pdf_tabla(titulo='Largo', columnas=self.columnas(), filas=[[f'Fila {i}', '1,00'] for i in range(200)])
+        import re
+        self.assertGreater(len(re.findall(rb'/Type /Page(?!s)', pdf)), 3)
+
+    def test_rechaza_descripciones_incorrectas(self):
+        from sevens.pdf_reportes import Columna, generar_pdf_tabla
+        with self.assertRaises(ValueError):
+            generar_pdf_tabla(titulo='X', columnas=[Columna('A', 0.5), Columna('B', 0.2)], filas=[])  # no suman 1
+        with self.assertRaises(ValueError):
+            generar_pdf_tabla(titulo='X', columnas=self.columnas(), filas=[['solo una celda']])
+        with self.assertRaises(ValueError):
+            generar_pdf_tabla(titulo='X', columnas=self.columnas(), filas=[], orientacion='diagonal')
+        with self.assertRaises(ValueError):
+            generar_pdf_tabla(titulo='X', columnas=[Columna('A', 1, 'arriba')], filas=[])
+
+    def test_responder_pdf_arma_el_nombre_y_evita_el_cache(self):
+        import datetime
+        from sevens.reportes_pdf_views import responder_pdf
+        r = responder_pdf(b'%PDF-x', 'gastos', datetime.date(2026, 10, 8))
+        self.assertEqual(r['Content-Type'], 'application/pdf')
+        self.assertEqual(r['Content-Disposition'], 'attachment; filename="gastos-2026-10-08.pdf"')
+        self.assertEqual(r['Cache-Control'], 'no-store')
+
+    def test_pdf_solo_admin_rechaza_metodos_que_no_son_get(self):
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        admin = VGUsuario.objects.create_superuser(
+            username='base_pdf_admin', password='claveAdmin123', cedula='95000003', email='base_pdf_admin@sevens.test', id_role=admin_role,
+        )
+        self.client.force_login(admin)
+        self.assertEqual(self.client.post('/api/admin/reportes/inventario-pdf/').status_code, 405)
+
+
+class ReporteGastosPdfTests(TestCase):
+    URL = '/api/admin/reportes/gastos-pdf/'
+
+    def setUp(self):
+        from datetime import date
+        from sevens.models import VGAbonoGasto, VGCategoriaGasto, VGGasto, VGMetodoPago
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='gpdf_admin', password='claveAdmin123', cedula='95000011', email='gpdf_admin@sevens.test', id_role=admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='gpdf_cajera', password='claveCajera123', cedula='95000012', email='gpdf_cajera@sevens.test', id_role=cajera_role,
+        )
+        _set_tasa_actual('900.0000')
+        self.nomina = VGCategoriaGasto.objects.create(nombre='Nomina PDF test')
+        self.servicios = VGCategoriaGasto.objects.create(nombre='Servicios PDF test')
+        self.metodo = VGMetodoPago.objects.create(nombre='Banco PDF test', moneda='VES')
+
+        # $100 pagados con un abono a tasa 800 -> Bs 80.000 congelados (aunque hoy la tasa sea 900)
+        self.pagado_usd = VGGasto.objects.create(
+            categoria=self.nomina, descripcion='Quincena 1', monto=Decimal('100'), saldo_pendiente=0, estado_pago='pagado',
+            fecha_gasto=date(2026, 9, 5), tasa_cambio_referencia=Decimal('800.0000'),
+        )
+        VGAbonoGasto.objects.create(gasto=self.pagado_usd, monto=Decimal('100'), metodo_pago=self.metodo, tasa_cambio_referencia=Decimal('800.0000'))
+        # Gasto cargado en bolivares: Bs 20.000 a tasa 800 = $25
+        self.en_bs = VGGasto.objects.create(
+            categoria=self.servicios, descripcion='Internet', monto=Decimal('25'), saldo_pendiente=0, estado_pago='pagado',
+            fecha_gasto=date(2026, 9, 20), tasa_cambio_referencia=Decimal('800.0000'), moneda_origen='VES',
+        )
+        VGAbonoGasto.objects.create(gasto=self.en_bs, monto=Decimal('25'), metodo_pago=self.metodo, tasa_cambio_referencia=Decimal('800.0000'))
+        # Fuera del rango de septiembre
+        self.octubre = VGGasto.objects.create(
+            categoria=self.nomina, descripcion='De octubre', monto=Decimal('50'), saldo_pendiente=50,
+            fecha_gasto=date(2026, 10, 2), tasa_cambio_referencia=Decimal('900.0000'),
+        )
+
+    def descargar(self, desde='2026-09-01', hasta='2026-09-30'):
+        from unittest import mock
+        self.client.force_login(self.admin)
+        with mock.patch('sevens.reportes_pdf_views.generar_pdf_gastos', return_value=b'%PDF-falso') as generar:
+            r = self.client.get(f'{self.URL}?fecha_desde={desde}&fecha_hasta={hasta}')
+        return r, generar
+
+    def test_solo_administradores_pueden_descargarlo(self):
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+
+    def test_rechaza_un_rango_invertido(self):
+        self.client.force_login(self.admin)
+        r = self.client.get(f'{self.URL}?fecha_desde=2026-09-30&fecha_hasta=2026-09-01')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('fecha inicial', r.json()['message'])
+
+    def test_responde_un_pdf_real_con_el_rango_en_el_nombre(self):
+        self.client.force_login(self.admin)
+        r = self.client.get(f'{self.URL}?fecha_desde=2026-09-01&fecha_hasta=2026-09-30')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r['Content-Type'], 'application/pdf')
+        self.assertEqual(r['Content-Disposition'], 'attachment; filename="gastos-2026-09-01-al-2026-09-30.pdf"')
+        self.assertTrue(r.content.startswith(b'%PDF'))
+
+    def test_un_rango_sin_gastos_tambien_genera_pdf(self):
+        self.client.force_login(self.admin)
+        r = self.client.get(f'{self.URL}?fecha_desde=2025-01-01&fecha_hasta=2025-01-31')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.content.startswith(b'%PDF'))
+
+    def test_incluye_solo_los_gastos_del_rango_con_los_montos_de_la_pantalla(self):
+        r, generar = self.descargar()
+        self.assertEqual(r.status_code, 200)
+        gastos, desde, hasta = generar.call_args.args[:3]
+        por_descripcion = {g['descripcion']: g for g in gastos}
+        self.assertEqual(set(por_descripcion), {'Quincena 1', 'Internet'})
+        self.assertEqual((str(desde), str(hasta)), ('2026-09-01', '2026-09-30'))
+        # Bs congelados con la tasa del abono (800), no con la de hoy (900)
+        self.assertEqual(Decimal(por_descripcion['Quincena 1']['total_bs']), Decimal('80000.00'))
+        self.assertEqual(Decimal(por_descripcion['Internet']['total_bs']), Decimal('20000.00'))
+
+    def test_agrupa_por_categoria_con_totales_en_bs_y_dolares(self):
+        from datetime import date
+        from sevens.pdf_reportes import armar_bloques_gastos
+        gastos = [
+            {'id': 3, 'categoria_nombre': 'Servicios', 'descripcion': 'Luz', 'estado_pago': 'pagado', 'fecha_gasto': date(2026, 9, 9),
+             'monto': '10', 'total_bs': '8000.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '800.0000'},
+            {'id': 2, 'categoria_nombre': 'nomina', 'descripcion': 'Quincena 2', 'estado_pago': 'pagado', 'fecha_gasto': date(2026, 9, 20),
+             'monto': '100', 'total_bs': '82000.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '820.0000'},
+            {'id': 1, 'categoria_nombre': 'nomina', 'descripcion': 'Quincena 1', 'estado_pago': 'pagado', 'fecha_gasto': date(2026, 9, 5),
+             'monto': '100', 'total_bs': '80000.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '800.0000'},
+        ]
+        bloques = armar_bloques_gastos(gastos)
+        self.assertEqual([b['categoria'] for b in bloques], ['nomina', 'Servicios'])
+        nomina = bloques[0]
+        # dentro de la categoria, por fecha
+        self.assertEqual([f['descripcion'] for f in nomina['filas']], ['Quincena 1', 'Quincena 2'])
+        self.assertEqual(nomina['total_bs'], Decimal('162000.00'))
+        self.assertEqual(nomina['total_usd'], Decimal('200.00'))
+        self.assertEqual(bloques[1]['total_bs'], Decimal('8000.00'))
+
+    def test_la_tasa_es_la_del_gasto_y_marca_los_que_no_estan_pagados(self):
+        from datetime import date
+        from sevens.pdf_reportes import armar_bloques_gastos
+        from sevens.pdf_reportes.gastos import tasa_del_gasto
+        # En dolares: tasa = bolivares / dolares (promedio ponderado si hubo abonos con tasas distintas)
+        usd = {'monto': '100', 'total_bs': '81000.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '800.0000'}
+        self.assertEqual(tasa_del_gasto(usd), Decimal('810'))
+        # En bolivares conserva la tasa del dia en que se registro
+        ves = {'monto': '25', 'total_bs': '20000.00', 'moneda_origen': 'VES', 'tasa_cambio_referencia': '800.0000'}
+        self.assertEqual(tasa_del_gasto(ves), Decimal('800.0000'))
+        bloques = armar_bloques_gastos([
+            {'id': 1, 'categoria_nombre': 'Aseo', 'descripcion': 'Jabon', 'estado_pago': 'pendiente', 'fecha_gasto': date(2026, 9, 8),
+             'monto': '5', 'total_bs': '4500.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '800.0000'},
+            {'id': 2, 'categoria_nombre': 'Aseo', 'descripcion': 'Cloro', 'estado_pago': 'abonada_parcial', 'fecha_gasto': date(2026, 9, 9),
+             'monto': '5', 'total_bs': '4500.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '800.0000'},
+        ])
+        self.assertEqual([f['descripcion'] for f in bloques[0]['filas']], ['Jabon (pendiente)', 'Cloro (abonado parcial)'])
+
+    def test_un_gasto_sin_tasa_no_suma_en_bs_pero_si_en_dolares(self):
+        from datetime import date
+        from sevens.pdf_reportes import armar_bloques_gastos
+        bloque = armar_bloques_gastos([
+            {'id': 1, 'categoria_nombre': 'Aseo', 'descripcion': 'Sin tasa', 'estado_pago': 'pagado', 'fecha_gasto': date(2026, 9, 8),
+             'monto': '5', 'total_bs': None, 'moneda_origen': 'USD', 'tasa_cambio_referencia': None},
+            {'id': 2, 'categoria_nombre': 'Aseo', 'descripcion': 'Con tasa', 'estado_pago': 'pagado', 'fecha_gasto': date(2026, 9, 9),
+             'monto': '10', 'total_bs': '8000.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '800.0000'},
+        ])[0]
+        self.assertEqual(bloque['sin_tasa'], 1)
+        self.assertEqual(bloque['total_bs'], Decimal('8000.00'))
+        self.assertEqual(bloque['total_usd'], Decimal('15.00'))
+
+
+class TasaCuentaPrefacturaTests(TestCase):
+    """
+    La nota de entrega (y la factura) heredan la tasa de la pre-factura que se le dio al cliente mientras
+    siga vigente y dentro de la ventana (60 min), aunque la tasa BCV cambie en el medio. Ver tasa_cuenta.py.
+    """
+
+    def setUp(self):
+        from sevens.models import VGPreFactura
+        self.VGPreFactura = VGPreFactura
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.user = VGUsuario.objects.create_user(
+            username='tc_cajera', password='claveCajera123', cedula='96000001', email='tc_cajera@sevens.test', id_role=cajera_role,
+        )
+        self.client.force_login(self.user)
+        self.category = VGCategoriaProducto.objects.create(nombre='Platos TC')
+        self.plato = VGProducto.objects.create(nombre='Plato TC', categoria=self.category, precio_venta='10.00', disponible=True)
+        self.efectivo = VGMetodoPago.objects.create(nombre='Efectivo TC', moneda='USD', es_efectivo=True)
+        self.banco_bs = VGMetodoPago.objects.create(nombre='Banco Bs TC', moneda='VES')
+        _set_tasa_actual('100.0000')
+
+    def pedido(self, total='10.00'):
+        pedido = VGPedido.objects.create(usuario=self.user, tipo_pedido='local', estado='entregado', subtotal=total, total=total)
+        VGDetallePedido.objects.create(pedido=pedido, producto=self.plato, cantidad=1, precio_unitario=total, estado='entregado')
+        return pedido
+
+    def prefactura(self, pedidos, **extra):
+        r = self.client.post('/api/prefacturas/', data=json.dumps({'pedido_ids': [p.id for p in pedidos], **extra}), content_type='application/json')
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.json()
+
+    def cobrar(self, pedidos, **extra):
+        r = self.client.post('/api/pedidos/cobro/', data=json.dumps({
+            'pedido_ids': [p.id for p in pedidos], 'metodo_pago_id': self.efectivo.id,
+            'cliente_cedula': '96000111', 'cliente_nombre': 'Cliente TC', **extra,
+        }), content_type='application/json')
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.json()['nota_entrega']
+
+    def tasa_de_la_nota(self, nota):
+        from sevens.models import VGNotaEntrega
+        return VGNotaEntrega.objects.get(pk=nota['id']).tasa_cambio_referencia
+
+    def envejecer(self, prefactura_id, minutos):
+        from datetime import timedelta
+        pasado = timezone.now() - timedelta(minutes=minutos)
+        self.VGPreFactura.objects.filter(pk=prefactura_id).update(tasa_fijada_en=pasado, fecha_emision=pasado)
+
+    def test_la_nota_conserva_la_tasa_de_la_prefactura_aunque_la_tasa_suba(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        _set_tasa_actual('120.0000')
+        nota = self.cobrar([pedido])
+        self.assertEqual(self.tasa_de_la_nota(nota), Decimal('100.0000'))
+        self.assertEqual(nota['tasa_origen'], 'prefactura')
+        self.assertEqual(nota['tasa_prefactura'], pf['codigo'])
+        self.assertEqual(nota['tasa_cambio_referencia'], '100.0000')
+
+    def test_la_nota_conserva_la_tasa_de_la_prefactura_aunque_la_tasa_baje(self):
+        pedido = self.pedido()
+        self.prefactura([pedido])
+        _set_tasa_actual('80.0000')
+        self.assertEqual(self.tasa_de_la_nota(self.cobrar([pedido])), Decimal('100.0000'))
+
+    def test_pasada_la_ventana_se_usa_la_tasa_actual_y_se_avisa(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        self.envejecer(pf['id'], 61)
+        _set_tasa_actual('120.0000')
+        nota = self.cobrar([pedido])
+        self.assertEqual(self.tasa_de_la_nota(nota), Decimal('120.0000'))
+        self.assertEqual(nota['tasa_origen'], 'actual')
+        self.assertTrue(nota['tasa_prefactura_vencida'])
+
+    def test_dentro_de_la_ventana_todavia_vale(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        self.envejecer(pf['id'], 59)
+        _set_tasa_actual('120.0000')
+        self.assertEqual(self.tasa_de_la_nota(self.cobrar([pedido])), Decimal('100.0000'))
+
+    def test_sin_prefactura_se_usa_la_tasa_actual_como_siempre(self):
+        pedido = self.pedido()
+        _set_tasa_actual('120.0000')
+        nota = self.cobrar([pedido])
+        self.assertEqual(self.tasa_de_la_nota(nota), Decimal('120.0000'))
+        self.assertEqual(nota['tasa_origen'], 'actual')
+        self.assertFalse(nota['tasa_prefactura_vencida'])
+
+    def test_una_prefactura_anulada_se_ignora(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        self.assertEqual(self.client.post(f'/api/prefacturas/{pf["id"]}/anular/').status_code, 200)
+        _set_tasa_actual('120.0000')
+        self.assertEqual(self.tasa_de_la_nota(self.cobrar([pedido])), Decimal('120.0000'))
+
+    def test_si_la_prefactura_cubre_solo_una_parte_de_lo_que_se_cobra_no_aplica(self):
+        a, b = self.pedido(), self.pedido()
+        self.prefactura([a])
+        _set_tasa_actual('120.0000')
+        self.assertEqual(self.tasa_de_la_nota(self.cobrar([a, b])), Decimal('120.0000'))
+
+    def test_si_la_prefactura_cubre_mas_de_lo_que_se_cobra_si_aplica(self):
+        a, b = self.pedido(), self.pedido()
+        self.prefactura([a, b])
+        _set_tasa_actual('120.0000')
+        self.assertEqual(self.tasa_de_la_nota(self.cobrar([a])), Decimal('100.0000'))
+
+    def test_la_cajera_puede_elegir_cobrar_a_la_tasa_actual(self):
+        pedido = self.pedido()
+        self.prefactura([pedido])
+        _set_tasa_actual('120.0000')
+        nota = self.cobrar([pedido], usar_tasa_actual=True)
+        self.assertEqual(self.tasa_de_la_nota(nota), Decimal('120.0000'))
+        self.assertEqual(nota['tasa_origen'], 'actual')
+
+    def test_generar_la_prefactura_dos_veces_conserva_la_tasa_de_la_primera(self):
+        pedido = self.pedido()
+        primera = self.prefactura([pedido])
+        _set_tasa_actual('120.0000')
+        segunda = self.prefactura([pedido])
+        self.assertFalse(primera['tasa_reutilizada'])
+        self.assertTrue(segunda['tasa_reutilizada'])
+        self.assertEqual(segunda['prefactura']['tasa_cambio_referencia'], '100.0000')
+        self.assertNotEqual(primera['prefactura']['id'], segunda['prefactura']['id'])
+        self.assertEqual(
+            self.VGPreFactura.objects.get(pk=primera['prefactura']['id']).tasa_fijada_en,
+            self.VGPreFactura.objects.get(pk=segunda['prefactura']['id']).tasa_fijada_en,
+        )
+
+    def test_renovar_la_tasa_congela_la_de_hoy_y_la_nota_usa_la_mas_reciente(self):
+        pedido = self.pedido()
+        self.prefactura([pedido])
+        _set_tasa_actual('110.0000')
+        renovada = self.prefactura([pedido], renovar_tasa=True)
+        self.assertFalse(renovada['tasa_reutilizada'])
+        self.assertEqual(renovada['prefactura']['tasa_cambio_referencia'], '110.0000')
+        _set_tasa_actual('130.0000')
+        self.assertEqual(self.tasa_de_la_nota(self.cobrar([pedido])), Decimal('110.0000'))
+
+    def test_reimprimir_no_estira_la_tasa_vieja_mas_alla_de_la_ventana(self):
+        pedido = self.pedido()
+        primera = self.prefactura([pedido])['prefactura']
+        self.envejecer(primera['id'], 50)
+        segunda = self.prefactura([pedido])
+        self.assertTrue(segunda['tasa_reutilizada'])
+        # la copia hereda la hora de congelado de la primera: a los 61 min ya no vale ninguna de las dos
+        self.envejecer(primera['id'], 61)
+        self.envejecer(segunda['prefactura']['id'], 61)
+        _set_tasa_actual('120.0000')
+        tercera = self.prefactura([pedido])
+        self.assertFalse(tercera['tasa_reutilizada'])
+        self.assertEqual(tercera['prefactura']['tasa_cambio_referencia'], '120.0000')
+
+    def test_el_abono_en_bolivares_saldando_la_nota_cuadra_con_lo_que_se_cotizo(self):
+        from sevens.models import VGNotaEntrega, VGPago
+        pedido = self.pedido('10.00')
+        self.prefactura([pedido])          # el cliente ve $10 = Bs 1.000 a tasa 100
+        _set_tasa_actual('120.0000')       # la tasa sube mientras espera
+        nota = self.cobrar([pedido])
+        r = self.client.post(
+            f'/api/notas-entrega/{nota["id"]}/abonos/',
+            data=json.dumps({'monto': '1000.00', 'metodo_pago_id': self.banco_bs.id, 'referencia': 'REF-TC-1'}),
+            content_type='application/json',
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        nota_db = VGNotaEntrega.objects.get(pk=nota['id'])
+        self.assertEqual(nota_db.estado, 'pagada')
+        self.assertEqual(nota_db.saldo_pendiente, Decimal('0'))
+        pago = VGPago.objects.get(nota_entrega=nota_db)
+        self.assertEqual(pago.tasa_cambio_referencia, Decimal('100.0000'))
+        self.assertEqual((pago.monto * pago.tasa_cambio_referencia).quantize(Decimal('0.01')), Decimal('1000.00'))
+
+    def test_el_listado_de_cobro_trae_las_prefacturas_con_tasa_vigente(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        r = self.client.get('/api/pedidos/cobro/')
+        self.assertEqual(r.status_code, 200)
+        vigentes = r.json()['prefacturas_tasa_vigente']
+        self.assertEqual(len(vigentes), 1)
+        self.assertEqual(vigentes[0]['codigo'], pf['codigo'])
+        self.assertEqual(Decimal(vigentes[0]['tasa']), Decimal('100.0000'))
+        self.assertEqual(vigentes[0]['pedido_ids'], [pedido.id])
+        self.assertIn(vigentes[0]['minutos_restantes'], (59, 60))
+        self.envejecer(pf['id'], 61)
+        self.assertEqual(self.client.get('/api/pedidos/cobro/').json()['prefacturas_tasa_vigente'], [])
+
+    def test_convertir_la_prefactura_en_factura_conserva_su_tasa(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        _set_tasa_actual('120.0000')
+        r = self.client.post(f'/api/prefacturas/{pf["id"]}/convertir/')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()['factura']['tasa_cambio_referencia'], '100.0000')
+
+    def test_convertir_una_prefactura_vencida_usa_la_tasa_actual(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        self.envejecer(pf['id'], 61)
+        _set_tasa_actual('120.0000')
+        r = self.client.post(f'/api/prefacturas/{pf["id"]}/convertir/')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()['factura']['tasa_cambio_referencia'], '120.0000')

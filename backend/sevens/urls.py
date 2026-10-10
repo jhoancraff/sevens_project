@@ -60,6 +60,7 @@ from .api_views import (
     reporte_margen_productos_view,
     tasa_cambio_view,
 )
+from .reportes_pdf_views import reporte_gastos_pdf_view, reporte_inventario_pdf_view
 from .ajustes_inventario_views import (
     admin_ajuste_inventario_agregar_view,
     admin_ajuste_inventario_descartar_view,
@@ -221,6 +222,8 @@ urlpatterns = [
     path('admin/reportes/margen-ganancia/', reporte_margen_ganancia_view, name='reporte_margen_ganancia'),
     path('admin/reportes/margen-ganancia-detalle/', reporte_margen_ganancia_detalle_view, name='reporte_margen_ganancia_detalle'),
     path('admin/reportes/margen-productos/', reporte_margen_productos_view, name='reporte_margen_productos'),
+    path('admin/reportes/inventario-pdf/', reporte_inventario_pdf_view, name='reporte_inventario_pdf'),
+    path('admin/reportes/gastos-pdf/', reporte_gastos_pdf_view, name='reporte_gastos_pdf'),
     path('admin/reportes/cuadre-caja/', reporte_cuadre_caja_view, name='reporte_cuadre_caja'),
     path('admin/reportes/cuadre-caja-rango/', reporte_cuadre_caja_rango_view, name='reporte_cuadre_caja_rango'),
     path('admin/reportes/ventas-dia/', reporte_ventas_dia_view, name='reporte_ventas_dia'),
