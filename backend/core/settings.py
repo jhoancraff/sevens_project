@@ -116,7 +116,9 @@ AUTH_PASSWORD_VALIDATORS = [
 
 # Internationalization
 LANGUAGE_CODE = 'es-es'
-TIME_ZONE = 'UTC'
+# Venezuela (UTC-4), igual que Varagrill: los cortes por dia (cuadre de caja, reportes) y la hora impresa en
+# los PDF deben ser la hora local. Con USE_TZ=True las fechas se siguen guardando en UTC.
+TIME_ZONE = 'America/Caracas'
 
 # Minutos que se respeta la tasa de una pre-factura al emitir la nota de entrega / factura de esos
 # mismos pedidos (ver sevens/tasa_cuenta.py).
