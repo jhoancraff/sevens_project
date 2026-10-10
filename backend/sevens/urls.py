@@ -57,8 +57,10 @@ from .api_views import (
     recomendaciones_chef_activas_view,
     reporte_margen_ganancia_detalle_view,
     reporte_margen_ganancia_view,
+    reporte_margen_productos_view,
     tasa_cambio_view,
 )
+from .reportes_pdf_views import reporte_gastos_pdf_view, reporte_inventario_pdf_view
 from .ajustes_inventario_views import (
     admin_ajuste_inventario_agregar_view,
     admin_ajuste_inventario_descartar_view,
@@ -76,10 +78,14 @@ from .compras_views import (
     admin_compra_borrador_quitar_view,
     admin_compra_borrador_view,
     compra_abono_view,
+    compra_nota_credito_anular_view,
+    compra_nota_credito_view,
+    reporte_notas_credito_compra_view,
     cuentas_por_pagar_view,
 )
 from .contabilidad_views import (
     admin_ingresos_no_facturados_view,
+    admin_lotes_pos_view,
     admin_metodos_pago_view,
     ingresos_extra_view,
     metodos_pago_activos_view,
@@ -206,6 +212,7 @@ urlpatterns = [
 
     # --- Administracion: metodos de pago e ingresos extra ------------------
     path('admin/metodos-pago/', admin_metodos_pago_view, name='admin_metodos_pago'),
+    path('admin/lotes-pos/', admin_lotes_pos_view, name='admin_lotes_pos'),
     path('contabilidad/ingresos-extra/', ingresos_extra_view, name='ingresos_extra'),
     path('admin/ingresos-no-facturados/', admin_ingresos_no_facturados_view, name='admin_ingresos_no_facturados'),
     path('metodos-pago/', metodos_pago_activos_view, name='metodos_pago_activos'),
@@ -214,6 +221,9 @@ urlpatterns = [
     path('admin/reportes/estado-resultados/', reporte_estado_resultados_view, name='reporte_estado_resultados'),
     path('admin/reportes/margen-ganancia/', reporte_margen_ganancia_view, name='reporte_margen_ganancia'),
     path('admin/reportes/margen-ganancia-detalle/', reporte_margen_ganancia_detalle_view, name='reporte_margen_ganancia_detalle'),
+    path('admin/reportes/margen-productos/', reporte_margen_productos_view, name='reporte_margen_productos'),
+    path('admin/reportes/inventario-pdf/', reporte_inventario_pdf_view, name='reporte_inventario_pdf'),
+    path('admin/reportes/gastos-pdf/', reporte_gastos_pdf_view, name='reporte_gastos_pdf'),
     path('admin/reportes/cuadre-caja/', reporte_cuadre_caja_view, name='reporte_cuadre_caja'),
     path('admin/reportes/cuadre-caja-rango/', reporte_cuadre_caja_rango_view, name='reporte_cuadre_caja_rango'),
     path('admin/reportes/ventas-dia/', reporte_ventas_dia_view, name='reporte_ventas_dia'),
@@ -253,4 +263,7 @@ urlpatterns = [
     # --- Cuentas por pagar ------------------------------------------------
     path('cuentas-por-pagar/', cuentas_por_pagar_view, name='cuentas_por_pagar'),
     path('admin/compras/<int:compra_id>/abonos/', compra_abono_view, name='compra_abono'),
+    path('admin/compras/<int:compra_id>/notas-credito/', compra_nota_credito_view, name='compra_nota_credito'),
+    path('admin/compras/notas-credito/<int:nota_id>/anular/', compra_nota_credito_anular_view, name='compra_nota_credito_anular'),
+    path('admin/reportes/notas-credito-compra/', reporte_notas_credito_compra_view, name='reporte_notas_credito_compra'),
 ]

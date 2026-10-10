@@ -698,12 +698,57 @@ class VGAbonoCompra(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
     )
     tasa_cambio_referencia = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    # True cuando quien pago escribio SU tasa (la que le cobro el proveedor o con la que
+    # compro los Bs en el banco) en vez de la de la factura/BCV. Los Bs de este abono son
+    # monto * esa tasa y NO se tocan despues, aunque no cuadren con la tasa de la factura:
+    # lo que cuenta es lo que de verdad salio del banco.
+    tasa_manual = models.BooleanField(default=False)
 
     class Meta:
         db_table = "vg_abonos_compra"
 
     def __str__(self):
         return f"Abono {self.monto} — Compra #{self.compra_id}"
+
+
+class VGNotaCreditoCompra(VGAuditoria):
+    """
+    Nota de credito de un PROVEEDOR sobre una factura de compra (VGCompra): baja lo
+    que se le debe cuando la factura se cargo con un monto equivocado (o el proveedor
+    rebaja el precio) y hay que justificar ese ajuste con un documento. No tiene nada
+    que ver con VGNotaCredito (devoluciones de VENTAS a clientes).
+
+    Solo baja la deuda: total y saldo_pendiente de la compra bajan por `monto`, que
+    nunca puede superar el saldo pendiente (si ya se pago, no hay a quien rebajarle).
+    No toca el inventario ni los costos de los ingredientes (el total a pagar de una
+    compra se escribe aparte de sus lineas) ni los abonos ya hechos. Se puede anular
+    (con motivo): devuelve el monto al total y al saldo. monto_bs guarda cuantos
+    bolivares se restaron de total_bs_factura (null si la compra no lo usa), para
+    poder revertirlo exacto.
+    """
+    ESTADOS = [("vigente", "Vigente"), ("anulada", "Anulada")]
+    compra = models.ForeignKey(VGCompra, on_delete=models.PROTECT, related_name="notas_credito")
+    numero = models.PositiveIntegerField(unique=True, help_text="Correlativo interno, serie 'NC_COMPRA'.")
+    numero_documento_proveedor = models.CharField(
+        max_length=100, blank=True, help_text="Numero de la nota de credito que emitio el proveedor (si la trae).",
+    )
+    fecha = models.DateField(help_text="Fecha de la nota de credito.")
+    monto = models.DecimalField(max_digits=14, decimal_places=6)
+    monto_bs = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    tasa_cambio_referencia = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    motivo = models.CharField(max_length=255)
+    estado = models.CharField(max_length=10, choices=ESTADOS, default="vigente")
+    motivo_anulacion = models.CharField(max_length=255, blank=True)
+    fecha_anulacion = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "vg_notas_credito_compra"
+        verbose_name = "Nota de credito de compra"
+        verbose_name_plural = "Notas de credito de compra"
+        ordering = ["-numero"]
+
+    def __str__(self):
+        return f"NCC-{self.numero:06d} — Compra #{self.compra_id} (${self.monto})"
 
 
 class VGMovimientoInventario(models.Model):
@@ -889,6 +934,10 @@ class VGDetallePedido(models.Model):
     costo_unitario_venta = models.DecimalField(
         max_digits=12, decimal_places=4, null=True, blank=True,
         help_text="Costo de receta por unidad (o por kg si venta_por_peso), congelado en el momento del cobro con los costos de ingredientes vigentes ese día. Vacío para pedidos cobrados antes de que este campo existiera — el reporte de margen cae al costo actual para esos casos.",
+    )
+    margen_produccion_pct_venta = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text="Margen de producción (VGConfiguracionCosteo.rendimiento_receta_pct) vigente en el momento del cobro, congelado junto a costo_unitario_venta. Permite separar el costo puro de receta del margen y sumarlo sin contarlo dos veces. Vacío para ventas cobradas antes de que existiera.",
     )
     estado = models.CharField(max_length=20, choices=ESTADOS, default="pendiente")
     notas = models.CharField(max_length=255, blank=True)
@@ -1170,6 +1219,10 @@ class VGPago(models.Model):
     saldo_posterior = models.DecimalField(
         max_digits=14, decimal_places=6, null=True, blank=True,
         help_text="Saldo pendiente de la nota (USD) justo después de este abono.",
+    )
+    lote_pos = models.ForeignKey(
+        "sevens.VGLotePOS", on_delete=models.PROTECT, null=True, blank=True, related_name="pagos",
+        help_text="Lote de punto de venta al que pertenece este cobro (solo si su metodo_pago es_punto_venta) — ver lotes_pos.asignar_pago_a_lote.",
     )
     anulado_por_nota_credito = models.ForeignKey(
         "sevens.VGNotaCredito", on_delete=models.SET_NULL, null=True, blank=True, related_name="pagos_revertidos",

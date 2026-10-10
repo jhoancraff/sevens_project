@@ -2599,7 +2599,9 @@ class NotaEntregaCobroFlujoTests(TestCase):
         self.assertEqual(r.status_code, 201, r.content)
         self.assertEqual(VGCliente.objects.filter(numero_documento='12345678').count(), 1)
         cliente = VGCliente.objects.get(numero_documento='12345678')
-        self.assertEqual((cliente.nombre, cliente.apellido), ('Ana', 'Perez'))
+        # Cedula ya registrada: se reutiliza el MISMO cliente (nunca se crea otro) y, si la
+        # cajera corrigio el nombre/apellido, se actualiza ese registro.
+        self.assertEqual((cliente.nombre, cliente.apellido), ('Otro Nombre', 'X'))
         self.assertEqual(VGNotaEntrega.objects.filter(cliente=cliente).count(), 2)
 
     def test_abonos_numero_cobro_cambio_de_cuenta_y_tickets(self):
@@ -2705,3 +2707,1718 @@ class NotaEntregaCobroFlujoTests(TestCase):
         self.assertEqual(r.status_code, 200, r.content)
         enviar.assert_called_once()
         self.assertEqual(self.client.post(f'/api/notas-entrega/{nota.id}/abonos/99999/reimprimir/').status_code, 404)
+
+
+# ---------------------------------------------------------------------------
+# Lotes de punto de venta (POS) — cierre de lotes y acreditacion con un clic
+# ---------------------------------------------------------------------------
+from datetime import timedelta  # noqa: E402
+
+from django.db import IntegrityError, transaction  # noqa: E402
+
+from sevens import lotes_pos  # noqa: E402
+from sevens.models import VGCierreCaja, VGLotePOS, VGPago  # noqa: E402
+from sevens.reportes import disponibilidad_por_cuenta, pos_por_cobrar_transitorio, resumen_flujo_banco_mes  # noqa: E402
+
+
+def flujo_bancario_mensual(anio, mes, banco_clave):
+    """Adaptador al formato de Sevens: totales de entrada/salida de los metodos de ese banco en el mes."""
+    ids = list(VGMetodoPago.objects.filter(cuenta_bancaria=banco_clave).values_list('id', flat=True))
+    dias = resumen_flujo_banco_mes(anio, mes, ids)
+    return {
+        'dias': [
+            {'fecha': d['fecha'], 'entrada': d['entrada'], 'salida': d['salida'], 'entrada_bs': d['entrada_local'], 'salida_bs': d['salida_local']}
+            for d in dias
+        ],
+        'total_entrada': sum((d['entrada'] for d in dias), Decimal('0')),
+        'total_salida': sum((d['salida'] for d in dias), Decimal('0')),
+    }
+
+
+class LotesPOSBase(TestCase):
+    def setUp(self):
+        self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='pos_admin', password='claveAdmin123', cedula='91000001',
+            email='pos_admin@sevens.test', id_role=self.admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='pos_cajera', password='claveCajera123', cedula='91000002',
+            email='pos_cajera@sevens.test', id_role=self.cajera_role,
+        )
+        self.hoy = timezone.localdate()
+        self.tasa_hoy = _set_tasa_actual('100.0000')
+        self.pos = VGMetodoPago.objects.create(
+            nombre='Punto Banesco', moneda='VES', cuenta_bancaria='Banesco', es_punto_venta=True,
+        )
+        self.otro_pos = VGMetodoPago.objects.create(
+            nombre='Punto Mercantil', moneda='VES', cuenta_bancaria='Mercantil', es_punto_venta=True,
+        )
+
+    def pago(self, monto_usd='100', tasa='100.0000', metodo=None, usuario=None):
+        pedido = VGPedido.objects.create(
+            usuario=usuario or self.admin, tipo_pedido='local', estado='entregado',
+            subtotal=monto_usd, total=monto_usd,
+        )
+        pago = VGPago.objects.create(
+            pedido=pedido, monto=Decimal(monto_usd), metodo_pago=metodo or self.pos,
+            estado='completado', tasa_cambio_referencia=Decimal(tasa), creado_por=usuario or self.admin,
+        )
+        lotes_pos.asignar_pago_a_lote(pago, usuario or self.admin)
+        pago.refresh_from_db()
+        return pago
+
+    def cerrar(self, lote):
+        return lotes_pos.cerrar_lote(lote, self.admin)
+
+    def acreditar(self, lote):
+        return lotes_pos.acreditar_lote(lote, self.admin)
+
+    def saldo_banco(self, nombre, fecha=None):
+        _cuentas, bancos = disponibilidad_por_cuenta(fecha or self.hoy)
+        return next(b for b in bancos if b['nombre'] == nombre)
+
+
+class LotePOSCicloTests(LotesPOSBase):
+    def test_cobro_pos_crea_y_reutiliza_el_lote_abierto(self):
+        p1 = self.pago('40')
+        p2 = self.pago('60')
+        self.assertEqual(p1.lote_pos_id, p2.lote_pos_id)
+        lote = VGLotePOS.objects.get(pk=p1.lote_pos_id)
+        self.assertEqual(lote.estado, 'abierto')
+        self.assertEqual(lote.monto_bruto_usd, Decimal('100.000000'))
+        self.assertEqual(lote.monto_bruto_sistema_bs, Decimal('10000.00'))
+
+    def test_metodo_que_no_es_pos_no_genera_lote(self):
+        efectivo = VGMetodoPago.objects.create(nombre='Efectivo USD test', es_efectivo=True)
+        pago = self.pago('10', metodo=efectivo)
+        self.assertIsNone(pago.lote_pos_id)
+        self.assertEqual(VGLotePOS.objects.count(), 0)
+
+    def test_no_pueden_existir_dos_lotes_abiertos_del_mismo_metodo(self):
+        self.pago('10')
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                VGLotePOS.objects.create(numero=999, metodo_pago=self.pos, fecha_operacion=self.hoy)
+
+    def test_cierre_parcial_el_siguiente_cobro_abre_otro_lote(self):
+        primero = self.pago('50').lote_pos
+        self.cerrar(primero)
+        segundo = self.pago('30').lote_pos
+        self.assertNotEqual(primero.pk, segundo.pk)
+        primero.refresh_from_db()
+        self.assertEqual(primero.estado, 'cerrado')
+        self.assertEqual(segundo.estado, 'abierto')
+        self.assertEqual(primero.monto_bruto_usd, Decimal('50.000000'))
+
+    def test_no_se_cierra_un_lote_vacio(self):
+        pago = self.pago('10')
+        pago.estado = 'anulado'
+        pago.save(update_fields=['estado'])
+        lotes_pos.pago_anulado(pago)
+        with self.assertRaises(lotes_pos.LoteError):
+            self.cerrar(pago.lote_pos)
+
+    def test_anular_un_pago_recalcula_la_sumatoria_del_lote_abierto(self):
+        p1 = self.pago('40')
+        p2 = self.pago('60')
+        p2.estado = 'anulado'
+        p2.save(update_fields=['estado'])
+        lotes_pos.pago_anulado(p2)
+        lote = VGLotePOS.objects.get(pk=p1.lote_pos_id)
+        self.assertEqual(lote.monto_bruto_usd, Decimal('40.000000'))
+        self.assertEqual(lote.monto_bruto_sistema_bs, Decimal('4000.00'))
+
+    def test_reabrir_y_anular_exigen_motivo_y_no_aplican_a_acreditados(self):
+        lote = self.cerrar(self.pago('10').lote_pos)
+        with self.assertRaises(lotes_pos.LoteError):
+            lotes_pos.reabrir_lote(lote, self.admin, '')
+        lote = lotes_pos.reabrir_lote(lote, self.admin, 'Cierre por error')
+        self.assertEqual(lote.estado, 'abierto')
+        self.assertIn('Cierre por error', lote.notas)
+
+        lote = self.acreditar(self.cerrar(lote))
+        with self.assertRaises(lotes_pos.LoteError):
+            lotes_pos.reabrir_lote(lote, self.admin, 'x')
+        with self.assertRaises(lotes_pos.LoteError):
+            lotes_pos.anular_lote(lote, self.admin, 'x')
+
+    def test_anular_lote_cerrado_mueve_sus_cobros_al_lote_abierto(self):
+        cerrado = self.cerrar(self.pago('25').lote_pos)
+        lotes_pos.anular_lote(cerrado, self.admin, 'Lote duplicado')
+        cerrado.refresh_from_db()
+        self.assertEqual(cerrado.estado, 'anulado')
+        abierto = VGLotePOS.objects.get(metodo_pago=self.pos, estado='abierto')
+        self.assertEqual(abierto.monto_bruto_usd, Decimal('25.000000'))
+
+    def test_cobro_de_lote_cerrado_no_cambia_de_cuenta(self):
+        pago = self.pago('10')
+        self.cerrar(pago.lote_pos)
+        pago.refresh_from_db()
+        self.assertIn('lote POS', lotes_pos.validar_cambio_metodo_pago(pago))
+
+
+class AcreditacionLotePOSTests(LotesPOSBase):
+    def test_disponibilidad_solo_suma_cuando_se_acredita_el_lote(self):
+        lote = self.pago('100').lote_pos
+
+        # Abierto: nada disponible, todo por acreditar.
+        banco = self.saldo_banco('Banesco')
+        self.assertEqual(banco['saldo_disponible'], Decimal('0'))
+        self.assertEqual(banco['por_acreditar_usd'], Decimal('100.000000'))
+
+        lote = self.cerrar(lote)
+        banco = self.saldo_banco('Banesco')
+        self.assertEqual(banco['saldo_disponible'], Decimal('0'))
+        self.assertEqual(banco['por_acreditar_usd'], Decimal('100.000000'))
+        self.assertEqual(len(banco['lotes_por_acreditar']), 1)
+
+        # Un clic: el monto del lote suma completo a la cuenta, en USD y en Bs.
+        lote = self.acreditar(lote)
+        self.assertEqual(lote.estado, 'acreditado')
+        self.assertEqual(lote.fecha_abono_real, self.hoy)
+        self.assertEqual(lote.acreditado_por, self.admin)
+        banco = self.saldo_banco('Banesco')
+        self.assertEqual(banco['saldo_disponible'], Decimal('100.000000'))
+        self.assertEqual(banco['saldo_disponible_bs'], Decimal('10000.00'))
+        self.assertEqual(banco['por_acreditar_usd'], Decimal('0'))
+
+    def test_solo_se_acredita_un_lote_cerrado_y_una_sola_vez(self):
+        lote = self.pago('100').lote_pos
+        with self.assertRaises(lotes_pos.LoteError):
+            self.acreditar(lote)  # abierto: primero se cierra
+        lote = self.acreditar(self.cerrar(lote))
+        with self.assertRaises(lotes_pos.LoteError):
+            self.acreditar(lote)  # doble clic: no suma dos veces
+        self.assertEqual(self.saldo_banco('Banesco')['saldo_disponible'], Decimal('100.000000'))
+
+    def test_acreditado_se_ve_solo_desde_su_fecha(self):
+        self.acreditar(self.cerrar(self.pago('100').lote_pos))
+        ayer = self.hoy - timedelta(days=1)
+        self.assertEqual(self.saldo_banco('Banesco', ayer)['saldo_disponible'], Decimal('0'))
+        self.assertEqual(self.saldo_banco('Banesco', self.hoy)['saldo_disponible'], Decimal('100.000000'))
+
+    def test_revertir_acreditacion_quita_el_monto_del_saldo(self):
+        lote = self.acreditar(self.cerrar(self.pago('100').lote_pos))
+        with self.assertRaises(lotes_pos.LoteError):
+            lotes_pos.revertir_acreditacion(lote, self.admin, '')
+        lote = lotes_pos.revertir_acreditacion(lote, self.admin, 'Click por error')
+        self.assertEqual(lote.estado, 'cerrado')
+        self.assertIn('Click por error', lote.notas)
+        self.assertEqual(self.saldo_banco('Banesco')['saldo_disponible'], Decimal('0'))
+        self.assertEqual(self.saldo_banco('Banesco')['por_acreditar_usd'], Decimal('100.000000'))
+
+    def test_transitorio_pos_por_cobrar(self):
+        self.cerrar(self.pago('100').lote_pos)
+        self.pago('50', metodo=self.otro_pos)  # lote abierto de otro banco
+        data = pos_por_cobrar_transitorio(self.hoy)
+        self.assertEqual(data['total_usd'], Decimal('150.000000'))
+        self.assertEqual({item['banco'] for item in data['por_banco']}, {'Banesco', 'Mercantil'})
+
+    def test_flujo_bancario_cuenta_el_lote_una_sola_vez_el_dia_que_se_acredita(self):
+        self.assertEqual(flujo_bancario_mensual(self.hoy.year, self.hoy.month, 'Banesco')['total_entrada'], Decimal('0'))
+        lote = self.cerrar(self.pago('100').lote_pos)
+        self.assertEqual(flujo_bancario_mensual(self.hoy.year, self.hoy.month, 'Banesco')['total_entrada'], Decimal('0'))
+        self.acreditar(lote)
+        flujo = flujo_bancario_mensual(self.hoy.year, self.hoy.month, 'Banesco')
+        dia = next(d for d in flujo['dias'] if d['fecha'] == self.hoy)
+        self.assertEqual(dia['entrada'], Decimal('100.000000'))
+        self.assertEqual(flujo['total_entrada'], Decimal('100.000000'))
+
+    def test_backfill_historico_no_altera_el_saldo_conocido(self):
+        metodo = VGMetodoPago.objects.create(nombre='Punto viejo', moneda='VES', cuenta_bancaria='Provincial')
+        for monto, dias_atras in (('40', 20), ('60', 15)):
+            pedido = VGPedido.objects.create(usuario=self.admin, tipo_pedido='local', estado='entregado', subtotal=monto, total=monto)
+            pago = VGPago.objects.create(
+                pedido=pedido, monto=Decimal(monto), metodo_pago=metodo, estado='completado',
+                tasa_cambio_referencia=Decimal('100'),
+            )
+            VGPago.objects.filter(pk=pago.pk).update(fecha_pago=timezone.now() - timedelta(days=dias_atras))
+        antes = self.saldo_banco('Provincial')['saldo_disponible']
+        self.assertEqual(antes, Decimal('100.000000'))
+
+        metodo.es_punto_venta = True
+        metodo.save()
+        self.assertEqual(lotes_pos.backfill_historico_metodo(metodo), 2)
+        self.assertEqual(self.saldo_banco('Provincial')['saldo_disponible'], antes)
+        self.assertEqual(VGLotePOS.objects.filter(metodo_pago=metodo, estado='acreditado').count(), 2)
+        # Idempotente: ya no quedan cobros sin lote.
+        self.assertEqual(lotes_pos.backfill_historico_metodo(metodo), 0)
+
+
+class CierreCajaPOSApiTests(LotesPOSBase):
+    def post_cuadre(self, **payload):
+        return self.client.post(
+            '/api/admin/reportes/cuadre-caja/', data=json.dumps({'fecha': self.hoy.isoformat(), **payload}),
+            content_type='application/json',
+        )
+
+    def test_cerrar_caja_autoclausura_lotes_y_persiste_el_snapshot(self):
+        lote = self.pago('100').lote_pos
+        self.client.force_login(self.cajera)
+
+        response = self.post_cuadre(action='cerrar_caja')
+        self.assertEqual(response.status_code, 201, response.content)
+        cierre = VGCierreCaja.objects.get(fecha=self.hoy)
+        lote.refresh_from_db()
+        self.assertEqual(lote.estado, 'cerrado')
+        self.assertFalse(cierre.conteo_efectivo_realizado)
+        self.assertEqual(cierre.diferencia, Decimal('0'))
+        self.assertEqual(cierre.pos_por_acreditar_usd, Decimal('100.000000'))
+        self.assertFalse(VGLotePOS.objects.filter(estado='abierto').exists())
+
+        # El snapshot del cierre es inmutable: acreditar despues no lo cambia.
+        self.acreditar(lote)
+        cierre.refresh_from_db()
+        self.assertEqual(cierre.pos_por_acreditar_usd, Decimal('100.000000'))
+
+    def test_cerrar_caja_sin_lotes(self):
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.post_cuadre(action='cerrar_caja').status_code, 201)
+
+    def test_cuadre_trae_el_bloque_pos_y_la_disponibilidad_real(self):
+        self.pago('100')
+        self.client.force_login(self.admin)
+        data = self.client.get(f'/api/admin/reportes/cuadre-caja/?fecha={self.hoy.isoformat()}').json()
+        self.assertEqual(data['pos']['cobrado_dia_usd'], '100.000000')
+        self.assertEqual(data['pos']['por_acreditar_usd'], '100.000000')
+        self.assertEqual(data['pos']['acreditado_hoy_usd'], '0')
+        self.assertEqual(Decimal(data['pos']['disponibilidad_real_usd']), Decimal('0'))
+
+    def test_endpoint_lotes_cierra_y_acredita_con_un_clic(self):
+        lote = self.pago('100').lote_pos
+        self.client.force_login(self.cajera)
+
+        def post(**payload):
+            return self.client.post('/api/admin/lotes-pos/', data=json.dumps(payload), content_type='application/json')
+
+        r = post(action='cerrar_lote', lote_id=lote.id)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['lote']['estado'], 'cerrado')
+
+        r = post(action='acreditar_lote', lote_id=lote.id)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['lote']['estado'], 'acreditado')
+        self.assertEqual(self.saldo_banco('Banesco')['saldo_disponible'], Decimal('100.000000'))
+
+        # Revertir, reabrir y anular son de administrador/contador, no de la cajera.
+        self.assertEqual(post(action='revertir_acreditacion', lote_id=lote.id, motivo='x').status_code, 401)
+        self.client.force_login(self.admin)
+        self.assertEqual(post(action='revertir_acreditacion', lote_id=lote.id, motivo='x').status_code, 200)
+
+        listado = self.client.get('/api/admin/lotes-pos/').json()
+        self.assertTrue(any(item['id'] == lote.id and item['estado'] == 'cerrado' for item in listado['lotes']))
+
+    def test_marcar_punto_venta_valida_y_hace_backfill(self):
+        self.client.force_login(self.admin)
+
+        def post(**payload):
+            return self.client.post('/api/admin/metodos-pago/', data=json.dumps(payload), content_type='application/json')
+
+        usd = VGMetodoPago.objects.create(nombre='Zelle test', moneda='USD')
+        self.assertEqual(post(action='marcar_punto_venta', id=usd.id, es_punto_venta=True).status_code, 400)
+
+        nuevo = VGMetodoPago.objects.create(nombre='Punto Provincial', moneda='VES', cuenta_bancaria='Provincial')
+        r = post(action='marcar_punto_venta', id=nuevo.id, es_punto_venta=True)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(r.json()['metodo_pago']['es_punto_venta'])
+
+        # Con un lote sin acreditar no se le puede quitar la marca.
+        nuevo.refresh_from_db()
+        self.pago('10', metodo=nuevo)
+        self.assertEqual(post(action='marcar_punto_venta', id=nuevo.id, es_punto_venta=False).status_code, 400)
+
+
+class ImpresionCierreLotePOSTests(LotesPOSBase):
+    def test_ticket_lista_cada_cobro_y_el_total_en_bs(self):
+        from sevens.impresion_lpd import _build_cierre_lote_pos_bytes
+        self.pago('40')
+        lote = self.pago('60').lote_pos
+        lote = self.cerrar(lote)
+        texto = _build_cierre_lote_pos_bytes(lote).decode('cp1252', errors='replace')
+        self.assertIn('CIERRE DE LOTE POS', texto)
+        self.assertIn(f'LOTE-{lote.numero:06d}', texto)
+        self.assertIn('COBROS DEL LOTE (2)', texto)
+        self.assertIn('Bs.4.000,00', texto)   # 40 USD x 100
+        self.assertIn('Bs.6.000,00', texto)   # 60 USD x 100
+        self.assertIn('TOTAL Bs.', texto)
+        self.assertIn('10.000,00', texto)
+        self.assertIn('REIMPRESION', _build_cierre_lote_pos_bytes(lote, es_reimpresion=True).decode('cp1252', errors='replace'))
+
+    def test_cerrar_lote_imprime_y_un_fallo_de_impresora_no_tumba_el_cierre(self):
+        from unittest.mock import patch
+        lote = self.pago('100').lote_pos
+        self.client.force_login(self.cajera)
+
+        def post(**payload):
+            return self.client.post('/api/admin/lotes-pos/', data=json.dumps(payload), content_type='application/json')
+
+        with patch('sevens.contabilidad_views.imprimir_cierre_lote_pos', return_value=(False, 'No hay una impresora de caja activa configurada.')) as impresora:
+            r = post(action='cerrar_lote', lote_id=lote.id)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['lote']['estado'], 'cerrado')
+        self.assertFalse(r.json()['impresion']['ok'])
+        self.assertIn('No se pudo imprimir', r.json()['message'])
+        impresora.assert_called_once()
+
+        with patch('sevens.contabilidad_views.imprimir_cierre_lote_pos', return_value=(True, None)) as impresora:
+            r = post(action='imprimir_lote', lote_id=lote.id)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(impresora.call_args.kwargs['es_reimpresion'])
+
+        with patch('sevens.contabilidad_views.imprimir_cierre_lote_pos', return_value=(False, 'sin impresora')):
+            self.assertEqual(post(action='imprimir_lote', lote_id=lote.id).status_code, 502)
+
+    def test_cerrar_caja_imprime_los_lotes_que_se_cierran_solos(self):
+        from unittest.mock import patch
+        self.pago('100')
+        self.client.force_login(self.cajera)
+        with patch('sevens.contabilidad_views.imprimir_cierre_lote_pos', return_value=(True, None)) as impresora:
+            r = self.client.post(
+                '/api/admin/reportes/cuadre-caja/',
+                data=json.dumps({'action': 'cerrar_caja', 'fecha': self.hoy.isoformat()}), content_type='application/json',
+            )
+        self.assertEqual(r.status_code, 201, r.content)
+        impresora.assert_called_once()
+        self.assertIn('Se imprimió el detalle', r.json()['message'])
+
+
+class MontoBsDelLoteInmutableTests(LotesPOSBase):
+    """El monto en Bs de un lote es lo que se cobro en el punto: la tasa BCV no lo toca nunca."""
+
+    def test_cambiar_la_tasa_bcv_no_mueve_ningun_monto_en_bs(self):
+        from sevens.impresion_lpd import _build_cierre_lote_pos_bytes
+        from sevens.models import VGTasaCambio
+
+        # Cobros en Bs: 1.234,56 y 8.765,44 (suman 10.000,00), tasa del dia 100.
+        pedido = VGPedido.objects.create(usuario=self.admin, tipo_pedido='local', estado='entregado', subtotal='1', total='1')
+        for bs in ('1234.56', '8765.44'):
+            usd = (Decimal(bs) / Decimal('100')).quantize(Decimal('0.000001'))
+            pago = VGPago.objects.create(
+                pedido=pedido, monto=usd, metodo_pago=self.pos, estado='completado',
+                tasa_cambio_referencia=Decimal('100.0000'), creado_por=self.admin,
+            )
+            lotes_pos.asignar_pago_a_lote(pago, self.admin)
+        lote = VGLotePOS.objects.get(metodo_pago=self.pos, estado='abierto')
+        self.assertEqual(lote.monto_bruto_sistema_bs, Decimal('10000.00'))
+        lote = self.cerrar(lote)
+
+        # El BCV se dispara: hoy y en los dias siguientes.
+        _set_tasa_actual('250.0000')
+        VGTasaCambio.objects.create(fecha=self.hoy + timedelta(days=1), tasa=Decimal('400.0000'))
+
+        lote.refresh_from_db()
+        self.assertEqual(lote.monto_bruto_sistema_bs, Decimal('10000.00'))
+        self.assertIn('10.000,00', _build_cierre_lote_pos_bytes(lote).decode('cp1252', errors='replace'))
+
+        lote = self.acreditar(lote)
+        self.assertEqual(lote.monto_bruto_sistema_bs, Decimal('10000.00'))
+        self.assertEqual(self.saldo_banco('Banesco')['saldo_disponible_bs'], Decimal('10000.00'))
+        flujo = flujo_bancario_mensual(self.hoy.year, self.hoy.month, 'Banesco')
+        dia = next(d for d in flujo['dias'] if d['fecha'] == self.hoy)
+        self.assertEqual(dia['entrada_bs'], Decimal('10000.00'))
+
+        self.client.force_login(self.admin)
+        detalle = self.client.get(f'/api/admin/lotes-pos/?lote_id={lote.id}').json()['lote']
+        self.assertEqual(detalle['monto_bs'], '10000.00')
+        self.assertEqual(sum(Decimal(pago['monto_bs']) for pago in detalle['pagos']), Decimal('10000.00'))
+
+
+class EfectivoPorMonedaTests(LotesPOSBase):
+    def test_separa_el_efectivo_en_bs_y_dolares_y_suma_el_esperado(self):
+        from sevens.models import VGAbonoGasto
+        from sevens.reportes import efectivo_esperado_dia, efectivo_esperado_por_moneda
+
+        efectivo_bs = VGMetodoPago.objects.create(nombre='Efectivo Bs test', moneda='VES', es_efectivo=True)
+        efectivo_usd = VGMetodoPago.objects.create(nombre='Efectivo USD test2', moneda='USD', es_efectivo=True)
+        # Cobros: Bs 5.000 (tasa 100 = $50) y $20 en dolares. El punto de venta NO cuenta como efectivo.
+        self.pago('50', tasa='100.0000', metodo=efectivo_bs)
+        self.pago('20', metodo=efectivo_usd)
+        self.pago('99', metodo=self.pos)
+        # Gasto pagado en efectivo en bolivares: Bs 1.000 ($10 a tasa 100) y otro en dolares: $5.
+        categoria = VGCategoriaGasto.objects.create(nombre='Aseo test')
+        for monto, metodo, tasa in (('10', efectivo_bs, '100.0000'), ('5', efectivo_usd, None)):
+            gasto = VGGasto.objects.create(
+                categoria=categoria, descripcion='Gasto en efectivo', monto=Decimal(monto), saldo_pendiente=0,
+                estado_pago='pagado', fecha_gasto=self.hoy,
+            )
+            VGAbonoGasto.objects.create(
+                gasto=gasto, monto=Decimal(monto), metodo_pago=metodo, tasa_cambio_referencia=Decimal(tasa) if tasa else None,
+            )
+
+        datos = efectivo_esperado_por_moneda(self.hoy)
+        self.assertEqual(datos['bs'], Decimal('4000.00'))      # 5.000 − 1.000
+        self.assertEqual(datos['usd'], Decimal('15.000000'))   # 20 − 5
+        self.assertEqual(datos['usd'] + datos['bs_en_usd'], efectivo_esperado_dia(self.hoy))
+
+        # El BCV cambia: los bolivares en la gaveta no se mueven.
+        _set_tasa_actual('900.0000')
+        self.assertEqual(efectivo_esperado_por_moneda(self.hoy)['bs'], Decimal('4000.00'))
+
+        self.client.force_login(self.cajera)
+        data = self.client.get(f'/api/admin/reportes/cuadre-caja/?fecha={self.hoy.isoformat()}').json()
+        self.assertEqual(data['efectivo_por_moneda']['bs'], '4000.00')
+        self.assertEqual(data['efectivo_por_moneda']['usd'], '15.000000')
+
+
+class DeshacerPuntoDeVentaTests(LotesPOSBase):
+    """Si un cobro entra a un lote (o un metodo se marca POS) por error, se puede deshacer sin descuadrar nada."""
+
+    def post_metodos(self, **payload):
+        return self.client.post('/api/admin/metodos-pago/', data=json.dumps(payload), content_type='application/json')
+
+    def test_cobro_en_punto_por_error_se_saca_del_lote_abierto_cambiando_la_cuenta(self):
+        pago_movil = VGMetodoPago.objects.create(nombre='Pago movil test', moneda='VES', cuenta_bancaria='Banesco')
+        pago = self.pago('50')  # se cobro con el punto por error
+        lote = pago.lote_pos
+        self.assertEqual(self.saldo_banco('Banesco')['saldo_disponible'], Decimal('0'))
+
+        self.client.force_login(self.cajera)
+        r = self.client.post(
+            '/api/admin/reportes/cuadre-caja/',
+            data=json.dumps({
+                'action': 'cambiar_metodo_pago', 'fecha': self.hoy.isoformat(), 'tipo': 'pago', 'id': pago.id,
+                'metodo_pago_id': pago_movil.id, 'motivo': 'Era pago movil',
+            }), content_type='application/json',
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        pago.refresh_from_db()
+        lote.refresh_from_db()
+        self.assertIsNone(pago.lote_pos_id)
+        self.assertEqual(lote.monto_bruto_usd, Decimal('0'))
+        # Ya es un cobro normal: suma al saldo del banco de una vez.
+        self.assertEqual(self.saldo_banco('Banesco')['saldo_disponible'], Decimal('50.000000'))
+
+    def test_si_el_lote_ya_se_cerro_primero_se_reabre(self):
+        pago_movil = VGMetodoPago.objects.create(nombre='Pago movil test', moneda='VES', cuenta_bancaria='Banesco')
+        pago = self.pago('50')
+        lote = self.cerrar(pago.lote_pos)
+        pago.refresh_from_db()
+        self.assertIn('Mover cobro', lotes_pos.validar_cambio_metodo_pago(pago))
+        lotes_pos.reabrir_lote(lote, self.admin, 'Cobro con metodo equivocado')
+        pago.refresh_from_db()
+        self.assertIsNone(lotes_pos.validar_cambio_metodo_pago(pago))
+        pago.metodo_pago = pago_movil
+        pago.save(update_fields=['metodo_pago'])
+        lotes_pos.aplicar_cambio_metodo_pago(pago, self.admin)
+        pago.refresh_from_db()
+        self.assertIsNone(pago.lote_pos_id)
+
+    def test_quitar_la_marca_de_punto_de_venta_no_duplica_saldo_ni_flujo(self):
+        lote = self.acreditar(self.cerrar(self.pago('100').lote_pos))
+        self.assertEqual(self.saldo_banco('Banesco')['saldo_disponible'], Decimal('100.000000'))
+
+        self.client.force_login(self.admin)
+        r = self.post_metodos(action='marcar_punto_venta', id=self.pos.id, es_punto_venta=False)
+        self.assertEqual(r.status_code, 200, r.content)
+
+        # El cobro vuelve a contar como cobro normal: el saldo sigue en 100, no 200.
+        self.assertEqual(self.saldo_banco('Banesco')['saldo_disponible'], Decimal('100.000000'))
+        flujo = flujo_bancario_mensual(self.hoy.year, self.hoy.month, 'Banesco')
+        self.assertEqual(flujo['total_entrada'], Decimal('100.000000'))
+
+    def test_no_se_quita_la_marca_con_lotes_sin_acreditar(self):
+        self.pago('100')
+        self.client.force_login(self.admin)
+        self.assertEqual(self.post_metodos(action='marcar_punto_venta', id=self.pos.id, es_punto_venta=False).status_code, 400)
+
+    def test_marcar_un_metodo_por_error_y_desmarcarlo_deja_los_saldos_como_estaban(self):
+        efectivo = VGMetodoPago.objects.create(nombre='Pago movil test', moneda='VES', cuenta_bancaria='Mercantil')
+        self.pago('70', metodo=efectivo)
+        antes = self.saldo_banco('Mercantil')['saldo_disponible']
+        self.assertEqual(antes, Decimal('70.000000'))
+
+        self.client.force_login(self.admin)
+        self.post_metodos(action='marcar_punto_venta', id=efectivo.id, es_punto_venta=True)
+        # Hoy el cobro paso al lote abierto: deja de estar disponible hasta acreditar.
+        self.assertEqual(self.saldo_banco('Mercantil')['saldo_disponible'], Decimal('0'))
+        lote = VGLotePOS.objects.get(metodo_pago=efectivo, estado='abierto')
+        self.acreditar(self.cerrar(lote))
+        self.assertEqual(self.saldo_banco('Mercantil')['saldo_disponible'], antes)
+        self.assertEqual(self.post_metodos(action='marcar_punto_venta', id=efectivo.id, es_punto_venta=False).status_code, 200)
+        self.assertEqual(self.saldo_banco('Mercantil')['saldo_disponible'], antes)
+
+
+class MoverCobroDeLoteCerradoTests(LotesPOSBase):
+    """Se dan cuenta al final del dia de que un cobro no va en el lote cerrado, y el metodo ya tiene otro lote abierto."""
+
+    def escenario(self):
+        correcto = self.pago('30')
+        equivocado = self.pago('20')
+        lote_a = self.cerrar(correcto.lote_pos)          # el punto cerro con ambos cobros adentro
+        nuevo = self.pago('10')                          # y siguio cobrando: lote B abierto
+        lote_b = nuevo.lote_pos
+        self.assertNotEqual(lote_a.pk, lote_b.pk)
+        return lote_a, lote_b, equivocado
+
+    def test_pasa_al_lote_abierto_sin_reabrir_el_cerrado(self):
+        lote_a, lote_b, pago = self.escenario()
+        self.assertEqual(lote_a.monto_bruto_usd, Decimal('50.000000'))
+
+        # Reabrir no se puede mientras haya otro lote abierto...
+        with self.assertRaises(lotes_pos.LoteError):
+            lotes_pos.reabrir_lote(lote_a, self.admin, 'x')
+        # ...pero mover el cobro si.
+        lotes_pos.mover_pago_de_lote(pago, self.admin, 'Se cobro despues del cierre del punto')
+
+        lote_a.refresh_from_db()
+        lote_b.refresh_from_db()
+        pago.refresh_from_db()
+        self.assertEqual(lote_a.estado, 'cerrado')
+        self.assertEqual(lote_a.monto_bruto_usd, Decimal('30.000000'))
+        self.assertEqual(lote_a.monto_bruto_sistema_bs, Decimal('3000.00'))
+        self.assertEqual(pago.lote_pos_id, lote_b.pk)
+        self.assertEqual(lote_b.monto_bruto_usd, Decimal('30.000000'))
+        self.assertIn('Se cobro despues del cierre', lote_a.notas)
+        self.assertIn('Se cobro despues del cierre', lote_b.notas)
+        # Sigue sin acreditar: nada suma al saldo todavia.
+        self.assertEqual(self.saldo_banco('Banesco')['saldo_disponible'], Decimal('0'))
+        self.assertEqual(self.saldo_banco('Banesco')['por_acreditar_usd'], Decimal('60.000000'))  # A: 30 + B: 10 + 20 movidos
+
+    def test_cambia_la_cuenta_y_suma_al_saldo_si_el_destino_no_es_punto(self):
+        lote_a, _lote_b, pago = self.escenario()
+        pago_movil = VGMetodoPago.objects.create(nombre='Pago movil test', moneda='VES', cuenta_bancaria='Banesco')
+        lotes_pos.mover_pago_de_lote(pago, self.admin, 'Era pago movil', pago_movil)
+        pago.refresh_from_db()
+        lote_a.refresh_from_db()
+        self.assertIsNone(pago.lote_pos_id)
+        self.assertEqual(pago.metodo_pago_id, pago_movil.id)
+        self.assertEqual(lote_a.monto_bruto_usd, Decimal('30.000000'))
+        self.assertEqual(self.saldo_banco('Banesco')['saldo_disponible'], Decimal('20.000000'))
+        from sevens.models import VGCorreccionMetodoPago
+        self.assertTrue(VGCorreccionMetodoPago.objects.filter(tipo='pago', registro_id=pago.id, motivo='Era pago movil').exists())
+
+    def test_un_lote_que_se_queda_sin_cobros_se_anula(self):
+        pago = self.pago('20')
+        lote = self.cerrar(pago.lote_pos)
+        lotes_pos.mover_pago_de_lote(pago, self.admin, 'Todo el lote era un error')
+        lote.refresh_from_db()
+        self.assertEqual(lote.estado, 'anulado')
+        self.assertEqual(VGLotePOS.objects.get(metodo_pago=self.pos, estado='abierto').monto_bruto_usd, Decimal('20.000000'))
+
+    def test_reglas_motivo_y_estado(self):
+        lote_a, lote_b, pago = self.escenario()
+        with self.assertRaises(lotes_pos.LoteError):
+            lotes_pos.mover_pago_de_lote(pago, self.admin, '')
+        # Un cobro de un lote abierto usa "cambiar cuenta" del cuadre, no esta accion.
+        abierto = lote_b.pagos.first()
+        with self.assertRaises(lotes_pos.LoteError):
+            lotes_pos.mover_pago_de_lote(abierto, self.admin, 'x')
+        # Acreditado: primero se revierte.
+        self.acreditar(lote_a)
+        with self.assertRaises(lotes_pos.LoteError):
+            lotes_pos.mover_pago_de_lote(pago, self.admin, 'x')
+
+    def test_endpoint_solo_administrador(self):
+        lote_a, lote_b, pago = self.escenario()
+
+        def post(**payload):
+            return self.client.post('/api/admin/lotes-pos/', data=json.dumps(payload), content_type='application/json')
+
+        self.client.force_login(self.cajera)
+        self.assertEqual(post(action='mover_pago', lote_id=lote_a.id, pago_id=pago.id, motivo='x').status_code, 401)
+        self.client.force_login(self.admin)
+        r = post(action='mover_pago', lote_id=lote_a.id, pago_id=pago.id, motivo='Fuera del lote cerrado')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['lote']['monto_usd'], '30.000000')
+        # Un cobro que no es de ese lote se rechaza.
+        self.assertEqual(post(action='mover_pago', lote_id=lote_a.id, pago_id=lote_b.pagos.first().id, motivo='x').status_code, 400)
+
+
+# ---------------------------------------------------------------------------
+# Notas de credito de proveedor sobre facturas de compra
+# ---------------------------------------------------------------------------
+class NotaCreditoCompraTests(TestCase):
+    def setUp(self):
+        from sevens.models import VGAbonoCompra  # noqa: F401
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='nc_admin', password='claveAdmin123', cedula='92000001', email='nc_admin@sevens.test', id_role=admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='nc_cajera', password='claveCajera123', cedula='92000002', email='nc_cajera@sevens.test', id_role=cajera_role,
+        )
+        self.metodo = VGMetodoPago.objects.create(nombre='Efectivo NC test', moneda='USD', es_efectivo=True)
+        self.client.force_login(self.admin)
+
+    def compra(self, total='100', abonado='0', moneda='USD', total_bs=None, tasa='100.0000'):
+        from sevens.models import VGAbonoCompra
+        total = Decimal(total)
+        abonado = Decimal(abonado)
+        compra = VGCompra.objects.create(
+            proveedor_nombre='Proveedor NC', numero_factura_proveedor='F-1', estado='recibido',
+            total=total, saldo_pendiente=total - abonado, estado_pago='pendiente' if abonado == 0 else 'abonada_parcial',
+            tasa_cambio_referencia=Decimal(tasa), moneda_origen=moneda,
+            total_bs_factura=Decimal(total_bs) if total_bs else None,
+        )
+        if abonado:
+            VGAbonoCompra.objects.create(compra=compra, monto=abonado, metodo_pago=self.metodo, tasa_cambio_referencia=Decimal(tasa))
+        return compra
+
+    def nota(self, compra, **payload):
+        payload.setdefault('motivo', 'La administradora cargó mal el monto')
+        return self.client.post(
+            f'/api/admin/compras/{compra.id}/notas-credito/', data=json.dumps(payload), content_type='application/json',
+        )
+
+    def test_baja_el_total_y_el_saldo_y_conserva_el_total_original(self):
+        compra = self.compra('100', abonado='30')
+        r = self.nota(compra, monto='20', numero_documento_proveedor='NC-998')
+        self.assertEqual(r.status_code, 201, r.content)
+        compra.refresh_from_db()
+        self.assertEqual(compra.total, Decimal('80.000000'))
+        self.assertEqual(compra.saldo_pendiente, Decimal('50.000000'))
+        self.assertEqual(compra.estado_pago, 'abonada_parcial')
+        datos = r.json()['compra']
+        self.assertEqual(datos['total_original'], '100.000000')
+        self.assertEqual(datos['monto_notas_credito'], '20.000000')
+        self.assertEqual(datos['notas_credito'][0]['codigo'], 'NCC-000001')
+        self.assertEqual(datos['notas_credito'][0]['numero_documento_proveedor'], 'NC-998')
+        # Los abonos ya hechos no se tocan.
+        self.assertEqual(compra.abonos.count(), 1)
+
+    def test_no_puede_superar_lo_que_aun_se_debe(self):
+        compra = self.compra('100', abonado='30')
+        r = self.nota(compra, monto='70.50')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('no puede ser mayor', r.json()['message'])
+        compra.refresh_from_db()
+        self.assertEqual(compra.total, Decimal('100.000000'))
+
+    def test_una_factura_saldada_no_admite_nota_de_credito(self):
+        compra = self.compra('100', abonado='100')
+        compra.estado_pago = 'pagada'
+        compra.save()
+        self.assertEqual(self.nota(compra, monto='5').status_code, 409)
+
+    def test_si_la_nota_salda_la_deuda_el_total_queda_en_lo_abonado(self):
+        compra = self.compra('100', abonado='30')
+        r = self.nota(compra, monto='70')
+        self.assertEqual(r.status_code, 201, r.content)
+        compra.refresh_from_db()
+        self.assertEqual(compra.saldo_pendiente, Decimal('0'))
+        self.assertEqual(compra.total, Decimal('30.000000'))
+        self.assertEqual(compra.estado_pago, 'pagada')
+
+    def test_motivo_y_monto_son_obligatorios_y_solo_una_moneda(self):
+        compra = self.compra('100')
+        self.assertEqual(self.nota(compra, monto='5', motivo='').status_code, 400)
+        self.assertEqual(self.nota(compra).status_code, 400)  # sin monto
+        self.assertEqual(self.nota(compra, monto='5', monto_bs='500').status_code, 400)
+        self.assertEqual(self.nota(compra, monto='-5').status_code, 400)
+
+    def test_factura_en_bolivares_rebaja_el_monto_exacto_en_bs(self):
+        compra = self.compra('100', moneda='VES', total_bs='10000.00', tasa='100.0000')
+        r = self.nota(compra, monto_bs='2500')
+        self.assertEqual(r.status_code, 201, r.content)
+        compra.refresh_from_db()
+        self.assertEqual(compra.total, Decimal('75.000000'))
+        self.assertEqual(compra.total_bs_factura, Decimal('7500.00'))
+        datos = r.json()['compra']
+        self.assertEqual(datos['total_bs'], '7500.00')
+        self.assertEqual(datos['saldo_pendiente_bs'], '7500.00')
+
+    def test_nota_que_salda_una_factura_en_bs_no_deja_centimos_fantasma(self):
+        compra = self.compra('100', abonado='40', moneda='VES', total_bs='10000.00', tasa='100.0000')
+        r = self.nota(compra, monto_bs='6000')
+        self.assertEqual(r.status_code, 201, r.content)
+        compra.refresh_from_db()
+        self.assertEqual(compra.estado_pago, 'pagada')
+        self.assertEqual(compra.total_bs_factura, Decimal('4000.00'))
+        self.assertEqual(r.json()['compra']['saldo_pendiente_bs'], '0.00')
+
+    def test_anular_devuelve_el_monto_al_total_y_al_saldo(self):
+        compra = self.compra('100', abonado='30', moneda='VES', total_bs='10000.00', tasa='100.0000')
+        nota_id = self.nota(compra, monto_bs='2000').json()['nota_credito']['id']
+        compra.refresh_from_db()
+        self.assertEqual(compra.saldo_pendiente, Decimal('50.000000'))
+
+        url = f'/api/admin/compras/notas-credito/{nota_id}/anular/'
+        post = lambda **p: self.client.post(url, data=json.dumps(p), content_type='application/json')  # noqa: E731
+        self.assertEqual(post(motivo='').status_code, 400)
+        r = post(motivo='Se registró en la factura equivocada')
+        self.assertEqual(r.status_code, 200, r.content)
+        compra.refresh_from_db()
+        self.assertEqual(compra.total, Decimal('100.000000'))
+        self.assertEqual(compra.saldo_pendiente, Decimal('70.000000'))
+        self.assertEqual(compra.total_bs_factura, Decimal('10000.00'))
+        self.assertEqual(r.json()['compra']['monto_notas_credito'], '0')
+        self.assertEqual(post(motivo='otra vez').status_code, 409)
+
+    def test_anular_una_nota_que_habia_saldado_la_factura_la_reabre(self):
+        compra = self.compra('100', abonado='30')
+        nota_id = self.nota(compra, monto='70').json()['nota_credito']['id']
+        self.client.post(
+            f'/api/admin/compras/notas-credito/{nota_id}/anular/', data=json.dumps({'motivo': 'Error'}), content_type='application/json',
+        )
+        compra.refresh_from_db()
+        self.assertEqual(compra.estado_pago, 'abonada_parcial')
+        self.assertEqual(compra.saldo_pendiente, Decimal('70.000000'))
+
+    def test_dos_notas_acumulan_y_cada_una_tiene_su_numero(self):
+        compra = self.compra('100')
+        self.nota(compra, monto='10')
+        r = self.nota(compra, monto='15')
+        compra.refresh_from_db()
+        self.assertEqual(compra.total, Decimal('75.000000'))
+        self.assertEqual(r.json()['nota_credito']['codigo'], 'NCC-000002')
+        listado = self.client.get(f'/api/admin/compras/{compra.id}/notas-credito/').json()
+        self.assertEqual(len(listado['notas_credito']), 2)
+
+    def test_solo_administrador(self):
+        compra = self.compra('100')
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.nota(compra, monto='5').status_code, 401)
+
+    def test_la_cuenta_por_pagar_muestra_el_total_rebajado(self):
+        compra = self.compra('100')
+        self.nota(compra, monto='25')
+        data = self.client.get('/api/cuentas-por-pagar/').json()
+        fila = next(item for item in data['compras'] if item['tipo'] == 'compra' and item['id'] == compra.id)
+        self.assertEqual(fila['total'], '75.000000')
+        self.assertEqual(fila['total_original'], '100.000000')
+
+    def test_reporte_por_rango_con_totales_y_proveedor(self):
+        a = self.compra('100')
+        b = self.compra('200', moneda='VES', total_bs='20000.00', tasa='100.0000')
+        self.nota(a, monto='10')
+        nota_b = self.nota(b, monto_bs='5000').json()['nota_credito']
+        anulada = self.nota(a, monto='30').json()['nota_credito']
+        self.client.post(
+            f"/api/admin/compras/notas-credito/{anulada['id']}/anular/", data=json.dumps({'motivo': 'Error'}), content_type='application/json',
+        )
+
+        hoy = timezone.localdate().isoformat()
+        data = self.client.get(f'/api/admin/reportes/notas-credito-compra/?desde={hoy}&hasta={hoy}').json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['cantidad_vigentes'], 2)
+        self.assertEqual(Decimal(data['total_usd']), Decimal('60.000000'))      # 10 + 50 (Bs 5.000 a tasa 100)
+        self.assertEqual(Decimal(data['total_bs']), Decimal('6000.00'))          # 1.000 (10 x 100) + 5.000
+        self.assertEqual(len(data['notas']), 3)                                  # la anulada se lista pero no suma
+        self.assertEqual(len(data['por_proveedor']), 1)
+        self.assertEqual(data['por_proveedor'][0]['cantidad'], 2)
+        self.assertEqual(next(n for n in data['notas'] if n['id'] == nota_b['id'])['monto_bs'], '5000.00')
+
+        solo_anuladas = self.client.get(f'/api/admin/reportes/notas-credito-compra/?desde={hoy}&hasta={hoy}&estado=anulada').json()
+        self.assertEqual([n['estado'] for n in solo_anuladas['notas']], ['anulada'])
+        self.assertEqual(Decimal(solo_anuladas['total_usd']), Decimal('0'))
+
+        vacio = self.client.get('/api/admin/reportes/notas-credito-compra/?desde=2020-01-01&hasta=2020-01-31').json()
+        self.assertEqual(vacio['notas'], [])
+
+    def test_reporte_solo_administrador_y_valida_fechas(self):
+        self.assertEqual(self.client.get('/api/admin/reportes/notas-credito-compra/?desde=2026-02-01&hasta=2026-01-01').status_code, 400)
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.client.get('/api/admin/reportes/notas-credito-compra/').status_code, 401)
+
+
+# ---------------------------------------------------------------------------
+# Abono a una factura de compra con la tasa propia de quien paga
+# ---------------------------------------------------------------------------
+class AbonoCompraTasaPropiaTests(TestCase):
+    def setUp(self):
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='tp_admin', password='claveAdmin123', cedula='93000001', email='tp_admin@sevens.test', id_role=admin_role,
+        )
+        self.metodo = VGMetodoPago.objects.create(nombre='Banco VES tasa propia', moneda='VES')
+        self.client.force_login(self.admin)
+
+    def compra(self, total='100', tasa='480.0000', total_bs='48000.00', moneda='VES'):
+        total = Decimal(total)
+        return VGCompra.objects.create(
+            proveedor_nombre='Proveedor tasa propia', numero_factura_proveedor='TP-1', estado='recibido',
+            total=total, saldo_pendiente=total, estado_pago='pendiente',
+            tasa_cambio_referencia=Decimal(tasa), moneda_origen=moneda,
+            total_bs_factura=Decimal(total_bs) if total_bs else None,
+        )
+
+    def abonar(self, compra, **payload):
+        payload.setdefault('metodo_pago_id', self.metodo.id)
+        return self.client.post(
+            f'/api/admin/compras/{compra.id}/abonos/', data=json.dumps(payload), content_type='application/json',
+        )
+
+    def test_en_dolares_con_tasa_propia_los_bs_son_monto_por_esa_tasa(self):
+        compra = self.compra()
+        r = self.abonar(compra, monto='50', tasa_cambio='482.5')
+        self.assertEqual(r.status_code, 201, r.content)
+        abono = r.json()['abono']
+        self.assertEqual(abono['tasa_cambio_referencia'], '482.5000')
+        self.assertTrue(abono['tasa_manual'])
+        self.assertEqual(abono['monto_bs'], '24125.00')
+        # La deuda en dolares baja solo por los dolares.
+        compra.refresh_from_db()
+        self.assertEqual(compra.saldo_pendiente, Decimal('50.000000'))
+        self.assertEqual(compra.estado_pago, 'abonada_parcial')
+
+    def test_en_bolivares_con_tasa_propia_descuenta_bs_entre_la_tasa(self):
+        compra = self.compra()
+        r = self.abonar(compra, monto_bs='24100', tasa_cambio='482')
+        self.assertEqual(r.status_code, 201, r.content)
+        compra.refresh_from_db()
+        self.assertEqual(compra.saldo_pendiente, Decimal('50.000000'))
+        self.assertEqual(r.json()['abono']['monto_bs'], '24100.00')
+
+    def test_sin_tasa_se_comporta_como_siempre(self):
+        compra = self.compra()
+        # En bolivares sin tasa: la de la factura, como antes.
+        r = self.abonar(compra, monto_bs='4800')
+        self.assertEqual(r.status_code, 201, r.content)
+        abono = r.json()['abono']
+        self.assertFalse(abono['tasa_manual'])
+        self.assertEqual(Decimal(abono['tasa_cambio_referencia']), Decimal('480.0000'))
+        # En dolares sin tasa: la del BCV de hoy (no se marca como tasa propia).
+        r = self.abonar(compra, monto='5')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertFalse(r.json()['abono']['tasa_manual'])
+
+    def test_tasa_invalida_se_rechaza(self):
+        compra = self.compra()
+        self.assertEqual(self.abonar(compra, monto='10', tasa_cambio='0').status_code, 400)
+        self.assertEqual(self.abonar(compra, monto='10', tasa_cambio='abc').status_code, 400)
+        self.assertEqual(compra.abonos.count(), 0)
+
+    def test_una_tasa_mas_alta_no_perdona_dolares_que_aun_se_deben(self):
+        # 99.80 a 482 son 48.103,60 Bs: mas que los 48.000 de la factura. Sin cuidado, el
+        # "perdon de residuo" compararia Bs contra Bs y cerraria una factura con $0.20 vivos.
+        compra = self.compra()
+        r = self.abonar(compra, monto='99.80', tasa_cambio='482')
+        self.assertEqual(r.status_code, 201, r.content)
+        compra.refresh_from_db()
+        self.assertEqual(compra.saldo_pendiente, Decimal('0.200000'))
+        self.assertEqual(compra.estado_pago, 'abonada_parcial')
+
+    def test_total_y_saldo_en_bs_separan_lo_pagado_de_lo_que_falta(self):
+        compra = self.compra()
+        datos = self.abonar(compra, monto='50', tasa_cambio='482').json()['compra']
+        # Lo pagado son los Bs que salieron del banco; lo que falta, $50 a la tasa de la factura.
+        self.assertEqual(datos['saldo_pendiente_bs'], '24000.00')
+        self.assertEqual(datos['total_bs'], '48100.00')
+
+    def test_saldada_a_tasa_propia_el_total_en_bs_es_lo_que_salio_del_banco(self):
+        compra = self.compra()
+        datos = self.abonar(compra, monto='100', tasa_cambio='482').json()['compra']
+        compra.refresh_from_db()
+        self.assertEqual(compra.estado_pago, 'pagada')
+        self.assertEqual(datos['total_bs'], '48200.00')
+        self.assertEqual(datos['saldo_pendiente_bs'], '0.00')
+
+    def test_los_bs_pagados_no_cambian_cuando_se_mueve_el_bcv(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from sevens.models.restaurant import VGTasaCambio
+        # Factura en dolares: lo que falta sigue al BCV de hoy, pero lo ya pagado queda fijo.
+        compra = self.compra(moneda='USD', total_bs=None)
+        VGTasaCambio.objects.update_or_create(fecha=timezone.localdate(), defaults={'tasa': Decimal('480')})
+        self.abonar(compra, monto='60', tasa_cambio='482')
+        antes = self.client.get(f'/api/admin/compras/{compra.id}/').json()['compra']
+        abono_antes = antes['abonos'][0]
+        # El BCV sube mucho al dia siguiente.
+        VGTasaCambio.objects.update_or_create(fecha=timezone.localdate() + timedelta(days=1), defaults={'tasa': Decimal('900')})
+        despues = self.client.get(f'/api/admin/compras/{compra.id}/').json()['compra']
+        abono_despues = despues['abonos'][0]
+        self.assertEqual(abono_antes['monto_bs'], '28920.00')
+        self.assertEqual(abono_despues['monto_bs'], '28920.00')
+        self.assertEqual(abono_despues['tasa_cambio_referencia'], '482.0000')
+        # Saldada despues, el total en Bs es exactamente lo que salio del banco.
+        self.abonar(compra, monto='40', tasa_cambio='490')
+        VGTasaCambio.objects.update_or_create(fecha=timezone.localdate() + timedelta(days=1), defaults={'tasa': Decimal('1500')})
+        final = self.client.get(f'/api/admin/compras/{compra.id}/').json()['compra']
+        self.assertEqual(final['estado_pago'], 'pagada')
+        self.assertEqual(final['total_bs'], '48520.00')  # 28.920 + 19.600
+
+
+# ---------------------------------------------------------------------------
+# Reporte de margen de ganancia por producto (en vivo)
+# ---------------------------------------------------------------------------
+class MargenProductosReporteTests(TestCase):
+    def setUp(self):
+        from sevens.models import VGCategoriaProducto, VGConfiguracionCosteo, VGIngrediente, VGProducto, VGRecetaProducto
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='mp_admin', password='claveAdmin123', cedula='94000001', email='mp_admin@sevens.test', id_role=admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='mp_cajera', password='claveCajera123', cedula='94000002', email='mp_cajera@sevens.test', id_role=cajera_role,
+        )
+        config = VGConfiguracionCosteo.obtener_config()
+        config.rendimiento_receta_pct = Decimal('50')
+        config.margen_ganancia_defecto_pct = Decimal('60')
+        config.save()
+        self.categoria = VGCategoriaProducto.objects.create(nombre='Entradas MP test')
+        self.ingrediente = VGIngrediente.objects.create(nombre='Maiz MP test', unidad_medida='g', costo_unitario='0.98')
+        self.producto = VGProducto.objects.create(nombre='Maiz Dorado MP test', categoria=self.categoria, precio_venta='4.00')
+        VGRecetaProducto.objects.create(producto=self.producto, ingrediente=self.ingrediente, cantidad_requerida='1')
+        self.client.force_login(self.admin)
+
+    def fila(self, producto=None):
+        r = self.client.get('/api/admin/reportes/margen-productos/')
+        self.assertEqual(r.status_code, 200, r.content)
+        producto = producto or self.producto
+        return next(f for f in r.json()['productos'] if f['producto_id'] == producto.id)
+
+    def test_calcula_las_columnas_del_reporte(self):
+        f = self.fila()
+        self.assertEqual(Decimal(f['costo_receta']), Decimal('0.98'))
+        self.assertEqual(Decimal(f['margen_produccion_pct']), Decimal('50'))
+        self.assertEqual(Decimal(f['costo_a_tomar']), Decimal('1.47'))
+        self.assertEqual(Decimal(f['margen_ganancia_pct']), Decimal('60'))
+        self.assertFalse(f['margen_ganancia_propio'])
+        self.assertEqual(Decimal(f['precio_sugerido']), Decimal('2.35'))   # 1.47 x 1.6 = 2.352
+        self.assertEqual(Decimal(f['precio_real']), Decimal('4.00'))
+        self.assertEqual(Decimal(f['ganancia']), Decimal('2.53'))          # 4 - 1.47
+        self.assertEqual(Decimal(f['ganancia_pct']), Decimal('172.11'))    # 2.53 / 1.47
+        self.assertTrue(f['tiene_receta'])
+
+    def test_el_margen_propio_del_producto_manda_sobre_el_defecto(self):
+        self.producto.margen_ganancia_pct = Decimal('100')
+        self.producto.save()
+        f = self.fila()
+        self.assertTrue(f['margen_ganancia_propio'])
+        self.assertEqual(Decimal(f['margen_ganancia_pct']), Decimal('100'))
+        self.assertEqual(Decimal(f['precio_sugerido']), Decimal('2.94'))   # 1.47 x 2
+
+    def test_si_cambia_el_costo_del_ingrediente_cambia_la_fila(self):
+        self.ingrediente.costo_unitario = Decimal('1.40')
+        self.ingrediente.save()
+        f = self.fila()
+        self.assertEqual(Decimal(f['costo_receta']), Decimal('1.40'))
+        self.assertEqual(Decimal(f['costo_a_tomar']), Decimal('2.10'))
+        self.assertEqual(Decimal(f['precio_sugerido']), Decimal('3.36'))
+        self.assertEqual(Decimal(f['ganancia']), Decimal('1.90'))
+
+    def test_si_cambia_la_cantidad_de_la_receta_cambia_la_fila(self):
+        componente = self.producto.receta.first()
+        componente.cantidad_requerida = Decimal('2')
+        componente.save()
+        self.assertEqual(Decimal(self.fila()['costo_receta']), Decimal('1.96'))
+
+    def test_el_margen_de_produccion_tambien_aplica_a_productos_ligados_a_una_subreceta(self):
+        from sevens.models import VGPreparacion, VGProducto, VGRecetaPreparacion
+        sub = VGPreparacion.objects.create(nombre='Salsa MP test', rendimiento_cantidad='1000', rendimiento_unidad='g')
+        VGRecetaPreparacion.objects.create(preparacion=sub, ingrediente=self.ingrediente, cantidad_requerida='1')
+        ligado = VGProducto.objects.create(nombre='Salsa vendida MP test', categoria=self.categoria, precio_venta='3.00', subreceta_vinculada=sub)
+        f = self.fila(ligado)
+        self.assertEqual(Decimal(f['margen_produccion_pct']), Decimal('50'))
+        self.assertEqual(Decimal(f['costo_receta']), Decimal('0.98'))
+        self.assertEqual(Decimal(f['costo_a_tomar']), Decimal('1.47'))
+        # Si cambia el ingrediente de esa subreceta, cambia tambien.
+        self.ingrediente.costo_unitario = Decimal('2')
+        self.ingrediente.save()
+        self.assertEqual(Decimal(self.fila(ligado)['costo_a_tomar']), Decimal('3.00'))
+
+    def test_subir_o_bajar_el_margen_de_produccion_mueve_el_costo_a_tomar(self):
+        from sevens.models import VGConfiguracionCosteo
+        config = VGConfiguracionCosteo.obtener_config()
+        for pct, esperado in (('100', '1.96'), ('20', '1.176'), ('0', '0.98')):
+            config.rendimiento_receta_pct = Decimal(pct)
+            config.save()
+            f = self.fila()
+            self.assertEqual(Decimal(f['margen_produccion_pct']), Decimal(pct))
+            self.assertEqual(Decimal(f['costo_receta']), Decimal('0.98'))   # el costo puro no se mueve
+            self.assertEqual(Decimal(f['costo_a_tomar']).quantize(Decimal('0.001')), Decimal(esperado))
+
+    def test_producto_sin_receta_se_marca_y_no_inventa_porcentaje(self):
+        from sevens.models import VGProducto
+        vacio = VGProducto.objects.create(nombre='Sin receta MP test', categoria=self.categoria, precio_venta='5.00')
+        f = self.fila(vacio)
+        self.assertFalse(f['tiene_receta'])
+        self.assertEqual(Decimal(f['costo_a_tomar']), Decimal('0'))
+        self.assertIsNone(f['ganancia_pct'])
+
+    def test_la_lista_de_productos_trae_el_costo_de_receta_en_vivo(self):
+        from sevens.models import VGConfiguracionCosteo, VGPreparacion, VGProducto, VGRecetaPreparacion
+        # El margen de produccion NO entra en esta columna: es el costo de la receta.
+        self.assertEqual(VGConfiguracionCosteo.obtener_config().rendimiento_receta_pct, Decimal('50'))
+        sub = VGPreparacion.objects.create(nombre='Salsa lista MP test', rendimiento_cantidad='1000', rendimiento_unidad='g')
+        VGRecetaPreparacion.objects.create(preparacion=sub, ingrediente=self.ingrediente, cantidad_requerida='1')
+        ligado = VGProducto.objects.create(nombre='Con subreceta lista MP test', categoria=self.categoria, precio_venta='3.00', subreceta_vinculada=sub)
+        vacio = VGProducto.objects.create(nombre='Sin nada lista MP test', categoria=self.categoria, precio_venta='5.00')
+        cero_ing = type(self.ingrediente).objects.create(nombre='Agua MP test', unidad_medida='g', costo_unitario='0')
+        en_cero = VGProducto.objects.create(nombre='Receta en cero lista MP test', categoria=self.categoria, precio_venta='2.00')
+        type(self.producto.receta.first()).objects.create(producto=en_cero, ingrediente=cero_ing, cantidad_requerida='1')
+
+        def filas():
+            r = self.client.get('/api/admin/productos/')
+            self.assertEqual(r.status_code, 200, r.content)
+            return {p['id']: p for p in r.json()['products']}
+
+        f = filas()
+        self.assertTrue(f[self.producto.id]['tiene_receta'])
+        self.assertEqual(Decimal(f[self.producto.id]['costo_receta']), Decimal('0.98'))
+        self.assertEqual(Decimal(f[self.producto.id]['costo_con_margen_produccion']), Decimal('1.47'))   # 0.98 x 1.5
+        self.assertTrue(f[ligado.id]['tiene_receta'])
+        self.assertEqual(Decimal(f[ligado.id]['costo_receta']), Decimal('0.98'))
+        self.assertEqual(Decimal(f[ligado.id]['costo_con_margen_produccion']), Decimal('1.47'))   # tambien los de subreceta
+        self.assertFalse(f[vacio.id]['tiene_receta'])
+        self.assertEqual(Decimal(f[vacio.id]['costo_receta']), Decimal('0'))
+        self.assertTrue(f[en_cero.id]['tiene_receta'])
+        self.assertEqual(Decimal(f[en_cero.id]['costo_receta']), Decimal('0'))
+        # En vivo: si cambia el ingrediente, cambia la lista.
+        self.ingrediente.costo_unitario = Decimal('1.20')
+        self.ingrediente.save()
+        f = filas()
+        self.assertEqual(Decimal(f[self.producto.id]['costo_receta']), Decimal('1.20'))
+        self.assertEqual(Decimal(f[ligado.id]['costo_receta']), Decimal('1.20'))
+        self.assertEqual(Decimal(f[self.producto.id]['costo_con_margen_produccion']), Decimal('1.80'))
+        # Y si cambia el margen de produccion, cambia la segunda columna pero no la primera.
+        config = VGConfiguracionCosteo.obtener_config()
+        config.rendimiento_receta_pct = Decimal('10')
+        config.save()
+        f = filas()
+        self.assertEqual(Decimal(f[self.producto.id]['costo_receta']), Decimal('1.20'))
+        self.assertEqual(Decimal(f[self.producto.id]['costo_con_margen_produccion']), Decimal('1.32'))
+
+    def test_senala_los_ingredientes_sin_costo_aunque_esten_dentro_de_una_subreceta(self):
+        from sevens.models import VGIngrediente, VGPreparacion, VGProducto, VGRecetaPreparacion, VGRecetaProducto
+        sin_precio = VGIngrediente.objects.create(nombre='Platano sin precio MP test', unidad_medida='g', costo_unitario='0')
+        sin_precio_2 = VGIngrediente.objects.create(nombre='Sal sin precio MP test', unidad_medida='g', costo_unitario='0')
+        interna = VGPreparacion.objects.create(nombre='Interna MP test', rendimiento_cantidad='1000', rendimiento_unidad='g')
+        VGRecetaPreparacion.objects.create(preparacion=interna, ingrediente=sin_precio_2, cantidad_requerida='1')
+        sub = VGPreparacion.objects.create(nombre='Externa MP test', rendimiento_cantidad='1000', rendimiento_unidad='g')
+        VGRecetaPreparacion.objects.create(preparacion=sub, ingrediente=sin_precio, cantidad_requerida='1')
+        VGRecetaPreparacion.objects.create(preparacion=sub, ingrediente=self.ingrediente, cantidad_requerida='1')
+        VGRecetaPreparacion.objects.create(preparacion=sub, sub_preparacion=interna, cantidad_requerida='1')
+        ligado = VGProducto.objects.create(nombre='Con faltantes MP test', categoria=self.categoria, precio_venta='3.00', subreceta_vinculada=sub)
+        directo = VGProducto.objects.create(nombre='Directo sin precio MP test', categoria=self.categoria, precio_venta='2.00')
+        VGRecetaProducto.objects.create(producto=directo, ingrediente=sin_precio, cantidad_requerida='5')
+
+        f = self.fila(ligado)
+        self.assertEqual(f['ingredientes_sin_costo'], ['Platano sin precio MP test', 'Sal sin precio MP test'])
+        # El costo mostrado es solo el de lo que si tiene precio (0.98 del maiz).
+        self.assertEqual(Decimal(f['costo_receta']), Decimal('0.98'))
+        self.assertEqual(self.fila(directo)['ingredientes_sin_costo'], ['Platano sin precio MP test'])
+        # Un producto completo no trae avisos.
+        self.assertEqual(self.fila()['ingredientes_sin_costo'], [])
+        # Y la lista de productos trae el mismo aviso.
+        r = self.client.get('/api/admin/productos/')
+        self.assertEqual(r.status_code, 200, r.content)
+        por_id = {p['id']: p for p in r.json()['products']}
+        self.assertEqual(por_id[directo.id]['ingredientes_sin_costo'], ['Platano sin precio MP test'])
+        self.assertEqual(por_id[self.producto.id]['ingredientes_sin_costo'], [])
+
+    def test_no_incluye_la_categoria_recetas(self):
+        from sevens.models import VGCategoriaProducto, VGProducto
+        recetas = VGCategoriaProducto.objects.create(nombre='Recetas')
+        receta = VGProducto.objects.create(nombre='Receta maestra MP test', categoria=recetas, precio_venta='0')
+        r = self.client.get('/api/admin/reportes/margen-productos/')
+        self.assertEqual(r.status_code, 200, r.content)
+        ids = {f['producto_id'] for f in r.json()['productos']}
+        self.assertNotIn(receta.id, ids)
+        self.assertIn(self.producto.id, ids)
+        self.assertNotIn('Recetas', {f['categoria'] for f in r.json()['productos']})
+
+    def test_solo_administradores_y_solo_lectura(self):
+        self.assertEqual(self.client.post('/api/admin/reportes/margen-productos/').status_code, 405)
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.client.get('/api/admin/reportes/margen-productos/').status_code, 401)
+
+
+# ---------------------------------------------------------------------------
+# Reporte DETALLADO de margen de ganancia (venta por venta): costo + margen de produccion y totales
+# ---------------------------------------------------------------------------
+class MargenDetalladoReporteTests(TestCase):
+    def setUp(self):
+        from sevens.models import VGCategoriaProducto, VGConfiguracionCosteo, VGIngrediente, VGPreparacion, VGProducto, VGRecetaPreparacion, VGRecetaProducto
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='md_admin', password='claveAdmin123', cedula='95000001', email='md_admin@sevens.test', id_role=admin_role,
+        )
+        config = VGConfiguracionCosteo.obtener_config()
+        config.rendimiento_receta_pct = Decimal('50')
+        config.save()
+        categoria = VGCategoriaProducto.objects.create(nombre='Cat MD test')
+        self.ingrediente = VGIngrediente.objects.create(nombre='Maiz MD test', unidad_medida='g', costo_unitario='0.98')
+        self.receta_producto = VGProducto.objects.create(nombre='Plato con receta MD test', categoria=categoria, precio_venta='4.00')
+        VGRecetaProducto.objects.create(producto=self.receta_producto, ingrediente=self.ingrediente, cantidad_requerida='1')
+        sub = VGPreparacion.objects.create(nombre='Subreceta MD test', rendimiento_cantidad='1000', rendimiento_unidad='g')
+        VGRecetaPreparacion.objects.create(preparacion=sub, ingrediente=self.ingrediente, cantidad_requerida='1')
+        self.sub_producto = VGProducto.objects.create(
+            nombre='Plato con subreceta MD test', categoria=categoria, precio_venta='4.00', subreceta_vinculada=sub,
+        )
+        self.client.force_login(self.admin)
+
+    def venta(self, producto, cantidad=1, costo=None, margen=None, precio='4.00'):
+        pedido = VGPedido.objects.create(usuario=self.admin, tipo_pedido='local', estado='pagado', subtotal=precio, total=precio)
+        return VGDetallePedido.objects.create(
+            pedido=pedido, producto=producto, cantidad=cantidad, precio_unitario=precio, estado='entregado',
+            costo_unitario_venta=Decimal(costo) if costo is not None else None,
+            margen_produccion_pct_venta=Decimal(margen) if margen is not None else None,
+        )
+
+    def reporte(self, desde=None, hasta=None):
+        hoy = timezone.localdate().isoformat()
+        r = self.client.get(f'/api/admin/reportes/margen-ganancia-detalle/?desde={desde or hoy}&hasta={hasta or hoy}')
+        self.assertEqual(r.status_code, 200, r.content)
+        return r.json()
+
+    def fila(self, data, producto):
+        seccion = next(s for s in data['productos'] if s['producto_id'] == producto.id)
+        return seccion['filas'][0]
+
+    def test_venta_de_receta_con_margen_congelado_separa_el_costo_puro(self):
+        # El costo guardado (1.47) ya trae el 50% sumado: el costo puro es 0.98.
+        self.venta(self.receta_producto, cantidad=2, costo='1.47', margen='50')
+        f = self.fila(self.reporte(), self.receta_producto)
+        self.assertEqual(Decimal(f['costo']), Decimal('1.96'))
+        self.assertEqual(Decimal(f['costo_con_margen']), Decimal('2.94'))
+        self.assertEqual(Decimal(f['ganancia_monto']), Decimal('5.06'))      # 8.00 - 2.94
+        self.assertFalse(f['margen_estimado'])
+        self.assertFalse(f['costo_estimado'])
+
+    def test_venta_de_subreceta_no_trae_margen_dentro_y_se_le_suma(self):
+        self.venta(self.sub_producto, costo='0.98', margen='50')
+        f = self.fila(self.reporte(), self.sub_producto)
+        self.assertEqual(Decimal(f['costo']), Decimal('0.98'))
+        self.assertEqual(Decimal(f['costo_con_margen']), Decimal('1.47'))
+        self.assertEqual(Decimal(f['ganancia_monto']), Decimal('2.53'))
+
+    def test_el_margen_congelado_no_cambia_si_despues_cambia_la_configuracion(self):
+        from sevens.models import VGConfiguracionCosteo
+        self.venta(self.receta_producto, costo='1.47', margen='50')
+        config = VGConfiguracionCosteo.obtener_config()
+        config.rendimiento_receta_pct = Decimal('200')
+        config.save()
+        f = self.fila(self.reporte(), self.receta_producto)
+        self.assertEqual(Decimal(f['costo_con_margen']), Decimal('1.47'))
+        self.assertFalse(f['margen_estimado'])
+
+    def test_venta_vieja_sin_margen_guardado_usa_el_de_hoy_y_se_marca(self):
+        self.venta(self.receta_producto, costo='1.00', margen=None)
+        f = self.fila(self.reporte(), self.receta_producto)
+        self.assertEqual(Decimal(f['costo']), Decimal('1.00'))
+        self.assertEqual(Decimal(f['costo_con_margen']), Decimal('1.50'))
+        self.assertTrue(f['margen_estimado'])
+        self.assertFalse(f['costo_estimado'])
+
+    def test_venta_sin_costo_congelado_se_estima_con_el_costo_puro_de_hoy(self):
+        self.venta(self.receta_producto, costo=None, margen=None)
+        f = self.fila(self.reporte(), self.receta_producto)
+        self.assertEqual(Decimal(f['costo']), Decimal('0.98'))
+        self.assertEqual(Decimal(f['costo_con_margen']), Decimal('1.47'))
+        self.assertTrue(f['costo_estimado'])
+        self.assertTrue(f['margen_estimado'])
+
+    def test_los_totales_suman_todas_las_ventas_aunque_el_plato_se_repita(self):
+        self.venta(self.receta_producto, cantidad=1, costo='1.47', margen='50')
+        self.venta(self.receta_producto, cantidad=2, costo='1.47', margen='50')
+        self.venta(self.sub_producto, cantidad=1, costo='0.98', margen='50')
+        data = self.reporte()
+        t = data['totales']
+        self.assertEqual(data['total_lineas'], 3)
+        self.assertEqual(Decimal(t['ingreso_total']), Decimal('16.00'))            # 4 + 8 + 4
+        self.assertEqual(Decimal(t['costo_total']), Decimal('3.92'))               # 0.98 x 4 unidades
+        self.assertEqual(Decimal(t['costo_con_margen_total']), Decimal('5.88'))    # 1.47 x 4 unidades
+        self.assertEqual(Decimal(t['ganancia_monto']), Decimal('10.12'))           # 16 - 5.88
+        seccion = next(s for s in data['productos'] if s['producto_id'] == self.receta_producto.id)
+        self.assertEqual(seccion['num_ventas'], 2)
+        self.assertEqual(Decimal(seccion['costo_con_margen_total']), Decimal('4.41'))   # 3 platos x 1.47
+
+    def test_respeta_las_fechas_elegidas(self):
+        detalle = self.venta(self.receta_producto, costo='1.47', margen='50')
+        ayer = timezone.now() - timedelta(days=3)
+        VGPedido.objects.filter(pk=detalle.pedido_id).update(fecha_creacion=ayer)
+        hoy = timezone.localdate()
+        self.assertEqual(self.reporte()['total_lineas'], 0)
+        rango = self.reporte(desde=(hoy - timedelta(days=5)).isoformat(), hasta=hoy.isoformat())
+        self.assertEqual(rango['total_lineas'], 1)
+
+    def test_al_cobrar_se_congela_el_margen_de_produccion_de_ese_dia(self):
+        from sevens.api_views import _load_preparation_cost_map, _snapshot_costo_venta_detalles
+        from sevens.models import VGConfiguracionCosteo, VGIngrediente
+        detalle = self.venta(self.receta_producto, costo=None, margen=None)
+        ingredient_costs = {i.id: i.costo_unitario for i in VGIngrediente.objects.all()}
+        _snapshot_costo_venta_detalles(detalle.pedido, ingredient_costs, _load_preparation_cost_map())
+        detalle.refresh_from_db()
+        self.assertEqual(detalle.costo_unitario_venta, Decimal('1.4700'))
+        self.assertEqual(detalle.margen_produccion_pct_venta, Decimal('50.00'))
+        # Y al volver a leer el reporte, el costo puro se recupera sin contar el margen dos veces.
+        f = self.fila(self.reporte(), self.receta_producto)
+        self.assertEqual(Decimal(f['costo']), Decimal('0.98'))
+        self.assertEqual(Decimal(f['costo_con_margen']), Decimal('1.47'))
+        self.assertFalse(f['margen_estimado'])
+
+
+class ReporteInventarioPdfTests(TestCase):
+    URL = '/api/admin/reportes/inventario-pdf/'
+
+    def setUp(self):
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='pdf_admin', password='claveAdmin123', cedula='95000001', email='pdf_admin@sevens.test', id_role=admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='pdf_cajera', password='claveCajera123', cedula='95000002', email='pdf_cajera@sevens.test', id_role=cajera_role,
+        )
+
+    def test_solo_administradores_pueden_descargarlo(self):
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+
+    def test_responde_un_pdf_descargable(self):
+        from sevens.models import VGIngrediente
+        VGIngrediente.objects.create(nombre='Carne PDF test', unidad_medida='g', stock_actual='1500', costo_unitario='0.0068')
+        self.client.force_login(self.admin)
+        r = self.client.get(self.URL)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r['Content-Type'], 'application/pdf')
+        self.assertIn('attachment; filename="inventario-actual-', r['Content-Disposition'])
+        self.assertTrue(r.content.startswith(b'%PDF'))
+
+    def test_un_inventario_vacio_tambien_genera_pdf(self):
+        from sevens.models import VGIngrediente
+        VGIngrediente.objects.all().delete()
+        self.client.force_login(self.admin)
+        r = self.client.get(self.URL)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.content.startswith(b'%PDF'))
+
+    def test_usa_el_costo_efectivo_y_omite_los_ingredientes_ocultos(self):
+        from unittest import mock
+        from sevens.models import VGIngrediente
+        # costo_unitario desincronizado (0.5) pero el envase dice 10 / 1000 = 0.01 por gramo
+        VGIngrediente.objects.create(
+            nombre='Harina PDF test', unidad_medida='g', stock_actual='2000', costo_unitario='0.5',
+            contenido_envase='1000', peso_real='1000', precio_compra='10.00',
+        )
+        VGIngrediente.objects.create(id=285, nombre='Oculto PDF test', unidad_medida='g', stock_actual='1', costo_unitario='1')
+        self.client.force_login(self.admin)
+        with mock.patch('sevens.reportes_pdf_views.generar_pdf_inventario', return_value=b'%PDF-falso') as generar:
+            r = self.client.get(self.URL)
+        self.assertEqual(r.status_code, 200)
+        enviados = {i['nombre']: i for i in generar.call_args.args[0]}
+        self.assertNotIn('Oculto PDF test', enviados)
+        self.assertEqual(Decimal(enviados['Harina PDF test']['costo_unitario']), Decimal('0.01'))
+
+    def test_calcula_valor_total_orden_y_total_del_inventario(self):
+        from sevens.pdf_reportes import armar_filas_inventario
+        filas, total = armar_filas_inventario([
+            {'nombre': 'zanahoria', 'unidad_medida': 'g', 'stock_actual': Decimal('100'), 'costo_unitario': Decimal('0.00125')},
+            {'nombre': 'Aceite', 'unidad_medida': 'ml', 'stock_actual': Decimal('6000'), 'costo_unitario': Decimal('0.0065')},
+            {'nombre': '7UP', 'unidad_medida': 'unidad', 'stock_actual': Decimal('48'), 'costo_unitario': Decimal('0.58')},
+        ])
+        self.assertEqual([f['nombre'] for f in filas], ['7UP', 'Aceite', 'zanahoria'])
+        self.assertEqual([f['unidad'] for f in filas], ['Unidad', 'Mililitros', 'Gramos'])
+        self.assertEqual([f['valor_total'] for f in filas], [Decimal('27.84'), Decimal('39.00'), Decimal('0.13')])
+        self.assertEqual(total, Decimal('66.97'))
+
+    def test_formato_de_numeros_como_el_resto_del_sistema(self):
+        from sevens.pdf_reportes import formatear_numero
+        self.assertEqual(formatear_numero(Decimal('1234.5')), '1.234,50')
+        self.assertEqual(formatear_numero(Decimal('0.0068'), 2, 6), '0,0068')
+        self.assertEqual(formatear_numero(Decimal('0.58'), 2, 6), '0,58')
+        self.assertEqual(formatear_numero(Decimal('0'), 2, 6), '0,00')
+        self.assertEqual(formatear_numero(Decimal('1022819.95'), 0, 2), '1.022.819,95')
+        self.assertEqual(formatear_numero(Decimal('6000'), 0, 2), '6.000')
+        self.assertEqual(formatear_numero(Decimal('-3239.27')), '-3.239,27')
+
+
+class BaseReportesPdfTests(TestCase):
+    """Lo comun a todos los reportes PDF (pdf_reportes/base.py y las ayudas de reportes_pdf_views.py)."""
+
+    def columnas(self):
+        from sevens.pdf_reportes import Columna
+        return [Columna('Concepto', 0.6), Columna('Monto ($)', 0.4, 'derecha')]
+
+    def test_genera_pdf_vertical_y_horizontal(self):
+        from sevens.pdf_reportes import generar_pdf_tabla
+        filas = [['Alquiler', '500,00'], ['Luz', '120,50']]
+        vertical = generar_pdf_tabla(titulo='Gastos', columnas=self.columnas(), filas=filas)
+        horizontal = generar_pdf_tabla(titulo='Gastos', columnas=self.columnas(), filas=filas, orientacion='horizontal')
+        self.assertTrue(vertical.startswith(b'%PDF'))
+        self.assertTrue(horizontal.startswith(b'%PDF'))
+        # A4 vertical es 595 x 842 pt; apaisado es 842 x 595.
+        self.assertIn(b'/MediaBox [ 0 0 595.2', vertical)
+        self.assertIn(b'/MediaBox [ 0 0 841.8', horizontal)
+
+    def test_acepta_resumen_total_subtitulo_y_textos_con_simbolos(self):
+        from sevens.pdf_reportes import escapar, generar_pdf_tabla
+        pdf = generar_pdf_tabla(
+            titulo='Gastos <del mes> & más',
+            subtitulo='Del 01/10/2026 al 08/10/2026',
+            columnas=self.columnas(),
+            filas=[['Pan & Queso <extra>', '10,00']],
+            resumen=(f'<b>1</b> gasto de {escapar("Café & Té")}', 'Total: <b>$ 10,00</b>'),
+            fila_total=['Total', '$ 10,00'],
+        )
+        self.assertTrue(pdf.startswith(b'%PDF'))
+
+    def test_una_tabla_vacia_tambien_genera_pdf(self):
+        from sevens.pdf_reportes import generar_pdf_tabla
+        pdf = generar_pdf_tabla(titulo='Vacio', columnas=self.columnas(), filas=[], fila_total=['Total', '$ 0,00'])
+        self.assertTrue(pdf.startswith(b'%PDF'))
+
+    def test_una_tabla_larga_ocupa_varias_paginas(self):
+        from sevens.pdf_reportes import generar_pdf_tabla
+        pdf = generar_pdf_tabla(titulo='Largo', columnas=self.columnas(), filas=[[f'Fila {i}', '1,00'] for i in range(200)])
+        import re
+        self.assertGreater(len(re.findall(rb'/Type /Page(?!s)', pdf)), 3)
+
+    def test_rechaza_descripciones_incorrectas(self):
+        from sevens.pdf_reportes import Columna, generar_pdf_tabla
+        with self.assertRaises(ValueError):
+            generar_pdf_tabla(titulo='X', columnas=[Columna('A', 0.5), Columna('B', 0.2)], filas=[])  # no suman 1
+        with self.assertRaises(ValueError):
+            generar_pdf_tabla(titulo='X', columnas=self.columnas(), filas=[['solo una celda']])
+        with self.assertRaises(ValueError):
+            generar_pdf_tabla(titulo='X', columnas=self.columnas(), filas=[], orientacion='diagonal')
+        with self.assertRaises(ValueError):
+            generar_pdf_tabla(titulo='X', columnas=[Columna('A', 1, 'arriba')], filas=[])
+
+    def test_responder_pdf_arma_el_nombre_y_evita_el_cache(self):
+        import datetime
+        from sevens.reportes_pdf_views import responder_pdf
+        r = responder_pdf(b'%PDF-x', 'gastos', datetime.date(2026, 10, 8))
+        self.assertEqual(r['Content-Type'], 'application/pdf')
+        self.assertEqual(r['Content-Disposition'], 'attachment; filename="gastos-2026-10-08.pdf"')
+        self.assertEqual(r['Cache-Control'], 'no-store')
+
+    def test_pdf_solo_admin_rechaza_metodos_que_no_son_get(self):
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        admin = VGUsuario.objects.create_superuser(
+            username='base_pdf_admin', password='claveAdmin123', cedula='95000003', email='base_pdf_admin@sevens.test', id_role=admin_role,
+        )
+        self.client.force_login(admin)
+        self.assertEqual(self.client.post('/api/admin/reportes/inventario-pdf/').status_code, 405)
+
+
+class ReporteGastosPdfTests(TestCase):
+    URL = '/api/admin/reportes/gastos-pdf/'
+
+    def setUp(self):
+        from datetime import date
+        from sevens.models import VGAbonoGasto, VGCategoriaGasto, VGGasto, VGMetodoPago
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='gpdf_admin', password='claveAdmin123', cedula='95000011', email='gpdf_admin@sevens.test', id_role=admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='gpdf_cajera', password='claveCajera123', cedula='95000012', email='gpdf_cajera@sevens.test', id_role=cajera_role,
+        )
+        _set_tasa_actual('900.0000')
+        self.nomina = VGCategoriaGasto.objects.create(nombre='Nomina PDF test')
+        self.servicios = VGCategoriaGasto.objects.create(nombre='Servicios PDF test')
+        self.metodo = VGMetodoPago.objects.create(nombre='Banco PDF test', moneda='VES')
+
+        # $100 pagados con un abono a tasa 800 -> Bs 80.000 congelados (aunque hoy la tasa sea 900)
+        self.pagado_usd = VGGasto.objects.create(
+            categoria=self.nomina, descripcion='Quincena 1', monto=Decimal('100'), saldo_pendiente=0, estado_pago='pagado',
+            fecha_gasto=date(2026, 9, 5), tasa_cambio_referencia=Decimal('800.0000'),
+        )
+        VGAbonoGasto.objects.create(gasto=self.pagado_usd, monto=Decimal('100'), metodo_pago=self.metodo, tasa_cambio_referencia=Decimal('800.0000'))
+        # Gasto cargado en bolivares: Bs 20.000 a tasa 800 = $25
+        self.en_bs = VGGasto.objects.create(
+            categoria=self.servicios, descripcion='Internet', monto=Decimal('25'), saldo_pendiente=0, estado_pago='pagado',
+            fecha_gasto=date(2026, 9, 20), tasa_cambio_referencia=Decimal('800.0000'), moneda_origen='VES',
+        )
+        VGAbonoGasto.objects.create(gasto=self.en_bs, monto=Decimal('25'), metodo_pago=self.metodo, tasa_cambio_referencia=Decimal('800.0000'))
+        # Fuera del rango de septiembre
+        self.octubre = VGGasto.objects.create(
+            categoria=self.nomina, descripcion='De octubre', monto=Decimal('50'), saldo_pendiente=50,
+            fecha_gasto=date(2026, 10, 2), tasa_cambio_referencia=Decimal('900.0000'),
+        )
+
+    def descargar(self, desde='2026-09-01', hasta='2026-09-30'):
+        from unittest import mock
+        self.client.force_login(self.admin)
+        with mock.patch('sevens.reportes_pdf_views.generar_pdf_gastos', return_value=b'%PDF-falso') as generar:
+            r = self.client.get(f'{self.URL}?fecha_desde={desde}&fecha_hasta={hasta}')
+        return r, generar
+
+    def test_solo_administradores_pueden_descargarlo(self):
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+
+    def test_rechaza_un_rango_invertido(self):
+        self.client.force_login(self.admin)
+        r = self.client.get(f'{self.URL}?fecha_desde=2026-09-30&fecha_hasta=2026-09-01')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('fecha inicial', r.json()['message'])
+
+    def test_responde_un_pdf_real_con_el_rango_en_el_nombre(self):
+        self.client.force_login(self.admin)
+        r = self.client.get(f'{self.URL}?fecha_desde=2026-09-01&fecha_hasta=2026-09-30')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r['Content-Type'], 'application/pdf')
+        self.assertEqual(r['Content-Disposition'], 'attachment; filename="gastos-2026-09-01-al-2026-09-30.pdf"')
+        self.assertTrue(r.content.startswith(b'%PDF'))
+
+    def test_un_rango_sin_gastos_tambien_genera_pdf(self):
+        self.client.force_login(self.admin)
+        r = self.client.get(f'{self.URL}?fecha_desde=2025-01-01&fecha_hasta=2025-01-31')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.content.startswith(b'%PDF'))
+
+    def test_incluye_solo_los_gastos_del_rango_con_los_montos_de_la_pantalla(self):
+        r, generar = self.descargar()
+        self.assertEqual(r.status_code, 200)
+        gastos, desde, hasta = generar.call_args.args[:3]
+        por_descripcion = {g['descripcion']: g for g in gastos}
+        self.assertEqual(set(por_descripcion), {'Quincena 1', 'Internet'})
+        self.assertEqual((str(desde), str(hasta)), ('2026-09-01', '2026-09-30'))
+        # Bs congelados con la tasa del abono (800), no con la de hoy (900)
+        self.assertEqual(Decimal(por_descripcion['Quincena 1']['total_bs']), Decimal('80000.00'))
+        self.assertEqual(Decimal(por_descripcion['Internet']['total_bs']), Decimal('20000.00'))
+
+    def test_agrupa_por_categoria_con_totales_en_bs_y_dolares(self):
+        from datetime import date
+        from sevens.pdf_reportes import armar_bloques_gastos
+        gastos = [
+            {'id': 3, 'categoria_nombre': 'Servicios', 'descripcion': 'Luz', 'estado_pago': 'pagado', 'fecha_gasto': date(2026, 9, 9),
+             'monto': '10', 'total_bs': '8000.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '800.0000'},
+            {'id': 2, 'categoria_nombre': 'nomina', 'descripcion': 'Quincena 2', 'estado_pago': 'pagado', 'fecha_gasto': date(2026, 9, 20),
+             'monto': '100', 'total_bs': '82000.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '820.0000'},
+            {'id': 1, 'categoria_nombre': 'nomina', 'descripcion': 'Quincena 1', 'estado_pago': 'pagado', 'fecha_gasto': date(2026, 9, 5),
+             'monto': '100', 'total_bs': '80000.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '800.0000'},
+        ]
+        bloques = armar_bloques_gastos(gastos)
+        self.assertEqual([b['categoria'] for b in bloques], ['nomina', 'Servicios'])
+        nomina = bloques[0]
+        # dentro de la categoria, por fecha
+        self.assertEqual([f['descripcion'] for f in nomina['filas']], ['Quincena 1', 'Quincena 2'])
+        self.assertEqual(nomina['total_bs'], Decimal('162000.00'))
+        self.assertEqual(nomina['total_usd'], Decimal('200.00'))
+        self.assertEqual(bloques[1]['total_bs'], Decimal('8000.00'))
+
+    def test_la_tasa_es_la_del_gasto_y_marca_los_que_no_estan_pagados(self):
+        from datetime import date
+        from sevens.pdf_reportes import armar_bloques_gastos
+        from sevens.pdf_reportes.gastos import tasa_del_gasto
+        # En dolares: tasa = bolivares / dolares (promedio ponderado si hubo abonos con tasas distintas)
+        usd = {'monto': '100', 'total_bs': '81000.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '800.0000'}
+        self.assertEqual(tasa_del_gasto(usd), Decimal('810'))
+        # En bolivares conserva la tasa del dia en que se registro
+        ves = {'monto': '25', 'total_bs': '20000.00', 'moneda_origen': 'VES', 'tasa_cambio_referencia': '800.0000'}
+        self.assertEqual(tasa_del_gasto(ves), Decimal('800.0000'))
+        bloques = armar_bloques_gastos([
+            {'id': 1, 'categoria_nombre': 'Aseo', 'descripcion': 'Jabon', 'estado_pago': 'pendiente', 'fecha_gasto': date(2026, 9, 8),
+             'monto': '5', 'total_bs': '4500.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '800.0000'},
+            {'id': 2, 'categoria_nombre': 'Aseo', 'descripcion': 'Cloro', 'estado_pago': 'abonada_parcial', 'fecha_gasto': date(2026, 9, 9),
+             'monto': '5', 'total_bs': '4500.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '800.0000'},
+        ])
+        self.assertEqual([f['descripcion'] for f in bloques[0]['filas']], ['Jabon (pendiente)', 'Cloro (abonado parcial)'])
+
+    def test_un_gasto_sin_tasa_no_suma_en_bs_pero_si_en_dolares(self):
+        from datetime import date
+        from sevens.pdf_reportes import armar_bloques_gastos
+        bloque = armar_bloques_gastos([
+            {'id': 1, 'categoria_nombre': 'Aseo', 'descripcion': 'Sin tasa', 'estado_pago': 'pagado', 'fecha_gasto': date(2026, 9, 8),
+             'monto': '5', 'total_bs': None, 'moneda_origen': 'USD', 'tasa_cambio_referencia': None},
+            {'id': 2, 'categoria_nombre': 'Aseo', 'descripcion': 'Con tasa', 'estado_pago': 'pagado', 'fecha_gasto': date(2026, 9, 9),
+             'monto': '10', 'total_bs': '8000.00', 'moneda_origen': 'USD', 'tasa_cambio_referencia': '800.0000'},
+        ])[0]
+        self.assertEqual(bloque['sin_tasa'], 1)
+        self.assertEqual(bloque['total_bs'], Decimal('8000.00'))
+        self.assertEqual(bloque['total_usd'], Decimal('15.00'))
+
+
+class TasaCuentaPrefacturaTests(TestCase):
+    """
+    La nota de entrega (y la factura) heredan la tasa de la pre-factura que se le dio al cliente mientras
+    siga vigente y dentro de la ventana (60 min), aunque la tasa BCV cambie en el medio. Ver tasa_cuenta.py.
+    """
+
+    def setUp(self):
+        from sevens.models import VGPreFactura
+        self.VGPreFactura = VGPreFactura
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.user = VGUsuario.objects.create_user(
+            username='tc_cajera', password='claveCajera123', cedula='96000001', email='tc_cajera@sevens.test', id_role=cajera_role,
+        )
+        self.client.force_login(self.user)
+        self.category = VGCategoriaProducto.objects.create(nombre='Platos TC')
+        self.plato = VGProducto.objects.create(nombre='Plato TC', categoria=self.category, precio_venta='10.00', disponible=True)
+        self.efectivo = VGMetodoPago.objects.create(nombre='Efectivo TC', moneda='USD', es_efectivo=True)
+        self.banco_bs = VGMetodoPago.objects.create(nombre='Banco Bs TC', moneda='VES')
+        _set_tasa_actual('100.0000')
+
+    def pedido(self, total='10.00'):
+        pedido = VGPedido.objects.create(usuario=self.user, tipo_pedido='local', estado='entregado', subtotal=total, total=total)
+        VGDetallePedido.objects.create(pedido=pedido, producto=self.plato, cantidad=1, precio_unitario=total, estado='entregado')
+        return pedido
+
+    def prefactura(self, pedidos, **extra):
+        r = self.client.post('/api/prefacturas/', data=json.dumps({'pedido_ids': [p.id for p in pedidos], **extra}), content_type='application/json')
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.json()
+
+    def cobrar(self, pedidos, **extra):
+        r = self.client.post('/api/pedidos/cobro/', data=json.dumps({
+            'pedido_ids': [p.id for p in pedidos], 'metodo_pago_id': self.efectivo.id,
+            'cliente_cedula': '96000111', 'cliente_nombre': 'Cliente TC', **extra,
+        }), content_type='application/json')
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.json()['nota_entrega']
+
+    def tasa_de_la_nota(self, nota):
+        from sevens.models import VGNotaEntrega
+        return VGNotaEntrega.objects.get(pk=nota['id']).tasa_cambio_referencia
+
+    def envejecer(self, prefactura_id, minutos):
+        from datetime import timedelta
+        pasado = timezone.now() - timedelta(minutes=minutos)
+        self.VGPreFactura.objects.filter(pk=prefactura_id).update(tasa_fijada_en=pasado, fecha_emision=pasado)
+
+    def test_la_nota_conserva_la_tasa_de_la_prefactura_aunque_la_tasa_suba(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        _set_tasa_actual('120.0000')
+        nota = self.cobrar([pedido])
+        self.assertEqual(self.tasa_de_la_nota(nota), Decimal('100.0000'))
+        self.assertEqual(nota['tasa_origen'], 'prefactura')
+        self.assertEqual(nota['tasa_prefactura'], pf['codigo'])
+        self.assertEqual(nota['tasa_cambio_referencia'], '100.0000')
+
+    def test_la_nota_conserva_la_tasa_de_la_prefactura_aunque_la_tasa_baje(self):
+        pedido = self.pedido()
+        self.prefactura([pedido])
+        _set_tasa_actual('80.0000')
+        self.assertEqual(self.tasa_de_la_nota(self.cobrar([pedido])), Decimal('100.0000'))
+
+    def test_pasada_la_ventana_se_usa_la_tasa_actual_y_se_avisa(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        self.envejecer(pf['id'], 61)
+        _set_tasa_actual('120.0000')
+        nota = self.cobrar([pedido])
+        self.assertEqual(self.tasa_de_la_nota(nota), Decimal('120.0000'))
+        self.assertEqual(nota['tasa_origen'], 'actual')
+        self.assertTrue(nota['tasa_prefactura_vencida'])
+
+    def test_dentro_de_la_ventana_todavia_vale(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        self.envejecer(pf['id'], 59)
+        _set_tasa_actual('120.0000')
+        self.assertEqual(self.tasa_de_la_nota(self.cobrar([pedido])), Decimal('100.0000'))
+
+    def test_sin_prefactura_se_usa_la_tasa_actual_como_siempre(self):
+        pedido = self.pedido()
+        _set_tasa_actual('120.0000')
+        nota = self.cobrar([pedido])
+        self.assertEqual(self.tasa_de_la_nota(nota), Decimal('120.0000'))
+        self.assertEqual(nota['tasa_origen'], 'actual')
+        self.assertFalse(nota['tasa_prefactura_vencida'])
+
+    def test_una_prefactura_anulada_se_ignora(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        self.assertEqual(self.client.post(f'/api/prefacturas/{pf["id"]}/anular/').status_code, 200)
+        _set_tasa_actual('120.0000')
+        self.assertEqual(self.tasa_de_la_nota(self.cobrar([pedido])), Decimal('120.0000'))
+
+    def test_si_la_prefactura_cubre_solo_una_parte_de_lo_que_se_cobra_no_aplica(self):
+        a, b = self.pedido(), self.pedido()
+        self.prefactura([a])
+        _set_tasa_actual('120.0000')
+        self.assertEqual(self.tasa_de_la_nota(self.cobrar([a, b])), Decimal('120.0000'))
+
+    def test_si_la_prefactura_cubre_mas_de_lo_que_se_cobra_si_aplica(self):
+        a, b = self.pedido(), self.pedido()
+        self.prefactura([a, b])
+        _set_tasa_actual('120.0000')
+        self.assertEqual(self.tasa_de_la_nota(self.cobrar([a])), Decimal('100.0000'))
+
+    def test_la_cajera_puede_elegir_cobrar_a_la_tasa_actual(self):
+        pedido = self.pedido()
+        self.prefactura([pedido])
+        _set_tasa_actual('120.0000')
+        nota = self.cobrar([pedido], usar_tasa_actual=True)
+        self.assertEqual(self.tasa_de_la_nota(nota), Decimal('120.0000'))
+        self.assertEqual(nota['tasa_origen'], 'actual')
+
+    def test_generar_la_prefactura_dos_veces_conserva_la_tasa_de_la_primera(self):
+        pedido = self.pedido()
+        primera = self.prefactura([pedido])
+        _set_tasa_actual('120.0000')
+        segunda = self.prefactura([pedido])
+        self.assertFalse(primera['tasa_reutilizada'])
+        self.assertTrue(segunda['tasa_reutilizada'])
+        self.assertEqual(segunda['prefactura']['tasa_cambio_referencia'], '100.0000')
+        self.assertNotEqual(primera['prefactura']['id'], segunda['prefactura']['id'])
+        self.assertEqual(
+            self.VGPreFactura.objects.get(pk=primera['prefactura']['id']).tasa_fijada_en,
+            self.VGPreFactura.objects.get(pk=segunda['prefactura']['id']).tasa_fijada_en,
+        )
+
+    def test_renovar_la_tasa_congela_la_de_hoy_y_la_nota_usa_la_mas_reciente(self):
+        pedido = self.pedido()
+        self.prefactura([pedido])
+        _set_tasa_actual('110.0000')
+        renovada = self.prefactura([pedido], renovar_tasa=True)
+        self.assertFalse(renovada['tasa_reutilizada'])
+        self.assertEqual(renovada['prefactura']['tasa_cambio_referencia'], '110.0000')
+        _set_tasa_actual('130.0000')
+        self.assertEqual(self.tasa_de_la_nota(self.cobrar([pedido])), Decimal('110.0000'))
+
+    def test_reimprimir_no_estira_la_tasa_vieja_mas_alla_de_la_ventana(self):
+        pedido = self.pedido()
+        primera = self.prefactura([pedido])['prefactura']
+        self.envejecer(primera['id'], 50)
+        segunda = self.prefactura([pedido])
+        self.assertTrue(segunda['tasa_reutilizada'])
+        # la copia hereda la hora de congelado de la primera: a los 61 min ya no vale ninguna de las dos
+        self.envejecer(primera['id'], 61)
+        self.envejecer(segunda['prefactura']['id'], 61)
+        _set_tasa_actual('120.0000')
+        tercera = self.prefactura([pedido])
+        self.assertFalse(tercera['tasa_reutilizada'])
+        self.assertEqual(tercera['prefactura']['tasa_cambio_referencia'], '120.0000')
+
+    def test_el_abono_en_bolivares_saldando_la_nota_cuadra_con_lo_que_se_cotizo(self):
+        from sevens.models import VGNotaEntrega, VGPago
+        pedido = self.pedido('10.00')
+        self.prefactura([pedido])          # el cliente ve $10 = Bs 1.000 a tasa 100
+        _set_tasa_actual('120.0000')       # la tasa sube mientras espera
+        nota = self.cobrar([pedido])
+        r = self.client.post(
+            f'/api/notas-entrega/{nota["id"]}/abonos/',
+            data=json.dumps({'monto': '1000.00', 'metodo_pago_id': self.banco_bs.id, 'referencia': 'REF-TC-1'}),
+            content_type='application/json',
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        nota_db = VGNotaEntrega.objects.get(pk=nota['id'])
+        self.assertEqual(nota_db.estado, 'pagada')
+        self.assertEqual(nota_db.saldo_pendiente, Decimal('0'))
+        pago = VGPago.objects.get(nota_entrega=nota_db)
+        self.assertEqual(pago.tasa_cambio_referencia, Decimal('100.0000'))
+        self.assertEqual((pago.monto * pago.tasa_cambio_referencia).quantize(Decimal('0.01')), Decimal('1000.00'))
+
+    def test_el_listado_de_cobro_trae_las_prefacturas_con_tasa_vigente(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        r = self.client.get('/api/pedidos/cobro/')
+        self.assertEqual(r.status_code, 200)
+        vigentes = r.json()['prefacturas_tasa_vigente']
+        self.assertEqual(len(vigentes), 1)
+        self.assertEqual(vigentes[0]['codigo'], pf['codigo'])
+        self.assertEqual(Decimal(vigentes[0]['tasa']), Decimal('100.0000'))
+        self.assertEqual(vigentes[0]['pedido_ids'], [pedido.id])
+        self.assertIn(vigentes[0]['minutos_restantes'], (59, 60))
+        self.envejecer(pf['id'], 61)
+        self.assertEqual(self.client.get('/api/pedidos/cobro/').json()['prefacturas_tasa_vigente'], [])
+
+    def test_convertir_la_prefactura_en_factura_conserva_su_tasa(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        _set_tasa_actual('120.0000')
+        r = self.client.post(f'/api/prefacturas/{pf["id"]}/convertir/')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()['factura']['tasa_cambio_referencia'], '100.0000')
+
+    def test_convertir_una_prefactura_vencida_usa_la_tasa_actual(self):
+        pedido = self.pedido()
+        pf = self.prefactura([pedido])['prefactura']
+        self.envejecer(pf['id'], 61)
+        _set_tasa_actual('120.0000')
+        r = self.client.post(f'/api/prefacturas/{pf["id"]}/convertir/')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()['factura']['tasa_cambio_referencia'], '120.0000')

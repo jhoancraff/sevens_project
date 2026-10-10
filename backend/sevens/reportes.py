@@ -11,6 +11,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from .models import (
+    VGLotePOS,
     VGAbonoCompra,
     VGAbonoGasto,
     VGCierreCaja,
@@ -114,7 +115,14 @@ def totales_pagos_por_metodo(fecha):
             else:
                 entry['_bs_incompleto'] = True
 
-    ingresos_extra_dia = VGIngresoExtra.objects.filter(fecha_creacion__date=fecha).select_related('metodo_pago')
+    # El cuadre de caja es lo que se vendio / entro por ventas: un "ingreso no
+    # facturado" (deposito directo a una cuenta, ver VGIngresoExtra.TIPOS) no es
+    # venta, solo cuenta en disponibilidad por cuenta y flujo bancario.
+    ingresos_extra_dia = (
+        VGIngresoExtra.objects.filter(fecha_creacion__date=fecha)
+        .exclude(tipo='ingreso_no_facturado')
+        .select_related('metodo_pago')
+    )
     for ingreso in ingresos_extra_dia:
         metodo = ingreso.metodo_pago
         entry = _metodo_entry(metodo.id, metodo.nombre, metodo.es_efectivo, metodo.moneda, metodo.cuenta_bancaria)
@@ -190,6 +198,7 @@ def resumen_ventas_rango(desde, hasta):
     total_propinas_excedentes = (
         VGIngresoExtra.objects
         .filter(fecha_creacion__date__gte=desde, fecha_creacion__date__lte=hasta)
+        .exclude(tipo='ingreso_no_facturado')
         .aggregate(total=Sum('monto'))
         .get('total')
     ) or Decimal('0')
@@ -451,10 +460,71 @@ def efectivo_esperado_dia(fecha):
     ingresos_extra = (
         VGIngresoExtra.objects
         .filter(fecha_creacion__date=fecha, metodo_pago__es_efectivo=True)
+        .exclude(tipo='ingreso_no_facturado')
         .aggregate(total=Sum('monto'))
         .get('total')
     ) or Decimal('0')
     return ingresos + ingresos_extra - gastos_efectivo_dia(fecha)
+
+
+def efectivo_esperado_por_moneda(fecha):
+    """
+    El efectivo esperado de `fecha` (mismo criterio que efectivo_esperado_dia: cobros
+    y propinas/extra en efectivo menos gastos pagados en efectivo) separado por
+    moneda — lo que debe haber fisicamente en la gaveta en dolares y en bolivares.
+
+      - usd: efectivo de metodos en dolares (cobros + extras − gastos pagados con ellos).
+      - bs: efectivo de metodos en bolivares, en bolivares REALES: cada cobro a su
+        tasa congelada (nunca la de hoy) y cada gasto pagado en bs por el mismo monto
+        de bolivares con que se registro. None si algun movimiento no tiene tasa.
+      - bs_en_usd: lo mismo que `bs` pero en dolares (la parte del efectivo esperado
+        que viene de metodos en bolivares), para que usd + bs_en_usd == efectivo_esperado_dia.
+    """
+    usd = Decimal('0')
+    bs = Decimal('0')
+    bs_en_usd = Decimal('0')
+    falta_tasa = False
+    gastos_usd = Decimal('0')
+    gastos_bs = Decimal('0')
+
+    for metodo in totales_pagos_por_metodo(fecha):
+        if not metodo['es_efectivo']:
+            continue
+        if metodo['moneda'] == 'VES':
+            bs_en_usd += metodo['total']
+            if metodo['total_bs'] is None:
+                falta_tasa = True
+            else:
+                bs += metodo['total_bs']
+        else:
+            usd += metodo['total']
+
+    for abono in (
+        VGAbonoGasto.objects
+        .filter(fecha_pago__date=fecha, metodo_pago__es_efectivo=True)
+        .select_related('metodo_pago')
+    ):
+        if abono.metodo_pago.moneda == 'VES':
+            tasa = abono.tasa_cambio_referencia or tasa_para_fecha(fecha)
+            bs_en_usd -= abono.monto
+            gastos_usd += abono.monto
+            if tasa:
+                monto_bs = (abono.monto * tasa).quantize(Decimal('0.01'))
+                bs -= monto_bs
+                gastos_bs += monto_bs
+            else:
+                falta_tasa = True
+        else:
+            usd -= abono.monto
+            gastos_usd += abono.monto
+
+    return {
+        'usd': usd,
+        'bs': None if falta_tasa else bs,
+        'bs_en_usd': bs_en_usd,
+        'gastos_usd': gastos_usd,
+        'gastos_bs': None if falta_tasa else gastos_bs,
+    }
 
 
 def total_consignado(fecha):
@@ -580,6 +650,104 @@ def resumen_cuadre_caja_rango(desde, hasta):
     }
 
 
+def _lote_acreditado_a_fecha(lote, fecha):
+    return lote.estado == 'acreditado' and lote.fecha_abono_real is not None and lote.fecha_abono_real <= fecha
+
+
+def lotes_pos_por_acreditar(fecha, metodo_ids=None):
+    """
+    Lotes POS que a `fecha` todavia NO estan acreditados: abiertos, cerrados, y
+    los acreditados despues de `fecha` (al mirar una fecha pasada). Es la cuenta
+    transitoria "POS por cobrar" — un saldo calculado, no una tabla.
+    """
+    lotes = VGLotePOS.objects.filter(fecha_operacion__lte=fecha).exclude(estado='anulado').select_related('metodo_pago')
+    if metodo_ids is not None:
+        lotes = lotes.filter(metodo_pago_id__in=metodo_ids)
+    return [lote for lote in lotes.order_by('fecha_operacion', 'numero') if not _lote_acreditado_a_fecha(lote, fecha)]
+
+
+def _serialize_lote_resumen(lote):
+    return {
+        'id': lote.id,
+        'numero': lote.numero,
+        'estado': lote.estado,
+        'fecha_operacion': lote.fecha_operacion,
+        'monto_bruto_usd': lote.monto_bruto_usd,
+        'monto_bruto_bs': lote.monto_bruto_sistema_bs,
+    }
+
+
+def pos_por_cobrar_transitorio(fecha):
+    """
+    Cuenta transitoria "POS por cobrar" a `fecha` (CALCULADA, sin asientos): por
+    banco, cuantos lotes siguen abiertos o cerrados sin acreditar y cuanto suman
+    (USD). Es la plata cobrada por punto de venta que todavia no esta disponible.
+    """
+    items = {}
+    total = Decimal('0')
+    for lote in lotes_pos_por_acreditar(fecha):
+        metodo = lote.metodo_pago
+        clave = metodo.cuenta_bancaria or f'__metodo_{metodo.id}'
+        item = items.setdefault(clave, {
+            'banco': metodo.cuenta_bancaria or metodo.nombre,
+            'lotes_abiertos': 0, 'lotes_cerrados': 0, 'monto_usd': Decimal('0'),
+        })
+        if lote.estado == 'abierto':
+            item['lotes_abiertos'] += 1
+        else:
+            item['lotes_cerrados'] += 1
+        item['monto_usd'] += lote.monto_bruto_usd
+        total += lote.monto_bruto_usd
+    return {
+        'fecha': fecha,
+        'total_usd': total,
+        'por_banco': sorted(items.values(), key=lambda item: item['banco']),
+    }
+
+
+def _resumen_lotes_pos(fecha, metodo_ids):
+    """
+    Agrega, por metodo POS, lo ya acreditado (lo unico que cuenta como DISPONIBLE,
+    ver disponibilidad_por_cuenta) y lo que sigue por acreditar con su desglose.
+    """
+    resumen = {
+        metodo_id: {
+            'acreditado_usd': Decimal('0'), 'acreditado_bs': Decimal('0'),
+            'por_acreditar_usd': Decimal('0'), 'por_acreditar_bs': Decimal('0'),
+            'lotes_por_acreditar': [],
+        }
+        for metodo_id in metodo_ids
+    }
+    if not metodo_ids:
+        return resumen
+
+    lotes = (
+        VGLotePOS.objects.filter(metodo_pago_id__in=metodo_ids, fecha_operacion__lte=fecha)
+        .exclude(estado='anulado').order_by('fecha_operacion', 'numero')
+    )
+    for lote in lotes:
+        fila = resumen[lote.metodo_pago_id]
+        if _lote_acreditado_a_fecha(lote, fecha):
+            fila['acreditado_usd'] += lote.monto_bruto_usd
+            fila['acreditado_bs'] += lote.monto_bruto_sistema_bs
+        else:
+            fila['por_acreditar_usd'] += lote.monto_bruto_usd
+            fila['por_acreditar_bs'] += lote.monto_bruto_sistema_bs
+            fila['lotes_por_acreditar'].append(_serialize_lote_resumen(lote))
+    return resumen
+
+
+CAMPOS_POS_SUMABLES = ('por_acreditar_usd', 'por_acreditar_bs')
+
+
+def fila_pos_a_cuenta(fila_pos):
+    """Campos POS de una fila de disponibilidad (todo en cero/vacio para un metodo que no es POS)."""
+    fila_pos = fila_pos or {}
+    datos = {campo: fila_pos.get(campo, Decimal('0')) for campo in CAMPOS_POS_SUMABLES}
+    datos['lotes_por_acreditar'] = fila_pos.get('lotes_por_acreditar', [])
+    return datos
+
+
 def disponibilidad_por_cuenta(fecha):
     """
     Saldo acumulado disponible en cada metodo de pago ("cuenta") hasta
@@ -600,13 +768,24 @@ def disponibilidad_por_cuenta(fecha):
     metodo — no pasan por VGPago (no son parte de ninguna venta) pero son
     dinero real que entro por esa cuenta igual.
 
-    Las transferencias manuales entre cuentas propias (VGTransferenciaCuenta)
-    tambien se integran: restan de la cuenta origen y suman a la cuenta
-    destino, tanto en el saldo normalizado en dolares (monto_usd, ya
-    convertido con la tasa que el propio usuario acordo al registrar la
-    transferencia) como en el saldo en bolivares de cada cuenta VES
-    (monto_origen/monto_destino, en la moneda real de cada lado — nunca se
-    reconvierte con la tasa BCV).
+    Las VGTransferenciaCuenta (dinero movido entre cuentas propias, ej. sacar
+    de Zelle para depositar en Banesco) se suman a la cuenta destino y se
+    restan de la cuenta origen — en USD via monto_usd, y en bolivares (si esa
+    cuenta puntual es VES) via monto_origen/monto_destino DIRECTO, sin pasar
+    por ninguna tasa: esos montos ya estan en la moneda real de cada cuenta,
+    tal como el analista los escribio, asi que convertirlos de nuevo con una
+    tasa (BCV o la manual de la transferencia) los desviaria del monto real
+    movido. Nunca se cuentan como ingreso ni como gasto (ver
+    VGTransferenciaCuenta) — son un movimiento aparte, con su propio total
+    acumulado por cuenta.
+
+    Metodos de PUNTO DE VENTA (VGMetodoPago.es_punto_venta): su saldo es
+    "lote-driven" — solo cuentan los VGLotePOS acreditados con fecha_abono_real <=
+    `fecha` (el monto que el sistema registro, tal cual), y NO cada cobro el dia
+    de la venta. Lo que sigue en lotes abiertos/cerrados va aparte en
+    `por_acreditar_usd`, con el desglose de lotes. Un cobro de metodo POS sin lote
+    (historico previo a marcar el metodo como POS) sigue contando como siempre
+    hasta que se agrupe en lotes.
 
     Devuelve (cuentas, bancos): `cuentas` es la lista de siempre, una fila por
     metodo de pago; `bancos` agrupa esas mismas filas por VGMetodoPago.cuenta_bancaria
@@ -628,6 +807,7 @@ def disponibilidad_por_cuenta(fecha):
         return monto * tasa if tasa is not None else None
 
     saldo_bs_por_metodo = {}
+    saldo_bs_incompleto = set()
     movimientos_bs = (
         VGPago.objects.filter(fecha_pago__date__lte=fecha, estado='completado')
         .select_related('metodo_pago', 'nota_entrega', 'factura')
@@ -635,46 +815,72 @@ def disponibilidad_por_cuenta(fecha):
     for pago in movimientos_bs:
         if pago.metodo_pago.moneda != 'VES':
             continue
+        if pago.metodo_pago.es_punto_venta and pago.lote_pos_id:
+            continue  # lote-driven: se suma abajo, por lote acreditado
         tasa = pago.tasa_cambio_referencia
         if tasa is None and pago.nota_entrega_id:
             tasa = pago.nota_entrega.tasa_cambio_referencia
         if tasa is None and pago.factura_id:
             tasa = pago.factura.tasa_cambio_referencia
         if tasa is None:
-            tasa = tasa_para_fecha(pago.fecha_pago.date())
+            # localtime(...).date(), no .date() a secas — mismo bug que en
+            # flujo_bancario_mensual: fecha_pago se guarda en UTC, y en
+            # America/Caracas (UTC-4) un pago de la noche cae en la fecha UTC
+            # del dia siguiente, lo que buscaria la tasa BCV del dia que no es.
+            tasa = tasa_para_fecha(timezone.localtime(pago.fecha_pago).date())
         if tasa is not None:
             saldo_bs_por_metodo[pago.metodo_pago_id] = saldo_bs_por_metodo.get(pago.metodo_pago_id, Decimal('0')) + _monto_bs(pago.monto, tasa)
+        else:
+            saldo_bs_incompleto.add(pago.metodo_pago_id)
+
+    pos_ids = [metodo.id for metodo in metodos if metodo.es_punto_venta]
+    resumen_pos = _resumen_lotes_pos(fecha, pos_ids)
+    for metodo_id, fila_pos in resumen_pos.items():
+        if fila_pos['acreditado_bs']:
+            saldo_bs_por_metodo[metodo_id] = saldo_bs_por_metodo.get(metodo_id, Decimal('0')) + fila_pos['acreditado_bs']
 
     for ingreso in VGIngresoExtra.objects.filter(fecha_creacion__date__lte=fecha).select_related('metodo_pago'):
         if ingreso.metodo_pago.moneda != 'VES':
             continue
-        tasa = ingreso.tasa_cambio_referencia or tasa_para_fecha(ingreso.fecha_creacion.date())
+        tasa = ingreso.tasa_cambio_referencia or tasa_para_fecha(timezone.localtime(ingreso.fecha_creacion).date())
         if tasa is not None:
             saldo_bs_por_metodo[ingreso.metodo_pago_id] = saldo_bs_por_metodo.get(ingreso.metodo_pago_id, Decimal('0')) + _monto_bs(ingreso.monto, tasa)
+        else:
+            saldo_bs_incompleto.add(ingreso.metodo_pago_id)
 
     for abono in VGAbonoGasto.objects.filter(fecha_pago__date__lte=fecha).select_related('metodo_pago'):
         if abono.metodo_pago.moneda != 'VES':
             continue
-        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(abono.fecha_pago.date())
+        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(timezone.localtime(abono.fecha_pago).date())
         if tasa is not None:
             saldo_bs_por_metodo[abono.metodo_pago_id] = saldo_bs_por_metodo.get(abono.metodo_pago_id, Decimal('0')) - _monto_bs(abono.monto, tasa)
+        else:
+            saldo_bs_incompleto.add(abono.metodo_pago_id)
 
     for abono in VGAbonoCompra.objects.filter(fecha_pago__date__lte=fecha).select_related('metodo_pago'):
         if abono.metodo_pago.moneda != 'VES':
             continue
-        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(abono.fecha_pago.date())
+        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(timezone.localtime(abono.fecha_pago).date())
         if tasa is not None:
             saldo_bs_por_metodo[abono.metodo_pago_id] = saldo_bs_por_metodo.get(abono.metodo_pago_id, Decimal('0')) - _monto_bs(abono.monto, tasa)
+        else:
+            saldo_bs_incompleto.add(abono.metodo_pago_id)
 
-    primer_efectivo_id = next((metodo.id for metodo in metodos if metodo.es_efectivo), None)
+    primer_efectivo = next((metodo for metodo in metodos if metodo.es_efectivo), None)
+    primer_efectivo_id = primer_efectivo.id if primer_efectivo else None
     for consignacion in VGConsignacionCaja.objects.filter(fecha__lte=fecha):
-        if primer_efectivo_id is None:
+        if primer_efectivo is None:
             break
         tasa = tasa_para_fecha(consignacion.fecha)
         if tasa is not None:
-            saldo_bs_por_metodo[primer_efectivo_id] = saldo_bs_por_metodo.get(primer_efectivo_id, Decimal('0')) - _monto_bs(consignacion.monto, tasa)
+            saldo_bs_por_metodo[primer_efectivo.id] = saldo_bs_por_metodo.get(primer_efectivo.id, Decimal('0')) - _monto_bs(consignacion.monto, tasa)
+        elif primer_efectivo.moneda == 'VES':
+            saldo_bs_incompleto.add(primer_efectivo.id)
 
-    for transferencia in VGTransferenciaCuenta.objects.filter(fecha__lte=fecha):
+    for transferencia in (
+        VGTransferenciaCuenta.objects.filter(fecha__lte=fecha)
+        .select_related('cuenta_origen', 'cuenta_destino')
+    ):
         if transferencia.moneda_origen == 'VES':
             saldo_bs_por_metodo[transferencia.cuenta_origen_id] = (
                 saldo_bs_por_metodo.get(transferencia.cuenta_origen_id, Decimal('0')) - transferencia.monto_origen
@@ -685,7 +891,9 @@ def disponibilidad_por_cuenta(fecha):
             )
 
     ingresos_por_metodo = _totales_por_metodo(
-        VGPago.objects.filter(fecha_pago__date__lte=fecha, estado='completado')
+        VGPago.objects
+        .filter(fecha_pago__date__lte=fecha, estado='completado')
+        .exclude(metodo_pago__es_punto_venta=True, lote_pos__isnull=False)
     )
     ingresos_extra_por_metodo = _totales_por_metodo(
         VGIngresoExtra.objects.filter(fecha_creacion__date__lte=fecha)
@@ -702,19 +910,21 @@ def disponibilidad_por_cuenta(fecha):
         .aggregate(total=Sum('monto'))
         .get('total')
     ) or Decimal('0')
-
-    transferencias_salientes_por_metodo = {
-        fila['cuenta_origen_id']: fila['total']
-        for fila in (
-            VGTransferenciaCuenta.objects.filter(fecha__lte=fecha)
-            .values('cuenta_origen_id').annotate(total=Sum('monto_usd'))
-        )
-    }
+    # VGTransferenciaCuenta tiene dos FK a VGMetodoPago (origen/destino), no
+    # una sola `metodo_pago` — no encaja en _totales_por_metodo, se agrupa
+    # aparte por cada lado.
     transferencias_entrantes_por_metodo = {
         fila['cuenta_destino_id']: fila['total']
         for fila in (
             VGTransferenciaCuenta.objects.filter(fecha__lte=fecha)
             .values('cuenta_destino_id').annotate(total=Sum('monto_usd'))
+        )
+    }
+    transferencias_salientes_por_metodo = {
+        fila['cuenta_origen_id']: fila['total']
+        for fila in (
+            VGTransferenciaCuenta.objects.filter(fecha__lte=fecha)
+            .values('cuenta_origen_id').annotate(total=Sum('monto_usd'))
         )
     }
 
@@ -725,8 +935,13 @@ def disponibilidad_por_cuenta(fecha):
         gastos = gastos_por_metodo.get(metodo.id) or Decimal('0')
         compras = compras_por_metodo.get(metodo.id) or Decimal('0')
         consignado = consignado_acumulado if metodo.id == primer_efectivo_id else Decimal('0')
-        transferencias_salientes = transferencias_salientes_por_metodo.get(metodo.id) or Decimal('0')
         transferencias_entrantes = transferencias_entrantes_por_metodo.get(metodo.id) or Decimal('0')
+        transferencias_salientes = transferencias_salientes_por_metodo.get(metodo.id) or Decimal('0')
+        fila_pos = resumen_pos.get(metodo.id)
+        if fila_pos is not None:
+            # Metodo POS: los cobros con lote ya se excluyeron arriba; lo disponible
+            # es el neto de los lotes que el banco ya acredito.
+            ingresos += fila_pos['acreditado_usd']
         resultado.append({
             'id': metodo.id,
             'nombre': metodo.nombre,
@@ -736,16 +951,21 @@ def disponibilidad_por_cuenta(fecha):
             'activo': metodo.activo,
             'ingresos_acumulados': ingresos,
             'ingresos_extra_acumulados': ingresos_extra,
+            'transferencias_entrantes_acumuladas': transferencias_entrantes,
             'gastos_acumulados': gastos,
             'compras_acumuladas': compras,
-            'consignado_acumulado': consignado,
             'transferencias_salientes_acumuladas': transferencias_salientes,
-            'transferencias_entrantes_acumuladas': transferencias_entrantes,
+            'consignado_acumulado': consignado,
             'saldo_disponible': (
                 ingresos + ingresos_extra + transferencias_entrantes
-                - gastos - compras - consignado - transferencias_salientes
+                - gastos - compras - transferencias_salientes - consignado
             ),
-            'saldo_disponible_bs': saldo_bs_por_metodo.get(metodo.id) if metodo.moneda == 'VES' else None,
+            'saldo_disponible_bs': (
+                None if metodo.id in saldo_bs_incompleto
+                else saldo_bs_por_metodo.get(metodo.id, Decimal('0'))
+            ) if metodo.moneda == 'VES' else None,
+            'es_punto_venta': metodo.es_punto_venta,
+            **(fila_pos_a_cuenta(fila_pos) if fila_pos is not None else fila_pos_a_cuenta(None)),
         })
 
     # Agrupa por cuenta_bancaria — varias filas de `resultado` con el mismo
@@ -763,25 +983,32 @@ def disponibilidad_por_cuenta(fecha):
                 'metodos': [],
                 'ingresos_acumulados': Decimal('0'),
                 'ingresos_extra_acumulados': Decimal('0'),
+                'transferencias_entrantes_acumuladas': Decimal('0'),
                 'gastos_acumulados': Decimal('0'),
                 'compras_acumuladas': Decimal('0'),
-                'consignado_acumulado': Decimal('0'),
                 'transferencias_salientes_acumuladas': Decimal('0'),
-                'transferencias_entrantes_acumuladas': Decimal('0'),
+                'consignado_acumulado': Decimal('0'),
                 'saldo_disponible': Decimal('0'),
                 'saldo_disponible_bs': Decimal('0') if cuenta['moneda'] == 'VES' else None,
+                **{campo: Decimal('0') for campo in CAMPOS_POS_SUMABLES},
+                'lotes_por_acreditar': [],
+                'tiene_punto_venta': False,
             }
             orden_claves.append(clave)
         banco = bancos_por_clave[clave]
         banco['metodos'].append(cuenta)
         banco['ingresos_acumulados'] += cuenta['ingresos_acumulados']
         banco['ingresos_extra_acumulados'] += cuenta['ingresos_extra_acumulados']
+        banco['transferencias_entrantes_acumuladas'] += cuenta['transferencias_entrantes_acumuladas']
         banco['gastos_acumulados'] += cuenta['gastos_acumulados']
         banco['compras_acumuladas'] += cuenta['compras_acumuladas']
-        banco['consignado_acumulado'] += cuenta['consignado_acumulado']
         banco['transferencias_salientes_acumuladas'] += cuenta['transferencias_salientes_acumuladas']
-        banco['transferencias_entrantes_acumuladas'] += cuenta['transferencias_entrantes_acumuladas']
+        banco['consignado_acumulado'] += cuenta['consignado_acumulado']
         banco['saldo_disponible'] += cuenta['saldo_disponible']
+        for campo in CAMPOS_POS_SUMABLES:
+            banco[campo] += cuenta[campo]
+        banco['lotes_por_acreditar'].extend(cuenta['lotes_por_acreditar'])
+        banco['tiene_punto_venta'] = banco['tiene_punto_venta'] or cuenta['es_punto_venta']
         if banco['saldo_disponible_bs'] is not None and cuenta['saldo_disponible_bs'] is not None:
             banco['saldo_disponible_bs'] += cuenta['saldo_disponible_bs']
         elif banco['saldo_disponible_bs'] is not None:
@@ -841,6 +1068,7 @@ def _movimientos_banco_mes(anio, mes, metodo_pago_ids):
     for pago in (
         VGPago.objects
         .filter(metodo_pago_id__in=ids, estado='completado', fecha_pago__date__gte=desde, fecha_pago__date__lte=hasta)
+        .exclude(metodo_pago__es_punto_venta=True, lote_pos__isnull=False)
         .select_related('metodo_pago', 'nota_entrega', 'factura')
     ):
         fecha_local = timezone.localtime(pago.fecha_pago)
@@ -866,6 +1094,25 @@ def _movimientos_banco_mes(anio, mes, metodo_pago_ids):
             'metodo_pago': pago.metodo_pago.nombre,
             'origen': origen,
             'referencia': pago.referencia,
+        })
+
+    # Un metodo POS no entra al banco el dia de la venta sino cuando se acredita el
+    # lote: se muestra el dia de la ACREDITACION, no el del cobro.
+    for lote in (
+        VGLotePOS.objects
+        .filter(estado='acreditado', fecha_abono_real__gte=desde, fecha_abono_real__lte=hasta,
+                metodo_pago_id__in=ids, metodo_pago__es_punto_venta=True)
+        .select_related('metodo_pago')
+    ):
+        movimientos.append({
+            'fecha': lote.fecha_abono_real,
+            'tipo': 'entrada',
+            'hora': None,
+            'monto_usd': lote.monto_bruto_usd,
+            'monto_local': lote.monto_bruto_sistema_bs,
+            'metodo_pago': lote.metodo_pago.nombre,
+            'origen': f'Lote POS #{lote.numero} acreditado',
+            'referencia': f'LOTE-{lote.numero:06d}',
         })
 
     for ingreso in (
@@ -900,6 +1147,7 @@ def _movimientos_banco_mes(anio, mes, metodo_pago_ids):
             'monto_local': (abono.monto * tasa) if tasa else None,
             'metodo_pago': abono.metodo_pago.nombre,
             'origen': f'Gasto: {abono.gasto.descripcion}',
+            'documento_codigo': f'Gasto #{abono.gasto_id}',
             'referencia': abono.referencia,
         })
 
@@ -918,6 +1166,7 @@ def _movimientos_banco_mes(anio, mes, metodo_pago_ids):
             'monto_local': (abono.monto * tasa) if tasa else None,
             'metodo_pago': abono.metodo_pago.nombre,
             'origen': f'Compra: {abono.compra.proveedor_nombre}',
+            'documento_codigo': f'Lote #{abono.compra_id}',
             'referencia': abono.referencia,
         })
 
