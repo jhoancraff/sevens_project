@@ -357,14 +357,14 @@ const cardStyle = {
   maxHeight: '90vh',
   overflowY: 'auto',
   borderRadius: 20,
-  border: '1px solid rgba(150, 145, 255, 0.3)',
-  background: 'linear-gradient(180deg, rgba(16, 12, 28, 0.98) 0%, rgba(8, 8, 10, 0.99) 100%)',
+  border: '1px solid var(--vg-f-9691ff-a300)',
+  background: 'linear-gradient(180deg, var(--vg-s-100c1c-a980) 0%, var(--vg-s-08080a-a990) 100%)',
   padding: '22px 22px 18px',
-  boxShadow: '0 20px 50px rgba(0, 0, 0, 0.45)',
+  boxShadow: '0 20px 50px rgba(0, 0, 0, calc(0.45 * var(--vg-shadow-k)))',
 };
 
 const titleStyle = {
-  color: '#fff',
+  color: 'var(--vg-text-strong)',
   fontSize: 19,
   fontWeight: 800,
   marginBottom: 14,
@@ -373,19 +373,19 @@ const titleStyle = {
 const formStyle = { display: 'grid', gap: 14 };
 const columnsStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 };
 const fieldStyle = { display: 'grid', gap: 6 };
-const labelStyle = { color: '#c9b8ff', fontSize: 12.5, fontWeight: 700 };
+const labelStyle = { color: 'var(--vg-f-c9b8ff)', fontSize: 12.5, fontWeight: 700 };
 const inputStyle = {
   width: '100%',
   boxSizing: 'border-box',
   padding: '10px 12px',
   borderRadius: 12,
-  border: '1px solid rgba(255, 255, 255, 0.16)',
-  background: 'rgba(255, 255, 255, 0.05)',
-  color: '#fff',
+  border: '1px solid rgba(var(--vg-ink), 0.16)',
+  background: 'rgba(var(--vg-ink), 0.05)',
+  color: 'var(--vg-text-strong)',
   fontSize: 14,
 };
-const hintStyle = { margin: 0, color: '#a89999', fontSize: 11.5 };
-const saldoBadgeStyle = { color: '#bdd0ff', fontSize: 11.5, fontWeight: 700 };
+const hintStyle = { margin: 0, color: 'var(--vg-f-a89999)', fontSize: 11.5 };
+const saldoBadgeStyle = { color: 'var(--vg-f-bdd0ff)', fontSize: 11.5, fontWeight: 700 };
 
 const footerStyle = {
   display: 'flex',
@@ -396,11 +396,11 @@ const footerStyle = {
 };
 
 const cancelButtonStyle = {
-  border: '1px solid rgba(255, 255, 255, 0.16)',
+  border: '1px solid rgba(var(--vg-ink), 0.16)',
   borderRadius: 999,
   padding: '10px 16px',
-  background: 'rgba(255, 255, 255, 0.05)',
-  color: '#fff',
+  background: 'rgba(var(--vg-ink), 0.05)',
+  color: 'var(--vg-text-strong)',
   fontWeight: 700,
   cursor: 'pointer',
 };

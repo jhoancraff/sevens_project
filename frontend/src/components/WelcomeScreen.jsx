@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { limpiarFechaSeleccionada, limpiarRangoSeleccionado } from '../utils/fechaContabilidad';
 import AdminPanelPage from './AdminPanelPage';
 import ContabilidadPanelPage from './ContabilidadPanelPage';
+import ThemeToggle from './ThemeToggle';
 import ReporteCuadreCajaPage from './ReporteCuadreCajaPage';
 import CierreCajaPage from './CierreCajaPage';
 import LotesPOSPage from './LotesPOSPage';
@@ -397,7 +398,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
     <div style={{
       minHeight: '100vh',
       display: 'flex',
-      background: 'radial-gradient(circle at top, #2f0b0b 0%, #120606 45%, #050505 100%)',
+      background: 'var(--vg-bg-app)',
       padding: isMobile ? 16 : 24,
       boxSizing: 'border-box',
       position: 'relative',
@@ -418,14 +419,14 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             transition: background 180ms ease, color 180ms ease;
           }
           .vg-sidebar-btn:hover {
-            background: rgba(255, 77, 77, 0.10) !important;
+            background: rgba(var(--vg-accent-rgb), 0.1) !important;
           }
           .vg-feature-card {
             transition: transform 200ms ease, box-shadow 200ms ease;
           }
           .vg-feature-card:hover {
             transform: translateY(-3px);
-            box-shadow: 0 18px 44px rgba(0, 0, 0, 0.38) !important;
+            box-shadow: 0 18px 44px rgba(0, 0, 0, calc(0.38 * var(--vg-shadow-k))) !important;
           }
           @media print {
             .no-print { display: none !important; }
@@ -461,14 +462,14 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             width: 42,
             height: 42,
             borderRadius: 12,
-            border: '1px solid rgba(255, 110, 110, 0.45)',
-            background: 'rgba(36, 13, 13, 0.96)',
-            color: '#fff',
+            border: '1px solid var(--vg-f-ff6e6e-a450)',
+            background: 'var(--vg-s-240d0d-a960)',
+            color: 'var(--vg-text-strong)',
             display: 'grid',
             placeItems: 'center',
             cursor: 'pointer',
             zIndex: 30,
-            boxShadow: '0 8px 20px rgba(0, 0, 0, 0.35)',
+            boxShadow: '0 8px 20px rgba(0, 0, 0, calc(0.35 * var(--vg-shadow-k)))',
           }}
         >
           <span aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -493,9 +494,9 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           transform: isSidebarOpen ? 'translateX(0)' : 'translateX(-100%)',
           transition: 'transform 260ms ease',
           zIndex: 24,
-          background: 'linear-gradient(180deg, rgba(22, 8, 8, 0.98) 0%, rgba(8, 8, 8, 0.98) 100%)',
-          borderRight: '1px solid rgba(255, 89, 89, 0.34)',
-          boxShadow: '12px 0 26px rgba(0, 0, 0, 0.38)',
+          background: 'var(--vg-bg-sidebar)',
+          borderRight: '1px solid var(--vg-f-ff5959-a340)',
+          boxShadow: '12px 0 26px rgba(0, 0, 0, calc(0.38 * var(--vg-shadow-k)))',
           boxSizing: 'border-box',
           overflow: 'hidden',
           display: 'flex',
@@ -513,9 +514,9 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             width: 38,
             height: 38,
             borderRadius: 10,
-            border: '1px solid rgba(255, 110, 110, 0.35)',
-            background: 'rgba(46, 14, 14, 0.88)',
-            color: '#fff',
+            border: '1px solid var(--vg-f-ff6e6e-a350)',
+            background: 'var(--vg-s-2e0e0e-a880)',
+            color: 'var(--vg-text-strong)',
             display: 'grid',
             placeItems: 'center',
             cursor: 'pointer',
@@ -550,8 +551,8 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           display: 'flex',
           alignItems: 'center',
           padding: '0 16px',
-          borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
-          background: 'rgba(22, 8, 8, 0.6)',
+          borderBottom: '1px solid rgba(var(--vg-ink), 0.06)',
+          background: 'var(--vg-s-160808-a600)',
           backdropFilter: 'blur(8px)',
           zIndex: 1,
         }}>
@@ -569,7 +570,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           <div style={{
             fontSize: 15,
             fontWeight: 800,
-            background: 'linear-gradient(90deg, #ff6b6b 0%, #ff4d4d 100%)',
+            background: 'linear-gradient(90deg, #ff6b6b 0%, var(--vg-accent-primary) 100%)',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
             backgroundClip: 'text',
@@ -771,9 +772,9 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           margin: '0 12px 16px',
           borderRadius: 22,
           padding: 16,
-          background: 'linear-gradient(180deg, rgba(191, 31, 31, 0.18) 0%, rgba(255, 255, 255, 0.03) 100%)',
-          border: '1px solid rgba(255, 102, 102, 0.2)',
-          boxShadow: '0 -8px 20px rgba(0, 0, 0, 0.25)',
+          background: 'linear-gradient(180deg, rgba(191, 31, 31, 0.18) 0%, rgba(var(--vg-ink), 0.03) 100%)',
+          border: '1px solid var(--vg-f-ff6666-a200)',
+          boxShadow: '0 -8px 20px rgba(0, 0, 0, calc(0.25 * var(--vg-shadow-k)))',
         }}>
           <button
             type="button"
@@ -807,13 +808,13 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
               {displayName.slice(0, 1).toUpperCase()}
             </div>
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#ffaaaa', marginBottom: 4 }}>
+              <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.12em', color: 'var(--vg-f-ffaaaa)', marginBottom: 4 }}>
                 Usuario activo
               </div>
-              <div style={{ fontSize: 17, fontWeight: 700, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--vg-text-strong)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {displayName}
               </div>
-              <div style={{ fontSize: 12, color: '#e6bbbb', marginTop: 3 }}>
+              <div style={{ fontSize: 12, color: 'var(--vg-f-e6bbbb)', marginTop: 3 }}>
                 {todayLabel}
               </div>
             </div>
@@ -829,7 +830,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
               display: 'grid',
               gap: 10,
               paddingTop: 12,
-              borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+              borderTop: '1px solid rgba(var(--vg-ink), 0.08)',
             }}>
               <button
                 type="button"
@@ -843,6 +844,8 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
                 </span>
                 <span style={{ flex: 1 }}>Configuración</span>
               </button>
+
+              <ThemeToggle variant="menu" buttonStyle={userActionButtonStyle} iconStyle={userActionIconStyle} />
 
               <button
                 type="button"
@@ -884,15 +887,15 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
               gap: 12,
               padding: '20px 22px',
               borderRadius: 22,
-              background: 'linear-gradient(145deg, rgba(60, 15, 15, 0.7) 0%, rgba(15, 8, 8, 0.6) 100%)',
-              border: '1px solid rgba(255, 80, 80, 0.15)',
+              background: 'linear-gradient(145deg, var(--vg-s-3c0f0f-a700) 0%, var(--vg-s-0f0808-a600) 100%)',
+              border: '1px solid var(--vg-f-ff5050-a150)',
               marginBottom: 4,
             }}>
               <div>
-                <div style={{ fontSize: isMobile ? 22 : 28, fontWeight: 800, color: '#fff', lineHeight: 1.2 }}>
+                <div style={{ fontSize: isMobile ? 22 : 28, fontWeight: 800, color: 'var(--vg-text-strong)', lineHeight: 1.2 }}>
                   Bienvenido, {displayName} 👋
                 </div>
-                <div style={{ color: '#c8a0a0', fontSize: 13, marginTop: 5 }}>
+                <div style={{ color: 'var(--vg-f-c8a0a0)', fontSize: 13, marginTop: 5 }}>
                   {todayLabel} · Todo listo para el servicio
                 </div>
               </div>
@@ -947,12 +950,12 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
                   style={featureCardButtonStyle}
                 >
                   <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-                    <div style={{ display: 'inline-grid', placeItems: 'center', width: 44, height: 44, borderRadius: 14, background: 'rgba(255, 88, 88, 0.12)', color: '#ff7d7d', marginBottom: 18 }}>
+                    <div style={{ display: 'inline-grid', placeItems: 'center', width: 44, height: 44, borderRadius: 14, background: 'rgba(255, 88, 88, 0.12)', color: 'var(--vg-f-ff7d7d)', marginBottom: 18 }}>
                       {item.icon}
                     </div>
-                    <span style={{ color: 'rgba(255, 100, 100, 0.6)', fontSize: 20, lineHeight: 1 }} aria-hidden="true">→</span>
+                    <span style={{ color: 'var(--vg-f-ff6464-a600)', fontSize: 20, lineHeight: 1 }} aria-hidden="true">→</span>
                   </div>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: '#fff', marginBottom: 10 }}>{item.title}</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--vg-text-strong)', marginBottom: 10 }}>{item.title}</div>
                 </button>
               ))}
             </section>
@@ -1439,12 +1442,12 @@ const sidebarButtonStyle = (isPrimary) => ({
   width: '100%',
   border: 'none',
   borderRadius: 14,
-  borderLeft: isPrimary ? '3px solid #ff5555' : '3px solid transparent',
+  borderLeft: isPrimary ? '3px solid var(--vg-f-ff5555)' : '3px solid transparent',
   padding: '12px 12px 12px 10px',
-  color: isPrimary ? '#ffffff' : 'rgba(255,255,255,0.78)',
+  color: isPrimary ? 'var(--vg-text-strong)' : 'rgba(var(--vg-ink), 0.78)',
   background: isPrimary
     ? 'linear-gradient(90deg, rgba(195, 35, 35, 0.28) 0%, rgba(195, 35, 35, 0.10) 100%)'
-    : 'rgba(255, 255, 255, 0.03)',
+    : 'rgba(var(--vg-ink), 0.03)',
   display: 'flex',
   alignItems: 'center',
   gap: 10,
@@ -1459,7 +1462,7 @@ const sidebarIconWrapStyle = (isPrimary) => ({
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
-  color: isPrimary ? '#ff7d7d' : 'rgba(255,255,255,0.55)',
+  color: isPrimary ? 'var(--vg-f-ff7d7d)' : 'rgba(var(--vg-ink), 0.55)',
   transition: 'color 180ms ease',
   flexShrink: 0,
   width: 20,
@@ -1473,20 +1476,20 @@ const pendingBadgeStyle = (isActive) => ({
   placeItems: 'center',
   fontSize: 12,
   fontWeight: 800,
-  color: '#fff',
-  background: isActive ? '#ff9d9d' : 'rgba(255, 255, 255, 0.18)',
-  border: isActive ? '1px solid rgba(255, 185, 185, 0.9)' : '1px solid rgba(255, 255, 255, 0.2)',
+  color: 'var(--vg-text-strong)',
+  background: isActive ? '#ff9d9d' : 'rgba(var(--vg-ink), 0.18)',
+  border: isActive ? '1px solid var(--vg-f-ffb9b9-a900)' : '1px solid rgba(var(--vg-ink), 0.2)',
   animation: isActive ? 'pendingPulse 1.1s ease-in-out infinite' : 'none',
   boxSizing: 'border-box',
   flexShrink: 0,
 });
 
 const featureCardStyle = {
-  background: 'linear-gradient(180deg, rgba(20, 10, 10, 0.94) 0%, rgba(10, 10, 10, 0.96) 100%)',
-  border: '1px solid rgba(255, 255, 255, 0.08)',
+  background: 'linear-gradient(180deg, var(--vg-s-140a0a-a940) 0%, var(--vg-s-0a0a0a-a960) 100%)',
+  border: '1px solid rgba(var(--vg-ink), 0.08)',
   borderRadius: 24,
   padding: 22,
-  boxShadow: '0 12px 32px rgba(0,0,0,0.24)',
+  boxShadow: '0 12px 32px rgba(0, 0, 0, calc(0.24 * var(--vg-shadow-k)))',
 };
 
 const featureCardButtonStyle = {
@@ -1497,7 +1500,7 @@ const featureCardButtonStyle = {
   cursor: 'pointer',
   color: 'inherit',
   font: 'inherit',
-  borderTop: '2px solid rgba(255, 77, 77, 0.45)',
+  borderTop: '2px solid rgba(var(--vg-accent-rgb), 0.45)',
 };
 
 const userActionButtonStyle = {
@@ -1506,9 +1509,9 @@ const userActionButtonStyle = {
   gap: 10,
   borderRadius: 16,
   padding: '13px 14px',
-  background: 'rgba(255, 255, 255, 0.05)',
-  border: '1px solid rgba(255, 255, 255, 0.08)',
-  color: '#f5f5f5',
+  background: 'rgba(var(--vg-ink), 0.05)',
+  border: '1px solid rgba(var(--vg-ink), 0.08)',
+  color: 'var(--vg-text-main)',
   fontWeight: 600,
   cursor: 'pointer',
   width: '100%',
@@ -1520,15 +1523,15 @@ const userActionIconStyle = {
   borderRadius: 11,
   display: 'grid',
   placeItems: 'center',
-  background: 'rgba(255, 77, 77, 0.12)',
-  color: '#ff7a7a',
+  background: 'rgba(var(--vg-accent-rgb), 0.12)',
+  color: 'var(--vg-f-ff7a7a)',
 };
 
 const newOrderButtonStyle = {
   border: 'none',
   borderRadius: 999,
   padding: '12px 20px',
-  background: 'linear-gradient(90deg, #bf1f1f 0%, #ff4d4d 100%)',
+  background: 'linear-gradient(90deg, #bf1f1f 0%, var(--vg-accent-primary) 100%)',
   color: '#fff',
   fontWeight: 700,
   cursor: 'pointer',

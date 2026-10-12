@@ -602,27 +602,27 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
               <div key={nota.id} style={notaRowStyle(selectedNotaId === nota.id)}>
                 <div style={{ display: 'grid', gap: 2 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-                    <span style={{ color: '#fff', fontWeight: 700 }}>Nota de entrega {nota.codigo}</span>
+                    <span style={{ color: 'var(--vg-text-strong)', fontWeight: 700 }}>Nota de entrega {nota.codigo}</span>
                     <span style={estadoBadgeStyle(nota.estado)}>{estadoLabel(nota.estado)}</span>
                   </div>
-                  <div style={{ color: '#d2c4c4', fontSize: 13 }}>
+                  <div style={{ color: 'var(--vg-f-d2c4c4)', fontSize: 13 }}>
                     {nota.cliente ? `${nota.cliente.nombre_completo} · ` : ''}
                     {new Date(nota.fecha_emision).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
                     {' · '}
                     {nota.pedidos.length} pedido(s)
                     {nota.moneda === 'VES' && nota.referencia && !esReferenciaAutogenerada(nota.referencia) ? ` · Ref: ${nota.referencia}` : ''}
                   </div>
-                  <div style={{ color: '#ffcf7d', fontWeight: 700 }}>
+                  <div style={{ color: 'var(--vg-f-ffcf7d)', fontWeight: 700 }}>
                     Total: {montoNota(nota.total, nota)}
                   </div>
                   {Number(nota.descuento_monto) > 0 ? (
-                    <div style={{ color: '#9fd8ff', fontSize: 12.5 }} title={nota.descuento_motivo}>
+                    <div style={{ color: 'var(--vg-f-9fd8ff)', fontSize: 12.5 }} title={nota.descuento_motivo}>
                       Descuento aplicado: -${Number(nota.descuento_monto).toFixed(2)} — {nota.descuento_motivo}
                       {nota.creado_por ? ` (${nota.creado_por})` : ''}
                     </div>
                   ) : null}
                   {!['pagada', 'anulada'].includes(nota.estado) ? (
-                    <div style={{ color: '#ff9b9b', fontWeight: 700 }}>
+                    <div style={{ color: 'var(--vg-f-ff9b9b)', fontWeight: 700 }}>
                       Saldo: {montoNota(nota.saldo_pendiente, nota, true)}
                     </div>
                   ) : null}
@@ -686,10 +686,10 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
               <div style={emptyStateStyle}>Cargando nota de entrega...</div>
             ) : (
               <>
-                <div style={{ color: '#ffb0b0', fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                <div style={{ color: 'var(--vg-f-ffb0b0)', fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                   Nota de entrega {notaDetalle.codigo}
                 </div>
-                <div style={{ color: '#d2c4c4', fontSize: 13 }}>
+                <div style={{ color: 'var(--vg-f-d2c4c4)', fontSize: 13 }}>
                   {notaDetalle.cliente ? `${notaDetalle.cliente.nombre_completo}${notaDetalle.cliente.numero_documento ? ` (V-${notaDetalle.cliente.numero_documento})` : ''} · ` : ''}
                   {new Date(notaDetalle.fecha_emision).toLocaleString('es-VE')}
                   {' · '}
@@ -703,10 +703,10 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                       {montoNota(notaDetalle.cargo_delivery, notaDetalle)}
                     </span>
                   ) : null}
-                  <span style={{ fontWeight: 800, color: '#fff' }}>
+                  <span style={{ fontWeight: 800, color: 'var(--vg-text-strong)' }}>
                     Total: {montoNota(notaDetalle.total, notaDetalle)}
                   </span>
-                  <span style={{ fontWeight: 800, color: '#ffcf7d' }}>
+                  <span style={{ fontWeight: 800, color: 'var(--vg-f-ffcf7d)' }}>
                     Saldo pendiente: {notaDetalle.moneda === 'VES' && notaDetalle.saldo_pendiente_bs_vigente
                       ? formatBsRaw(notaDetalle.saldo_pendiente_bs_vigente)
                       : montoNota(notaDetalle.saldo_pendiente, notaDetalle, true)}
@@ -735,21 +735,21 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                     Devolución / ajuste
                   </button>
                 ) : (
-                  <div style={{ color: '#ffb0b0', fontWeight: 700, fontSize: 13 }} title={notaDetalle.motivo_anulacion}>
+                  <div style={{ color: 'var(--vg-f-ffb0b0)', fontWeight: 700, fontSize: 13 }} title={notaDetalle.motivo_anulacion}>
                     Anulada — {notaDetalle.motivo_anulacion || 'sin motivo registrado'}
                   </div>
                 )}
 
                 {notaDetalle.pagos.length > 0 ? (
                   <div style={{ display: 'grid', gap: 6 }}>
-                    <div style={{ color: '#9fe3b0', fontWeight: 700, fontSize: 12, textTransform: 'uppercase' }}>Cobros registrados</div>
+                    <div style={{ color: 'var(--vg-f-9fe3b0)', fontWeight: 700, fontSize: 12, textTransform: 'uppercase' }}>Cobros registrados</div>
                     {notaDetalle.pagos.map((pago) => (
                       <div key={pago.id} style={cobroRowStyle}>
                         <div style={{ display: 'grid', gap: 2, minWidth: 0 }}>
-                          <span style={{ fontWeight: 700, color: '#fff' }}>
+                          <span style={{ fontWeight: 700, color: 'var(--vg-text-strong)' }}>
                             {pago.codigo_cobro || 'Cobro'} · {pago.metodo_pago}
                           </span>
-                          <span style={{ color: '#c8bbbb', fontSize: 12 }}>
+                          <span style={{ color: 'var(--vg-f-c8bbbb)', fontSize: 12 }}>
                             {formatFechaHoraLocal(pago.fecha_pago)}
                             {pago.referencia && !esReferenciaAutogenerada(pago.referencia) ? ` · Ref: ${pago.referencia}` : ''}
                           </span>
@@ -787,7 +787,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                     onSubmit={handleRegistrarAbono}
                   />
                 ) : (
-                  <div style={{ color: '#9fe3b0', fontWeight: 700 }}>
+                  <div style={{ color: 'var(--vg-f-9fe3b0)', fontWeight: 700 }}>
                     {notaDetalle.estado === 'anulada' ? 'Esta nota de entrega esta anulada.' : 'Esta nota de entrega ya esta saldada.'}
                   </div>
                 )}
@@ -805,14 +805,14 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
             style={devolucionCardStyle}
             onClick={(event) => event.stopPropagation()}
           >
-            <div style={{ color: '#fff', fontSize: 18, fontWeight: 800 }}>
+            <div style={{ color: 'var(--vg-text-strong)', fontSize: 18, fontWeight: 800 }}>
               {devolucionTipoResolucion === 'ajuste_parcial'
                 ? 'Ajustar nota cobrada'
                 : devolucionTipoResolucion === 'canje_item'
                   ? 'Cambiar un ítem'
                   : 'Anular pedido cobrado'}
             </div>
-            <p style={{ margin: 0, color: '#d2c3c3', fontSize: 13, lineHeight: 1.5 }}>
+            <p style={{ margin: 0, color: 'var(--vg-f-d2c3c3)', fontSize: 13, lineHeight: 1.5 }}>
               {devolucionTipoResolucion === 'ajuste_parcial'
                 ? `Esto emite una nota de crédito y le baja el total/saldo pendiente a ${notaDetalle?.codigo} sin anularla. Requiere autorización de un Gerente/Supervisor.`
                 : devolucionTipoResolucion === 'canje_item'
@@ -832,7 +832,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                   <option key={tipo.valor} value={tipo.valor}>{tipo.etiqueta}</option>
                 ))}
               </select>
-              <span style={{ color: '#a89999', fontSize: 11.5, lineHeight: 1.4 }}>
+              <span style={{ color: 'var(--vg-f-a89999)', fontSize: 11.5, lineHeight: 1.4 }}>
                 {TIPOS_RESOLUCION_DEVOLUCION.find((tipo) => tipo.valor === devolucionTipoResolucion)?.ayuda}
               </span>
             </label>
@@ -845,7 +845,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                     checked={devolucionSaldarCompleto}
                     onChange={(event) => setDevolucionSaldarCompleto(event.target.checked)}
                   />
-                  <span style={{ color: '#f2e6e6', fontSize: 13 }}>
+                  <span style={{ color: 'var(--vg-f-f2e6e6)', fontSize: 13 }}>
                     Saldar el saldo pendiente completo
                     {notaDetalle ? (
                       <> — {notaDetalle.moneda === 'VES' && notaDetalle.saldo_pendiente_bs_vigente
@@ -855,7 +855,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                   </span>
                 </label>
                 {devolucionSaldarCompleto ? (
-                  <span style={{ color: '#a89999', fontSize: 11.5, marginTop: -4 }}>
+                  <span style={{ color: 'var(--vg-f-a89999)', fontSize: 11.5, marginTop: -4 }}>
                     Deja el saldo en exactamente $0.00 — no hay que calcular ni escribir ningún monto en Bs.
                   </span>
                 ) : (
@@ -873,7 +873,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                       style={inputStyle}
                     />
                     {notaDetalle?.moneda === 'VES' ? (
-                      <span style={{ color: '#a89999', fontSize: 11.5 }}>
+                      <span style={{ color: 'var(--vg-f-a89999)', fontSize: 11.5 }}>
                         Se convierte a dólares a Bs. {Number(notaDetalle.tasa_cobro_vigente || notaDetalle.tasa_cambio_referencia || 0).toFixed(2)}/$ (la misma tasa que usarías para cobrar el saldo hoy).
                       </span>
                     ) : null}
@@ -906,7 +906,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                     checked={devolucionSaldarCompleto}
                     onChange={(event) => setDevolucionSaldarCompleto(event.target.checked)}
                   />
-                  <span style={{ color: '#f2e6e6', fontSize: 13 }}>
+                  <span style={{ color: 'var(--vg-f-f2e6e6)', fontSize: 13 }}>
                     Saldar el saldo pendiente completo
                     {notaDetalle ? (
                       <> — {notaDetalle.moneda === 'VES' && notaDetalle.saldo_pendiente_bs_vigente
@@ -916,7 +916,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                   </span>
                 </label>
                 {devolucionSaldarCompleto ? (
-                  <span style={{ color: '#a89999', fontSize: 11.5, marginTop: -4 }}>
+                  <span style={{ color: 'var(--vg-f-a89999)', fontSize: 11.5, marginTop: -4 }}>
                     Deja el saldo en exactamente $0.00 — no hay que calcular ni escribir ningún monto en Bs.
                   </span>
                 ) : (
@@ -934,7 +934,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                       style={inputStyle}
                     />
                     {notaDetalle?.moneda === 'VES' && devolucionMontoAjuste ? (
-                      <span style={{ color: '#a89999', fontSize: 11.5 }}>
+                      <span style={{ color: 'var(--vg-f-a89999)', fontSize: 11.5 }}>
                         Se convierte a dólares a Bs. {Number(notaDetalle.tasa_cobro_vigente || notaDetalle.tasa_cambio_referencia || 0).toFixed(2)}/$.
                       </span>
                     ) : null}
@@ -967,8 +967,8 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
               />
             </label>
 
-            <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 10, display: 'grid', gap: 8 }}>
-              <span style={{ ...dateLabelStyle, color: '#ffcf7d' }}>Autorización de Gerente/Supervisor</span>
+            <div style={{ borderTop: '1px solid rgba(var(--vg-ink), 0.08)', paddingTop: 10, display: 'grid', gap: 8 }}>
+              <span style={{ ...dateLabelStyle, color: 'var(--vg-f-ffcf7d)' }}>Autorización de Gerente/Supervisor</span>
               <input
                 type="text"
                 placeholder="Usuario del Gerente/Supervisor"
@@ -1057,10 +1057,10 @@ function AbonoForm({
       </label>
 
       <div style={saldoBoxStyle}>
-        <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#ffd8a3' }}>
+        <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--vg-f-ffd8a3)' }}>
           Saldo a cobrar en {esBs ? 'bolívares' : 'dólares'}
         </span>
-        <span style={{ fontSize: 22, fontWeight: 800, color: '#fff' }}>{saldoMostrado || '—'}</span>
+        <span style={{ fontSize: 22, fontWeight: 800, color: 'var(--vg-text-strong)' }}>{saldoMostrado || '—'}</span>
       </div>
 
       {sinTasa ? (
@@ -1118,7 +1118,7 @@ const containerStyle = (isMobile, embedded) => ({
 });
 
 const embeddedHeaderStyle = {
-  color: '#ffb0b0',
+  color: 'var(--vg-f-ffb0b0)',
   fontWeight: 800,
   fontSize: 13,
   textTransform: 'uppercase',
@@ -1137,30 +1137,30 @@ const eyebrowStyle = {
   fontSize: 12,
   letterSpacing: '0.12em',
   textTransform: 'uppercase',
-  color: '#f7a5a5',
+  color: 'var(--vg-f-f7a5a5)',
   marginBottom: 8,
 };
 
 const titleStyle = (isMobile) => ({
   margin: 0,
-  color: '#fff',
+  color: 'var(--vg-text-strong)',
   fontSize: isMobile ? 26 : 32,
   fontWeight: 700,
 });
 
 const subtitleStyle = {
   margin: '8px 0 0',
-  color: '#d2c3c3',
+  color: 'var(--vg-f-d2c3c3)',
   lineHeight: 1.6,
   maxWidth: 640,
 };
 
 const backButtonStyle = (isMobile) => ({
-  border: '1px solid rgba(255, 115, 115, 0.34)',
+  border: '1px solid var(--vg-f-ff7373-a340)',
   borderRadius: 999,
   padding: isMobile ? '11px 16px' : '10px 16px',
-  background: 'rgba(255,255,255,0.03)',
-  color: '#fff',
+  background: 'rgba(var(--vg-ink), 0.03)',
+  color: 'var(--vg-text-strong)',
   fontWeight: 600,
   cursor: 'pointer',
   width: isMobile ? '100%' : 'auto',
@@ -1185,7 +1185,7 @@ const dateLabelStyle = {
   fontWeight: 700,
   textTransform: 'uppercase',
   letterSpacing: '0.06em',
-  color: '#d2c4c4',
+  color: 'var(--vg-f-d2c4c4)',
 };
 
 const inputStyle = {
@@ -1194,19 +1194,19 @@ const inputStyle = {
   minWidth: 0,
   maxWidth: '100%',
   borderRadius: 12,
-  border: '1px solid rgba(255, 255, 255, 0.14)',
-  background: '#161010',
+  border: '1px solid rgba(var(--vg-ink), 0.14)',
+  background: 'var(--vg-s-161010)',
   padding: '9px 10px',
-  color: '#fff4f4',
+  color: 'var(--vg-f-fff4f4)',
   fontSize: 13,
 };
 
 const secondaryButtonStyle = {
-  border: '1px solid rgba(255, 173, 173, 0.35)',
+  border: '1px solid var(--vg-f-ffadad-a350)',
   borderRadius: 12,
   padding: '9px 14px',
-  background: 'rgba(255, 255, 255, 0.02)',
-  color: '#ffe0e0',
+  background: 'rgba(var(--vg-ink), 0.02)',
+  color: 'var(--vg-f-ffe0e0)',
   fontWeight: 600,
   cursor: 'pointer',
 };
@@ -1216,9 +1216,9 @@ const emptyStateStyle = {
   display: 'grid',
   placeItems: 'center',
   borderRadius: 24,
-  border: '1px dashed rgba(255, 255, 255, 0.14)',
-  background: 'linear-gradient(180deg, rgba(20, 10, 10, 0.95) 0%, rgba(8, 8, 8, 0.98) 100%)',
-  color: '#c8bbbb',
+  border: '1px dashed rgba(var(--vg-ink), 0.14)',
+  background: 'linear-gradient(180deg, var(--vg-bg-card) 0%, var(--vg-s-080808-a980) 100%)',
+  color: 'var(--vg-f-c8bbbb)',
   textAlign: 'center',
   padding: 20,
 };
@@ -1226,20 +1226,20 @@ const emptyStateStyle = {
 const errorStyle = {
   padding: '12px 14px',
   borderRadius: 16,
-  border: '1px solid rgba(255, 145, 145, 0.22)',
+  border: '1px solid var(--vg-f-ff9191-a220)',
   background: 'rgba(255, 98, 98, 0.12)',
-  color: '#ffd8d8',
+  color: 'var(--vg-f-ffd8d8)',
 };
 
 const feedbackStyle = (feedbackType) => ({
   borderRadius: 12,
   border: feedbackType === 'error'
-    ? '1px solid rgba(223, 102, 102, 0.5)'
-    : feedbackType === 'warning' ? '1px solid rgba(255, 200, 120, 0.45)' : '1px solid rgba(82, 206, 123, 0.35)',
+    ? '1px solid var(--vg-f-df6666-a500)'
+    : feedbackType === 'warning' ? '1px solid var(--vg-f-ffc878-a450)' : '1px solid var(--vg-f-52ce7b-a350)',
   background: feedbackType === 'error'
-    ? 'rgba(102, 29, 29, 0.55)'
-    : feedbackType === 'warning' ? 'rgba(120, 80, 20, 0.45)' : 'rgba(31, 89, 48, 0.45)',
-  color: feedbackType === 'error' ? '#ffe2e2' : feedbackType === 'warning' ? '#ffe9c2' : '#dbffe4',
+    ? 'var(--vg-s-661d1d-a550)'
+    : feedbackType === 'warning' ? 'rgba(120, 80, 20, 0.45)' : 'var(--vg-s-1f5930-a450)',
+  color: feedbackType === 'error' ? 'var(--vg-f-ffe2e2)' : feedbackType === 'warning' ? 'var(--vg-f-ffe9c2)' : 'var(--vg-f-dbffe4)',
   padding: '10px 12px',
   fontSize: 13,
 });
@@ -1272,11 +1272,11 @@ const paginacionBarStyle = {
 };
 
 const paginacionBotonStyle = (disabled) => ({
-  border: '1px solid rgba(255, 173, 173, 0.35)',
+  border: '1px solid var(--vg-f-ffadad-a350)',
   borderRadius: 12,
   padding: '7px 12px',
-  background: disabled ? 'rgba(255, 255, 255, 0.02)' : 'rgba(255, 255, 255, 0.05)',
-  color: disabled ? '#8a7a7a' : '#ffe0e0',
+  background: disabled ? 'rgba(var(--vg-ink), 0.02)' : 'rgba(var(--vg-ink), 0.05)',
+  color: disabled ? 'var(--vg-f-8a7a7a)' : 'var(--vg-f-ffe0e0)',
   fontWeight: 600,
   fontSize: 13,
   cursor: disabled ? 'not-allowed' : 'pointer',
@@ -1284,7 +1284,7 @@ const paginacionBotonStyle = (disabled) => ({
 });
 
 const paginacionInfoStyle = {
-  color: '#c8bbbb',
+  color: 'var(--vg-f-c8bbbb)',
   fontSize: 12.5,
   fontWeight: 600,
 };
@@ -1297,8 +1297,8 @@ const notaRowStyle = (selected) => ({
   flexWrap: 'wrap',
   padding: '14px 16px',
   borderRadius: 16,
-  border: selected ? '1px solid rgba(255, 130, 130, 0.6)' : '1px solid rgba(255, 255, 255, 0.1)',
-  background: selected ? 'rgba(255, 90, 90, 0.12)' : 'linear-gradient(180deg, rgba(20, 10, 10, 0.95) 0%, rgba(8, 8, 8, 0.98) 100%)',
+  border: selected ? '1px solid var(--vg-f-ff8282-a600)' : '1px solid rgba(var(--vg-ink), 0.1)',
+  background: selected ? 'rgba(255, 90, 90, 0.12)' : 'linear-gradient(180deg, var(--vg-bg-card) 0%, var(--vg-s-080808-a980) 100%)',
 });
 
 const rowActionsStyle = {
@@ -1315,7 +1315,7 @@ const estadoBadgeStyle = (estado) => ({
   textTransform: 'uppercase',
   height: 'fit-content',
   background: estado === 'pagada' ? 'rgba(82, 206, 123, 0.16)' : 'rgba(255, 200, 120, 0.16)',
-  color: estado === 'pagada' ? '#9fe3b0' : '#ffcf7d',
+  color: estado === 'pagada' ? 'var(--vg-f-9fe3b0)' : 'var(--vg-f-ffcf7d)',
 });
 
 const detailPanelStyle = {
@@ -1323,9 +1323,9 @@ const detailPanelStyle = {
   gap: 12,
   padding: '18px 18px',
   borderRadius: 20,
-  background: 'linear-gradient(180deg, rgba(20, 10, 10, 0.95) 0%, rgba(8, 8, 8, 0.98) 100%)',
-  border: '1px solid rgba(255, 255, 255, 0.1)',
-  boxShadow: '0 12px 28px rgba(0,0,0,0.24)',
+  background: 'linear-gradient(180deg, var(--vg-bg-card) 0%, var(--vg-s-080808-a980) 100%)',
+  border: '1px solid rgba(var(--vg-ink), 0.1)',
+  boxShadow: '0 12px 28px rgba(0, 0, 0, calc(0.24 * var(--vg-shadow-k)))',
   minHeight: 200,
   maxHeight: 'calc(100vh - 24px)',
   overflowY: 'auto',
@@ -1345,7 +1345,7 @@ const lineaRowStyle = {
   display: 'flex',
   justifyContent: 'space-between',
   fontSize: 13,
-  color: '#e8dede',
+  color: 'var(--vg-f-e8dede)',
 };
 
 const detailTotalsStyle = {
@@ -1353,17 +1353,17 @@ const detailTotalsStyle = {
   flexWrap: 'wrap',
   gap: 14,
   paddingTop: 8,
-  borderTop: '1px solid rgba(255, 255, 255, 0.06)',
-  color: '#d2c4c4',
+  borderTop: '1px solid rgba(var(--vg-ink), 0.06)',
+  color: 'var(--vg-f-d2c4c4)',
   fontSize: 13,
 };
 
 const fiadoRecalculadoStyle = {
   padding: '10px 12px',
   borderRadius: 12,
-  border: '1px solid rgba(255, 200, 120, 0.3)',
+  border: '1px solid var(--vg-f-ffc878-a300)',
   background: 'rgba(255, 200, 120, 0.08)',
-  color: '#ffd8a3',
+  color: 'var(--vg-f-ffd8a3)',
   fontSize: 12.5,
   lineHeight: 1.5,
 };
@@ -1373,11 +1373,11 @@ const abonoFormStyle = {
   gridTemplateColumns: '1fr',
   gap: 10,
   paddingTop: 10,
-  borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+  borderTop: '1px solid rgba(var(--vg-ink), 0.08)',
 };
 
 const abonoTitleStyle = {
-  color: '#fff',
+  color: 'var(--vg-text-strong)',
   fontSize: 16,
   fontWeight: 800,
 };
@@ -1387,7 +1387,7 @@ const saldoBoxStyle = {
   gap: 4,
   padding: '12px 14px',
   borderRadius: 14,
-  border: '1px solid rgba(255, 200, 120, 0.4)',
+  border: '1px solid var(--vg-f-ffc878-a400)',
   background: 'rgba(255, 200, 120, 0.1)',
 };
 
@@ -1397,11 +1397,11 @@ const cobroRowStyle = {
   alignItems: 'center',
   gap: 10,
   fontSize: 13,
-  color: '#e8dede',
+  color: 'var(--vg-f-e8dede)',
   padding: '8px 10px',
   borderRadius: 12,
-  border: '1px solid rgba(255, 255, 255, 0.08)',
-  background: 'rgba(255, 255, 255, 0.02)',
+  border: '1px solid rgba(var(--vg-ink), 0.08)',
+  background: 'rgba(var(--vg-ink), 0.02)',
 };
 
 const selectStyle = {
@@ -1437,10 +1437,10 @@ const devolucionCardStyle = {
   display: 'grid',
   gap: 10,
   borderRadius: 20,
-  border: '1px solid rgba(255, 145, 145, 0.3)',
-  background: 'linear-gradient(180deg, rgba(28, 12, 12, 0.98) 0%, rgba(10, 8, 8, 0.99) 100%)',
+  border: '1px solid var(--vg-f-ff9191-a300)',
+  background: 'linear-gradient(180deg, var(--vg-s-1c0c0c-a980) 0%, var(--vg-s-0a0808-a990) 100%)',
   padding: '22px 22px 18px',
-  boxShadow: '0 20px 50px rgba(0, 0, 0, 0.45)',
+  boxShadow: '0 20px 50px rgba(0, 0, 0, calc(0.45 * var(--vg-shadow-k)))',
   maxHeight: 'calc(100vh - 32px)',
   overflowY: 'auto',
   overflowX: 'hidden',
@@ -1448,11 +1448,11 @@ const devolucionCardStyle = {
 };
 
 const devolucionButtonStyle = {
-  border: '1px solid rgba(255, 126, 126, 0.4)',
+  border: '1px solid var(--vg-f-ff7e7e-a400)',
   borderRadius: 999,
   padding: '10px 16px',
   background: 'rgba(145, 33, 33, 0.35)',
-  color: '#ffd3d3',
+  color: 'var(--vg-f-ffd3d3)',
   fontWeight: 800,
   cursor: 'pointer',
 };

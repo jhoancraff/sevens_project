@@ -204,7 +204,7 @@ function App() {
         alignItems: 'center',
         justifyContent: 'space-between',
         padding: '4px 0 18px',
-        color: '#f3b4b4',
+        color: 'var(--vg-f-f3b4b4)',
         fontSize: 13,
       }}>
         <div style={{ fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Seven</div>
@@ -219,14 +219,14 @@ function App() {
           height: 72,
           borderRadius: 24,
           background: '#fff',
-          boxShadow: '0 8px 20px rgba(0, 0, 0, 0.25)',
+          boxShadow: '0 8px 20px rgba(0, 0, 0, calc(0.25 * var(--vg-shadow-k)))',
           marginBottom: 12,
           overflow: 'hidden',
         }}>
           <img src="/assets/sevens-logo.png" alt="Seven logo" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
         </div>
-        <div style={{ fontSize: 34, fontWeight: 700, color: '#ff4d4d' }}>Seven</div>
-        <div style={{ color: '#c8c8c8', marginTop: 8, fontSize: 15 }}>Control de cocina y servicio</div>
+        <div style={{ fontSize: 34, fontWeight: 700, color: 'var(--vg-accent-primary)' }}>Seven</div>
+        <div style={{ color: 'var(--vg-text-secondary)', marginTop: 8, fontSize: 15 }}>Control de cocina y servicio</div>
       </div>
 
       <AuthForm

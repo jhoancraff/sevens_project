@@ -8,6 +8,7 @@ import FacturasHistorialPage from './FacturasHistorialPage';
 import MoneyInput from './MoneyInput';
 import NotasEntregaHistorialPage from './NotasEntregaHistorialPage';
 import Toast from './Toast';
+import './CheckoutPage.css';
 import useExchangeRate from '../hooks/useExchangeRate';
 import useToast from '../hooks/useToast';
 import { formatBs, formatMontoDocumento } from '../utils/currency';
@@ -148,6 +149,8 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
   const [pendingConfirm, setPendingConfirm] = useState(null);
   const [mesaQuery, setMesaQuery] = useState('');
   const [selectedGroupKey, setSelectedGroupKey] = useState('');
+  // Pestaña activa de la pantalla: 'cobro' | 'notas' | 'propinas' | 'cuentas' | 'facturas'.
+  const [activeTab, setActiveTab] = useState('cobro');
 
   const toggleExpanded = (pedidoId) => {
     setExpandedOrderIds((current) => {
@@ -963,8 +966,17 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
     setPendingConfirm(null);
   };
 
+  const tabs = [
+    { id: 'cobro', icon: '💳', label: 'Cobro de Mesas', count: groups.length },
+    { id: 'notas', icon: '📋', label: 'Notas de Entrega' },
+    { id: 'propinas', icon: '🪙', label: 'Propinas & Pagos Extra' },
+    { id: 'cuentas', icon: '📑', label: 'Cuentas por Cobrar' },
+    ...(FACTURACION_HABILITADA ? [{ id: 'facturas', icon: '📜', label: 'Facturas' }] : []),
+  ];
+  const panelStyle = (id) => ({ display: activeTab === id ? 'grid' : 'none', gap: 12 });
+
   return (
-    <section style={containerStyle(isMobile)}>
+    <section className="vg-cobro" style={containerStyle(isMobile)}>
       <div style={headerWrapStyle(isMobile)}>
         <div>
           <div style={eyebrowStyle}>Cobro</div>
@@ -977,74 +989,91 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
 
       <Toast toast={toast} onClose={hideToast} />
 
-      {loading ? <div style={emptyStateStyle}>Cargando pedidos...</div> : null}
-      {!loading && error ? <div style={errorStyle}>{error}</div> : null}
+      <div className="vg-cobro-tabs no-print" role="tablist" aria-label="Secciones de cobro">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            className={`vg-cobro-tab${activeTab === tab.id ? ' is-active' : ''}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            <span aria-hidden="true">{tab.icon}</span>
+            {tab.label}
+            {tab.count > 0 ? <span className="vg-cobro-tab__count">{tab.count}</span> : null}
+          </button>
+        ))}
+      </div>
 
-      {!loading && !error && groups.length === 0 ? (
-        <div style={emptyStateStyle}>No hay pedidos listos para cobrar en este momento.</div>
-      ) : null}
+      <div role="tabpanel" style={panelStyle('cobro')}>
+        {loading ? <div style={emptyStateStyle}>Cargando pedidos...</div> : null}
+        {!loading && error ? <div style={errorStyle}>{error}</div> : null}
 
-      {!loading && !error && groups.length > 0 ? (
-        <div style={cobroPickerWrapStyle}>
-          <div style={mesaSearchBoxStyle}>
-            <input
-              type="text"
-              value={mesaQuery}
-              onChange={(event) => setMesaQuery(event.target.value)}
-              placeholder="Buscar mesa por número o por cliente..."
-              style={mesaSearchInputStyle}
-            />
+        {!loading && !error && groups.length === 0 ? (
+          <div style={emptyStateStyle}>No hay pedidos listos para cobrar en este momento.</div>
+        ) : null}
 
-            {!selectedGroup || mesaQueryTerm ? (
-              <div style={mesaOptionsListStyle}>
+        {!loading && !error && groups.length > 0 ? (
+          <div className={`vg-cobro-split${selectedGroup ? ' vg-cobro-split--abierta' : ''}`}>
+            <aside className="vg-cobro-lista" aria-label="Mesas pendientes de cobro">
+              <input
+                type="text"
+                value={mesaQuery}
+                onChange={(event) => setMesaQuery(event.target.value)}
+                placeholder="Buscar mesa por número o por cliente..."
+                style={mesaSearchInputStyle}
+              />
+
+              <div className="vg-cobro-lista__items">
                 {filteredGroups.length === 0 ? (
                   <div style={mesaOptionEmptyStyle}>No se encontraron mesas con ese criterio.</div>
                 ) : (
                   filteredGroups.map((group) => {
                     const groupTotal = group.pedidos.reduce((sum, pedido) => sum + Number(pedido.total), 0);
-                    const isCurrent = selectedGroup && selectedGroup.key === group.key;
+                    const isCurrent = Boolean(selectedGroup && selectedGroup.key === group.key);
                     return (
                       <button
                         key={group.key}
                         type="button"
+                        className={`vg-cobro-mesa${isCurrent ? ' is-active' : ''}`}
+                        aria-pressed={isCurrent}
                         onClick={() => handleSelectGroup(group)}
-                        style={isCurrent ? mesaOptionRowActiveStyle : mesaOptionRowStyle}
                       >
-                        <span style={{ fontWeight: 700, color: '#fff' }}>{group.label}</span>
-                        <span style={mesaOptionMetaStyle}>{group.pedidos.length} pedido(s) · ${groupTotal.toFixed(2)}</span>
+                        <span className="vg-cobro-mesa__nombre">{group.label}</span>
+                        <span className="vg-cobro-mesa__total">
+                          ${groupTotal.toFixed(2)}
+                          <BsAmount amountUsd={groupTotal} tasa={tasaCambio} />
+                        </span>
+                        <span className="vg-cobro-mesa__meta">{group.pedidos.length} pedido(s)</span>
                       </button>
                     );
                   })
                 )}
               </div>
-            ) : (
-              <button type="button" onClick={handleClearSelection} style={selectedMesaChipStyle}>
-                <span style={{ fontWeight: 700, color: '#fff' }}>{selectedGroup.label}</span>
-                <span style={mesaOptionMetaStyle}>
-                  {selectedGroup.pedidos.length} pedido(s) · ${selectedGroupFullTotal.toFixed(2)}
-                </span>
-                <span style={selectedMesaChipClearStyle}>Cambiar ✕</span>
-              </button>
-            )}
-          </div>
+            </aside>
 
-          {selectedGroup ? (
-            <article style={groupCardStyle}>
-                <div style={groupHeaderStyle}>
-                  <div style={{ color: '#fff', fontWeight: 700, fontSize: 17 }}>{selectedGroup.label}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={groupCountStyle}>{selectedGroup.pedidos.length} pedido(s)</span>
-                    {selectedGroup.pedidos.length > 1 && selectedSet.size < selectedGroup.pedidos.length ? (
-                      <button
-                        type="button"
-                        onClick={() => selectAllInGroup(selectedGroup)}
-                        style={selectAllButtonStyle}
-                      >
-                        Seleccionar todos los pedidos
-                      </button>
-                    ) : null}
+            <div className="vg-cobro-ticket">
+              {selectedGroup ? (
+                <article style={groupCardStyle}>
+                  <button type="button" className="vg-cobro-volver" onClick={handleClearSelection}>
+                    ← Mesas
+                  </button>
+                  <div style={groupHeaderStyle}>
+                    <div style={{ color: 'var(--vg-text-strong)', fontWeight: 700, fontSize: 18 }}>{selectedGroup.label}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      <span style={groupCountStyle}>{selectedGroup.pedidos.length} pedido(s)</span>
+                      {selectedGroup.pedidos.length > 1 && selectedSet.size < selectedGroup.pedidos.length ? (
+                        <button
+                          type="button"
+                          onClick={() => selectAllInGroup(selectedGroup)}
+                          style={selectAllButtonStyle}
+                        >
+                          Seleccionar todos los pedidos
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
-                </div>
 
                 <div style={ordersScrollStyle}>
                   {selectedGroup.pedidos.map((pedido) => {
@@ -1138,9 +1167,9 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                                   <BsAmount amountUsd={pedido.cargo_delivery} tasa={tasaGrupo} />
                                 </span>
                               ) : null}
-                              <span style={{ fontWeight: 800, color: '#fff' }}>
+                              <span style={{ fontWeight: 800, color: 'var(--vg-text-strong)' }}>
                                 Total: ${pedido.total}
-                                <BsAmount amountUsd={pedido.total} tasa={tasaGrupo} style={{ color: '#e0c9a3' }} />
+                                <BsAmount amountUsd={pedido.total} tasa={tasaGrupo} style={{ color: 'var(--vg-f-e0c9a3)' }} />
                               </span>
                             </div>
 
@@ -1159,7 +1188,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
 
                 {!prefactura ? (
                   <div style={footerSectionStyle}>
-                    <div style={clienteFormStyle}>
+                    <div className="vg-cobro-cliente">
                       <input
                         placeholder="Cédula (obligatoria)"
                         inputMode="numeric"
@@ -1169,15 +1198,15 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                         style={inputStyle}
                       />
                       <input
-                        placeholder="Apellido (opcional)"
-                        value={cliente.apellido}
-                        onChange={(event) => updateCliente(selectedGroup.key, 'apellido', event.target.value)}
-                        style={inputStyle}
-                      />
-                      <input
                         placeholder="Nombre (obligatorio)"
                         value={cliente.nombre}
                         onChange={(event) => updateCliente(selectedGroup.key, 'nombre', event.target.value)}
+                        style={inputStyle}
+                      />
+                      <input
+                        placeholder="Apellido (opcional)"
+                        value={cliente.apellido}
+                        onChange={(event) => updateCliente(selectedGroup.key, 'apellido', event.target.value)}
                         style={inputStyle}
                       />
                     </div>
@@ -1205,9 +1234,12 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                     ) : null}
 
                     <div style={groupFooterStyle(isMobile)}>
-                      <div style={{ color: '#fff', fontWeight: 700 }}>
-                        Total seleccionado: ${selectedTotal.toFixed(2)}
-                        <BsAmount amountUsd={selectedTotal} tasa={tasaGrupo} />
+                      <div className="vg-cobro-total">
+                        <span className="vg-cobro-total__label">Total seleccionado</span>
+                        <span className="vg-cobro-total__monto">
+                          ${selectedTotal.toFixed(2)}
+                          <BsAmount amountUsd={selectedTotal} tasa={tasaGrupo} />
+                        </span>
                       </div>
                     </div>
 
@@ -1256,7 +1288,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                   </div>
                 ) : (
                   <div style={prefacturaPanelStyle}>
-                    <div style={{ color: '#ffb0b0', fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    <div style={{ color: 'var(--vg-f-ffb0b0)', fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                       Cuenta del cliente {prefactura.codigo}
                     </div>
                     <div style={{ display: 'grid', gap: 4 }}>
@@ -1268,7 +1300,7 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                       ))}
                     </div>
                     <div style={detailTotalsStyle}>
-                      <span style={{ fontWeight: 800, color: '#fff' }}>Total: {montoDual(prefactura.total, prefactura.tasa_cambio_referencia || tasaCambio)}</span>
+                      <span style={{ fontWeight: 800, color: 'var(--vg-text-strong)' }}>Total: {montoDual(prefactura.total, prefactura.tasa_cambio_referencia || tasaCambio)}</span>
                     </div>
 
                     {prefactura.tasa_cambio_referencia ? (
@@ -1313,16 +1345,20 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                     </div>
                   </div>
                 )}
-            </article>
-          ) : null}
-        </div>
-      ) : null}
+                </article>
+              ) : (
+                <div className="vg-cobro-vacio">Selecciona una mesa de la lista para ver su cuenta y cobrarla.</div>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
 
-      <div style={cuentasPorCobrarWrapStyle}>
+      <div style={panelStyle('notas')}>
         <NotasEntregaHistorialPage isMobile={isMobile} embedded refreshToken={notasRefreshToken} onArmarCanje={onArmarCanje} />
       </div>
 
-      <div style={cuentasPorCobrarWrapStyle}>
+      <div style={panelStyle('propinas')}>
         <div style={ingresoExtraButtonsRowStyle(isMobile)}>
           <button type="button" onClick={() => setIngresoModalTipo('propina')} style={propinaButtonStyle}>
             + Registrar propina
@@ -1344,14 +1380,14 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                 <span style={ingreso.tipo === 'propina' ? propinaTagStyle : pagoExtraTagStyle}>
                   {ingreso.tipo_label}
                 </span>
-                <span style={{ color: '#fff', fontWeight: 700 }}>
+                <span style={{ color: 'var(--vg-text-strong)', fontWeight: 700 }}>
                   {formatMontoDocumento(ingreso.monto, ingreso.moneda, ingreso.tasa_cambio_referencia || tasaCambio)}
                 </span>
-                <span style={{ color: '#d2c4c4', fontSize: 12 }}>{ingreso.metodo_pago_nombre}</span>
+                <span style={{ color: 'var(--vg-f-d2c4c4)', fontSize: 12 }}>{ingreso.metodo_pago_nombre}</span>
                 {ingreso.descripcion ? (
-                  <span style={{ color: '#d2c4c4', fontSize: 12 }}>{ingreso.descripcion}</span>
+                  <span style={{ color: 'var(--vg-f-d2c4c4)', fontSize: 12 }}>{ingreso.descripcion}</span>
                 ) : null}
-                <span style={{ color: '#a89999', fontSize: 11, marginLeft: 'auto' }}>
+                <span style={{ color: 'var(--vg-f-a89999)', fontSize: 11, marginLeft: 'auto' }}>
                   {ingreso.registrado_por} · {formatFechaHora(ingreso.fecha_creacion)}
                 </span>
               </div>
@@ -1360,13 +1396,15 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
         )}
       </div>
 
-      <div style={cuentasPorCobrarWrapStyle}>
+      <div style={panelStyle('cuentas')}>
         <CuentasPorCobrarPage isMobile={isMobile} embedded refreshToken={cuentasRefreshToken} />
       </div>
 
-      <div style={cuentasPorCobrarWrapStyle}>
-        <FacturasHistorialPage isMobile={isMobile} embedded />
-      </div>
+      {FACTURACION_HABILITADA ? (
+        <div style={panelStyle('facturas')}>
+          <FacturasHistorialPage isMobile={isMobile} embedded />
+        </div>
+      ) : null}
 
       <ConfirmModal
         open={Boolean(pendingConfirm)}
@@ -1636,7 +1674,7 @@ function DeliveryCargoEditor({ pedido, onGuardar }) {
 
   return (
     <div style={deliveryEditorStyle}>
-      <div style={{ color: '#fff', fontWeight: 700, fontSize: 13 }}>Delivery del pedido #{pedido.id}</div>
+      <div style={{ color: 'var(--vg-text-strong)', fontWeight: 700, fontSize: 13 }}>Delivery del pedido #{pedido.id}</div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <select value={zonaId} onChange={(event) => elegirZona(event.target.value)} style={deliveryEditorInputStyle} className="admin-dark-select">
           <option value="">Sin zona (monto libre)</option>
@@ -1655,7 +1693,7 @@ function DeliveryCargoEditor({ pedido, onGuardar }) {
         />
       </div>
       {montoDistinto ? (
-        <div style={{ color: '#ffcf7d', fontSize: 12 }}>
+        <div style={{ color: 'var(--vg-f-ffcf7d)', fontSize: 12 }}>
           Es distinto a la tarifa de la zona (${Number(zonaActual.tarifa).toFixed(2)}); queda registrado en el pedido.
         </div>
       ) : null}
@@ -1671,9 +1709,9 @@ function DeliveryCargoEditor({ pedido, onGuardar }) {
   );
 }
 
-const deliveryEditorStyle = { display: 'grid', gap: 8, padding: '10px 12px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.03)' };
-const deliveryEditorInputStyle = { borderRadius: 10, border: '1px solid rgba(255,255,255,0.16)', background: '#161010', padding: '8px 10px', color: '#fff', fontSize: 13 };
-const deliveryEditorButtonStyle = { border: '1px solid rgba(255,255,255,0.16)', borderRadius: 999, padding: '7px 14px', background: 'rgba(255,255,255,0.05)', color: '#ff9d9d', fontWeight: 700, cursor: 'pointer', fontSize: 12.5 };
+const deliveryEditorStyle = { display: 'grid', gap: 8, padding: '10px 12px', borderRadius: 12, border: '1px solid rgba(var(--vg-ink), 0.12)', background: 'rgba(var(--vg-ink), 0.03)' };
+const deliveryEditorInputStyle = { borderRadius: 10, border: '1px solid rgba(var(--vg-ink), 0.16)', background: 'var(--vg-s-161010)', padding: '8px 10px', color: 'var(--vg-text-strong)', fontSize: 13 };
+const deliveryEditorButtonStyle = { border: '1px solid rgba(var(--vg-ink), 0.16)', borderRadius: 999, padding: '7px 14px', background: 'rgba(var(--vg-ink), 0.05)', color: 'var(--vg-f-ff9d9d)', fontWeight: 700, cursor: 'pointer', fontSize: 12.5 };
 const deliveryEditorSaveStyle = { border: 'none', borderRadius: 999, padding: '8px 16px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 12.5 };
 
 function renderDetailItemRow(item, tasaCambio, { canGestionarItems = false, onAjustarItem, soloItem = false } = {}) {
@@ -1682,9 +1720,9 @@ function renderDetailItemRow(item, tasaCambio, { canGestionarItems = false, onAj
   return (
     <div key={item.id} style={{ display: 'grid', gap: 3 }}>
       <div style={detailItemRowStyle}>
-        <span style={{ color: '#fff' }}>{cantidadLabel} {item.producto}</span>
-        <span style={{ color: '#d2c4c4' }}>${item.precio_unitario}{item.venta_por_peso ? '/kg' : ' c/u'}</span>
-        <span style={{ color: '#ffcf7d', fontWeight: 700 }}>
+        <span style={{ color: 'var(--vg-text-strong)' }}>{cantidadLabel} {item.producto}</span>
+        <span style={{ color: 'var(--vg-f-d2c4c4)' }}>${item.precio_unitario}{item.venta_por_peso ? '/kg' : ' c/u'}</span>
+        <span style={{ color: 'var(--vg-f-ffcf7d)', fontWeight: 700 }}>
           ${lineTotal.toFixed(2)}
           <BsAmount amountUsd={lineTotal} tasa={tasaCambio} />
         </span>
@@ -1715,7 +1753,7 @@ function tipoPedidoLabel(tipoPedido) {
 
 const containerStyle = (isMobile) => ({
   display: 'grid',
-  gap: 16,
+  gap: 12,
   padding: isMobile ? 4 : 8,
 });
 
@@ -1731,30 +1769,30 @@ const eyebrowStyle = {
   fontSize: 12,
   letterSpacing: '0.12em',
   textTransform: 'uppercase',
-  color: '#f7a5a5',
-  marginBottom: 8,
+  color: 'var(--vg-f-f7a5a5)',
+  marginBottom: 4,
 };
 
 const titleStyle = (isMobile) => ({
   margin: 0,
-  color: '#fff',
-  fontSize: isMobile ? 26 : 32,
+  color: 'var(--vg-text-strong)',
+  fontSize: isMobile ? 22 : 26,
   fontWeight: 700,
 });
 
 const subtitleStyle = {
   margin: '8px 0 0',
-  color: '#d2c3c3',
+  color: 'var(--vg-f-d2c3c3)',
   lineHeight: 1.6,
   maxWidth: 640,
 };
 
 const backButtonStyle = (isMobile) => ({
-  border: '1px solid rgba(255, 115, 115, 0.34)',
+  border: '1px solid var(--vg-f-ff7373-a340)',
   borderRadius: 999,
   padding: isMobile ? '11px 16px' : '10px 16px',
-  background: 'rgba(255,255,255,0.03)',
-  color: '#fff',
+  background: 'rgba(var(--vg-ink), 0.03)',
+  color: 'var(--vg-text-strong)',
   fontWeight: 600,
   cursor: 'pointer',
   width: isMobile ? '100%' : 'auto',
@@ -1765,9 +1803,9 @@ const emptyStateStyle = {
   display: 'grid',
   placeItems: 'center',
   borderRadius: 24,
-  border: '1px dashed rgba(255, 255, 255, 0.14)',
-  background: 'linear-gradient(180deg, rgba(20, 10, 10, 0.95) 0%, rgba(8, 8, 8, 0.98) 100%)',
-  color: '#c8bbbb',
+  border: '1px dashed rgba(var(--vg-ink), 0.14)',
+  background: 'linear-gradient(180deg, var(--vg-bg-card) 0%, var(--vg-s-080808-a980) 100%)',
+  color: 'var(--vg-f-c8bbbb)',
   textAlign: 'center',
   padding: 20,
 };
@@ -1775,107 +1813,40 @@ const emptyStateStyle = {
 const errorStyle = {
   padding: '12px 14px',
   borderRadius: 16,
-  border: '1px solid rgba(255, 145, 145, 0.22)',
+  border: '1px solid var(--vg-f-ff9191-a220)',
   background: 'rgba(255, 98, 98, 0.12)',
-  color: '#ffd8d8',
-};
-
-const cobroPickerWrapStyle = {
-  display: 'grid',
-  gap: 14,
-  maxWidth: 640,
-};
-
-const mesaSearchBoxStyle = {
-  display: 'grid',
-  gap: 8,
+  color: 'var(--vg-f-ffd8d8)',
 };
 
 const mesaSearchInputStyle = {
   width: '100%',
   boxSizing: 'border-box',
-  borderRadius: 14,
-  border: '1px solid rgba(255, 255, 255, 0.16)',
-  background: '#161010',
-  padding: '12px 14px',
-  color: '#fff4f4',
-  fontSize: 15,
-};
-
-const mesaOptionsListStyle = {
-  display: 'grid',
-  gap: 6,
-  maxHeight: 360,
-  overflowY: 'auto',
-};
-
-const mesaOptionRowStyle = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  gap: 10,
-  width: '100%',
-  textAlign: 'left',
-  border: '1px solid rgba(255, 255, 255, 0.1)',
-  borderRadius: 14,
-  padding: '12px 14px',
-  background: 'rgba(255, 255, 255, 0.03)',
-  color: '#fff',
-  cursor: 'pointer',
-};
-
-const mesaOptionRowActiveStyle = {
-  ...mesaOptionRowStyle,
-  border: '1px solid rgba(52, 211, 153, 0.5)',
-  background: 'rgba(52, 211, 153, 0.08)',
-};
-
-const mesaOptionMetaStyle = {
-  color: '#ffcf7d',
-  fontSize: 13,
-  fontWeight: 700,
-  flexShrink: 0,
+  borderRadius: 10,
+  border: '1px solid var(--cb-input-border)',
+  background: 'var(--cb-input-bg)',
+  padding: '9px 12px',
+  color: 'var(--cb-title)',
+  fontSize: 14,
 };
 
 const mesaOptionEmptyStyle = {
   padding: 14,
   borderRadius: 14,
-  border: '1px dashed rgba(255, 255, 255, 0.14)',
-  color: '#c8bbbb',
+  border: '1px dashed rgba(var(--vg-ink), 0.14)',
+  color: 'var(--vg-f-c8bbbb)',
   textAlign: 'center',
   fontSize: 13,
-};
-
-const selectedMesaChipStyle = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  gap: 10,
-  width: '100%',
-  textAlign: 'left',
-  border: '1px solid rgba(255, 255, 255, 0.16)',
-  borderRadius: 14,
-  padding: '12px 14px',
-  background: 'rgba(255, 255, 255, 0.05)',
-  cursor: 'pointer',
-};
-
-const selectedMesaChipClearStyle = {
-  color: '#ffb0b0',
-  fontSize: 12,
-  fontWeight: 700,
-  flexShrink: 0,
 };
 
 const groupCardStyle = {
   display: 'flex',
   flexDirection: 'column',
   gap: 12,
-  padding: '18px 18px',
-  borderRadius: 20,
-  background: 'linear-gradient(180deg, rgba(46, 25, 25, 0.95) 0%, rgba(24, 14, 14, 0.97) 100%)',
-  border: '1px solid rgba(255, 255, 255, 0.14)',
-  boxShadow: '0 12px 28px rgba(0,0,0,0.24)',
+  padding: '16px',
+  borderRadius: 16,
+  background: 'var(--cb-card-bg)',
+  border: '1px solid var(--cb-card-border)',
+  boxShadow: 'var(--cb-card-shadow)',
 };
 
 const groupHeaderStyle = {
@@ -1904,16 +1875,16 @@ const footerSectionStyle = {
 const groupCountStyle = {
   padding: '4px 10px',
   borderRadius: 999,
-  background: 'rgba(255, 255, 255, 0.08)',
-  color: '#ffb0b0',
+  background: 'rgba(var(--vg-ink), 0.08)',
+  color: 'var(--vg-f-ffb0b0)',
   fontSize: 12,
   fontWeight: 700,
 };
 
 const orderCardStyle = {
   borderRadius: 12,
-  border: '1px solid rgba(255, 255, 255, 0.08)',
-  background: 'rgba(255, 255, 255, 0.03)',
+  border: '1px solid var(--cb-row-border)',
+  background: 'var(--cb-row-bg)',
   overflow: 'hidden',
   flexShrink: 0,
 };
@@ -1947,12 +1918,12 @@ const orderCheckboxLabelStyle = {
 };
 
 const orderTitleStyle = {
-  color: '#fff',
+  color: 'var(--vg-text-strong)',
   fontWeight: 600,
 };
 
 const orderPriceStyle = {
-  color: '#ffcf7d',
+  color: 'var(--vg-f-ffcf7d)',
   fontWeight: 700,
   flexShrink: 0,
   whiteSpace: 'nowrap',
@@ -1967,7 +1938,7 @@ const orderRowBottomStyle = {
 };
 
 const orderMetaStyle = {
-  color: '#d2c4c4',
+  color: 'var(--vg-f-d2c4c4)',
   fontSize: 12,
   minWidth: 0,
 };
@@ -1979,11 +1950,11 @@ const orderActionsStyle = {
 };
 
 const selectAllButtonStyle = {
-  border: '1px solid rgba(255, 255, 255, 0.16)',
+  border: '1px solid rgba(var(--vg-ink), 0.16)',
   borderRadius: 999,
   padding: '4px 10px',
-  background: 'rgba(255, 255, 255, 0.05)',
-  color: '#e0c9a3',
+  background: 'rgba(var(--vg-ink), 0.05)',
+  color: 'var(--vg-f-e0c9a3)',
   fontSize: 11.5,
   fontWeight: 700,
   cursor: 'pointer',
@@ -1992,11 +1963,11 @@ const selectAllButtonStyle = {
 };
 
 const detailToggleStyle = {
-  border: '1px solid rgba(255, 255, 255, 0.16)',
+  border: '1px solid rgba(var(--vg-ink), 0.16)',
   borderRadius: 999,
   padding: '5px 12px',
-  background: 'rgba(255, 255, 255, 0.05)',
-  color: '#fff',
+  background: 'rgba(var(--vg-ink), 0.05)',
+  color: 'var(--vg-text-strong)',
   fontSize: 12,
   fontWeight: 700,
   cursor: 'pointer',
@@ -2004,11 +1975,11 @@ const detailToggleStyle = {
 };
 
 const cancelOrderToggleStyle = {
-  border: '1px solid rgba(255, 102, 102, 0.45)',
+  border: '1px solid var(--vg-f-ff6666-a450)',
   borderRadius: 999,
   padding: '5px 12px',
   background: 'rgba(255, 73, 73, 0.1)',
-  color: '#ffb3b3',
+  color: 'var(--vg-f-ffb3b3)',
   fontSize: 12,
   fontWeight: 700,
   cursor: 'pointer',
@@ -2019,14 +1990,14 @@ const orderDetailStyle = {
   display: 'grid',
   gap: 8,
   padding: '4px 12px 14px',
-  borderTop: '1px solid rgba(255, 255, 255, 0.06)',
+  borderTop: '1px solid rgba(var(--vg-ink), 0.06)',
 };
 
 const detailMetaRowStyle = {
   display: 'flex',
   flexWrap: 'wrap',
   gap: 12,
-  color: '#d2c4c4',
+  color: 'var(--vg-f-d2c4c4)',
   fontSize: 12,
   textTransform: 'uppercase',
   letterSpacing: '0.04em',
@@ -2036,18 +2007,18 @@ const detailNoteStyle = {
   padding: '8px 10px',
   borderRadius: 10,
   background: 'rgba(255, 145, 145, 0.1)',
-  border: '1px solid rgba(255, 145, 145, 0.2)',
-  color: '#ffd8d8',
+  border: '1px solid var(--vg-f-ff9191-a200)',
+  color: 'var(--vg-f-ffd8d8)',
   fontSize: 13,
 };
 
 const ajusteItemButtonStyle = (modo) => ({
   justifySelf: 'start',
-  border: modo === 'eliminar' ? '1px solid rgba(255, 102, 102, 0.45)' : '1px solid rgba(245, 158, 11, 0.45)',
+  border: modo === 'eliminar' ? '1px solid var(--vg-f-ff6666-a450)' : '1px solid var(--vg-f-f59e0b-a450)',
   borderRadius: 999,
   padding: '4px 10px',
   background: modo === 'eliminar' ? 'rgba(255, 73, 73, 0.1)' : 'rgba(245, 158, 11, 0.1)',
-  color: modo === 'eliminar' ? '#ffb3b3' : '#f5c778',
+  color: modo === 'eliminar' ? 'var(--vg-f-ffb3b3)' : 'var(--vg-f-f5c778)',
   fontSize: 11,
   fontWeight: 700,
   cursor: 'pointer',
@@ -2066,12 +2037,12 @@ const platoGroupStyle = {
   gap: 2,
   padding: '6px 8px',
   borderRadius: 10,
-  border: '1px solid rgba(125, 200, 255, 0.28)',
+  border: '1px solid var(--vg-f-7dc8ff-a280)',
   background: 'rgba(90, 170, 255, 0.05)',
 };
 
 const platoGroupTitleStyle = {
-  color: '#bfe0ff',
+  color: 'var(--vg-f-bfe0ff)',
   fontWeight: 800,
   fontSize: 11,
   textTransform: 'uppercase',
@@ -2079,7 +2050,7 @@ const platoGroupTitleStyle = {
 };
 
 const itemNoteDetailStyle = {
-  color: '#e8bcbc',
+  color: 'var(--vg-f-e8bcbc)',
   fontSize: 12,
   fontStyle: 'italic',
 };
@@ -2089,8 +2060,8 @@ const detailTotalsStyle = {
   flexWrap: 'wrap',
   gap: 14,
   paddingTop: 8,
-  borderTop: '1px solid rgba(255, 255, 255, 0.06)',
-  color: '#d2c4c4',
+  borderTop: '1px solid rgba(var(--vg-ink), 0.06)',
+  color: 'var(--vg-f-d2c4c4)',
   fontSize: 13,
 };
 
@@ -2101,15 +2072,15 @@ const groupFooterStyle = (isMobile) => ({
   flexDirection: isMobile ? 'column' : 'row',
   gap: 10,
   paddingTop: 10,
-  borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+  borderTop: '1px solid rgba(var(--vg-ink), 0.08)',
 });
 
 const selectStyle = {
   borderRadius: 12,
-  border: '1px solid rgba(255, 255, 255, 0.14)',
-  background: '#161010',
+  border: '1px solid var(--cb-input-border)',
+  background: 'var(--cb-input-bg)',
   padding: '9px 10px',
-  color: '#fff4f4',
+  color: 'var(--cb-title)',
   fontSize: 13,
 };
 
@@ -2123,21 +2094,15 @@ const checkoutButtonStyle = {
   cursor: 'pointer',
 };
 
-const clienteFormStyle = {
-  display: 'grid',
-  gridTemplateColumns: '1fr',
-  gap: 8,
-};
-
 const tasaCuentaAvisoStyle = {
   display: 'grid', gap: 8, padding: '10px 14px', borderRadius: 12,
-  border: '1px solid rgba(255, 207, 125, 0.45)', background: 'rgba(255, 207, 125, 0.08)',
-  color: '#ffe3a3', fontSize: 14, lineHeight: 1.5,
+  border: '1px solid var(--vg-f-ffcf7d-a450)', background: 'rgba(255, 207, 125, 0.08)',
+  color: 'var(--vg-f-ffe3a3)', fontSize: 14, lineHeight: 1.5,
 };
-const tasaCuentaOpcionStyle = { display: 'flex', alignItems: 'center', gap: 8, color: '#f2e6e6', fontWeight: 600, cursor: 'pointer' };
+const tasaCuentaOpcionStyle = { display: 'flex', alignItems: 'center', gap: 8, color: 'var(--vg-f-f2e6e6)', fontWeight: 600, cursor: 'pointer' };
 const clienteHintStyle = {
   margin: 0,
-  color: '#a89999',
+  color: 'var(--vg-f-a89999)',
   fontSize: 12,
 };
 
@@ -2146,14 +2111,14 @@ const descuentoBlockStyle = {
   gap: 8,
   padding: '10px 12px',
   borderRadius: 14,
-  border: '1px solid rgba(159, 216, 255, 0.25)',
+  border: '1px solid var(--vg-f-9fd8ff-a250)',
   background: 'rgba(159, 216, 255, 0.06)',
 };
 const descuentoCheckboxRowStyle = {
   display: 'flex',
   alignItems: 'center',
   gap: 8,
-  color: '#d2e9ff',
+  color: 'var(--vg-f-d2e9ff)',
   fontSize: 13,
   fontWeight: 600,
   cursor: 'pointer',
@@ -2168,10 +2133,10 @@ const inputStyle = {
   width: '100%',
   boxSizing: 'border-box',
   borderRadius: 12,
-  border: '1px solid rgba(255, 255, 255, 0.14)',
-  background: '#161010',
+  border: '1px solid var(--cb-input-border)',
+  background: 'var(--cb-input-bg)',
   padding: '9px 10px',
-  color: '#fff4f4',
+  color: 'var(--cb-title)',
   fontSize: 13,
 };
 
@@ -2183,11 +2148,11 @@ const docButtonsRowStyle = (isMobile) => ({
 });
 
 const secondaryButtonStyle = {
-  border: '1px solid rgba(255, 255, 255, 0.16)',
+  border: '1px solid rgba(var(--vg-ink), 0.16)',
   borderRadius: 999,
   padding: '10px 16px',
-  background: 'rgba(255, 255, 255, 0.05)',
-  color: '#fff',
+  background: 'rgba(var(--vg-ink), 0.05)',
+  color: 'var(--vg-text-strong)',
   fontWeight: 700,
   cursor: 'pointer',
 };
@@ -2196,7 +2161,7 @@ const primaryButtonStyle = {
   border: 'none',
   borderRadius: 999,
   padding: '10px 16px',
-  background: 'linear-gradient(90deg, #bf1f1f 0%, #ff4d4d 100%)',
+  background: 'linear-gradient(90deg, #bf1f1f 0%, var(--vg-accent-primary) 100%)',
   color: '#fff',
   fontWeight: 800,
   cursor: 'pointer',
@@ -2207,7 +2172,7 @@ const prefacturaPanelStyle = {
   gap: 8,
   padding: '12px 14px',
   borderRadius: 14,
-  border: '1px solid rgba(255, 190, 120, 0.3)',
+  border: '1px solid var(--vg-f-ffbe78-a300)',
   background: 'rgba(255, 190, 120, 0.06)',
 };
 
@@ -2215,13 +2180,7 @@ const lineaRowStyle = {
   display: 'flex',
   justifyContent: 'space-between',
   fontSize: 13,
-  color: '#e8dede',
-};
-
-const cuentasPorCobrarWrapStyle = {
-  marginTop: 8,
-  paddingTop: 20,
-  borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+  color: 'var(--vg-f-e8dede)',
 };
 
 const ingresoExtraButtonsRowStyle = (isMobile) => ({
@@ -2256,7 +2215,7 @@ const pagoExtraButtonStyle = {
 
 const ingresoExtraHintStyle = {
   margin: '10px 0 0',
-  color: '#a89999',
+  color: 'var(--vg-f-a89999)',
   fontSize: 12,
   lineHeight: 1.5,
   maxWidth: 640,
@@ -2264,7 +2223,7 @@ const ingresoExtraHintStyle = {
 
 const ingresoExtraHistoryTitleStyle = {
   marginTop: 18,
-  color: '#ffb0b0',
+  color: 'var(--vg-f-ffb0b0)',
   fontSize: 12,
   fontWeight: 800,
   textTransform: 'uppercase',
@@ -2277,8 +2236,8 @@ const ingresoHistoryRowStyle = {
   alignItems: 'center',
   gap: 10,
   borderRadius: 12,
-  border: '1px solid rgba(255, 255, 255, 0.1)',
-  background: 'rgba(255, 255, 255, 0.03)',
+  border: '1px solid rgba(var(--vg-ink), 0.1)',
+  background: 'rgba(var(--vg-ink), 0.03)',
   padding: '10px 12px',
 };
 
@@ -2288,9 +2247,9 @@ const propinaTagStyle = {
   fontSize: 11,
   fontWeight: 800,
   textTransform: 'uppercase',
-  color: '#d9c8ff',
+  color: 'var(--vg-f-d9c8ff)',
   background: 'rgba(139, 92, 246, 0.18)',
-  border: '1px solid rgba(167, 139, 250, 0.4)',
+  border: '1px solid var(--vg-f-a78bfa-a400)',
 };
 
 const pagoExtraTagStyle = {
@@ -2299,9 +2258,9 @@ const pagoExtraTagStyle = {
   fontSize: 11,
   fontWeight: 800,
   textTransform: 'uppercase',
-  color: '#b6fff0',
+  color: 'var(--vg-f-b6fff0)',
   background: 'rgba(13, 148, 136, 0.18)',
-  border: '1px solid rgba(45, 212, 191, 0.4)',
+  border: '1px solid var(--vg-f-2dd4bf-a400)',
 };
 
 const ingresoModalBackdropStyle = {
@@ -2319,10 +2278,10 @@ const ingresoModalCardStyle = {
   width: '100%',
   maxWidth: 420,
   borderRadius: 20,
-  border: '1px solid rgba(255, 145, 145, 0.3)',
-  background: 'linear-gradient(180deg, rgba(28, 12, 12, 0.98) 0%, rgba(10, 8, 8, 0.99) 100%)',
+  border: '1px solid var(--vg-f-ff9191-a300)',
+  background: 'linear-gradient(180deg, var(--vg-s-1c0c0c-a980) 0%, var(--vg-s-0a0808-a990) 100%)',
   padding: '22px 22px 18px',
-  boxShadow: '0 20px 50px rgba(0, 0, 0, 0.45)',
+  boxShadow: '0 20px 50px rgba(0, 0, 0, calc(0.45 * var(--vg-shadow-k)))',
   display: 'grid',
   gap: 12,
 };
@@ -2336,7 +2295,7 @@ const modalCloseButtonStyle = {
   borderRadius: '50%',
   border: 'none',
   background: 'rgba(0,0,0,0.55)',
-  color: '#fff',
+  color: 'var(--vg-text-strong)',
   fontSize: 20,
   lineHeight: 1,
   cursor: 'pointer',
@@ -2345,7 +2304,7 @@ const modalCloseButtonStyle = {
 };
 
 const ingresoModalTitleStyle = {
-  color: '#fff',
+  color: 'var(--vg-text-strong)',
   fontSize: 19,
   fontWeight: 800,
   paddingRight: 30,
@@ -2353,7 +2312,7 @@ const ingresoModalTitleStyle = {
 
 const ingresoModalDescStyle = {
   margin: 0,
-  color: '#d2c3c3',
+  color: 'var(--vg-f-d2c3c3)',
   lineHeight: 1.5,
   fontSize: 13,
 };
@@ -2361,7 +2320,7 @@ const ingresoModalDescStyle = {
 const ingresoFieldLabelStyle = {
   display: 'grid',
   gap: 6,
-  color: '#e8dede',
+  color: 'var(--vg-f-e8dede)',
   fontSize: 13,
   fontWeight: 700,
 };
@@ -2370,10 +2329,10 @@ const ingresoInputStyle = {
   width: '100%',
   boxSizing: 'border-box',
   borderRadius: 12,
-  border: '1px solid rgba(255, 255, 255, 0.14)',
-  background: '#161010',
+  border: '1px solid var(--cb-input-border)',
+  background: 'var(--cb-input-bg)',
   padding: '10px 12px',
-  color: '#fff4f4',
+  color: 'var(--cb-title)',
   fontSize: 14,
   fontWeight: 400,
 };
