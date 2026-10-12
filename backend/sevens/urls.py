@@ -60,7 +60,9 @@ from .api_views import (
     reporte_margen_productos_view,
     tasa_cambio_view,
 )
+from .delivery_views import pedido_cargo_delivery_view, zonas_delivery_view
 from .reportes_pdf_views import (
+    reporte_cuentas_por_cobrar_pdf_view,
     reporte_cuentas_por_pagar_pdf_view,
     reporte_facturado_pdf_view,
     reporte_gastos_pdf_view,
@@ -231,6 +233,7 @@ urlpatterns = [
     path('admin/reportes/gastos-pdf/', reporte_gastos_pdf_view, name='reporte_gastos_pdf'),
     path('admin/reportes/facturado-pdf/', reporte_facturado_pdf_view, name='reporte_facturado_pdf'),
     path('admin/reportes/cuentas-por-pagar-pdf/', reporte_cuentas_por_pagar_pdf_view, name='reporte_cuentas_por_pagar_pdf'),
+    path('admin/reportes/cuentas-por-cobrar-pdf/', reporte_cuentas_por_cobrar_pdf_view, name='reporte_cuentas_por_cobrar_pdf'),
     path('admin/reportes/cuadre-caja/', reporte_cuadre_caja_view, name='reporte_cuadre_caja'),
     path('admin/reportes/cuadre-caja-rango/', reporte_cuadre_caja_rango_view, name='reporte_cuadre_caja_rango'),
     path('admin/reportes/ventas-dia/', reporte_ventas_dia_view, name='reporte_ventas_dia'),
@@ -246,6 +249,8 @@ urlpatterns = [
 
     # --- Facturacion ------------------------------------------------------
     path('clientes/buscar/', clientes_buscar_view, name='clientes_buscar'),
+    path('delivery/zonas/', zonas_delivery_view, name='delivery_zonas'),
+    path('pedidos/<int:pedido_id>/delivery/', pedido_cargo_delivery_view, name='pedido_cargo_delivery'),
     path('admin/datos-fiscales/', datos_fiscales_view, name='datos_fiscales'),
     path('prefacturas/', prefacturas_view, name='prefacturas'),
     path('prefacturas/<int:prefactura_id>/convertir/', prefactura_convertir_view, name='prefactura_convertir'),

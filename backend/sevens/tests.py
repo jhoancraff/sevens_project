@@ -4748,3 +4748,388 @@ class ReporteCuentasPorPagarPdfTests(TestCase):
             self.assertEqual(r.status_code, 200, consulta)
             self.assertEqual(r['Content-Type'], 'application/pdf')
             self.assertTrue(r.content.startswith(b'%PDF'), consulta)
+
+
+class ReporteCuentasPorCobrarPdfTests(TestCase):
+    URL = '/api/admin/reportes/cuentas-por-cobrar-pdf/'
+
+    def setUp(self):
+        from datetime import datetime
+        from sevens.models import VGCliente, VGMetodoPago, VGNotaEntrega, VGPago
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='cxc_admin', password='claveAdmin123', cedula='95000041', email='cxc_admin@sevens.test', id_role=admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='cxc_cajera', password='claveCajera123', cedula='95000042', email='cxc_cajera@sevens.test', id_role=cajera_role,
+        )
+        _set_tasa_actual('900.0000')
+        self.metodo = VGMetodoPago.objects.create(nombre='Efectivo CxC PDF test', moneda='USD', es_efectivo=True)
+        self.maria = VGCliente.objects.create(nombre='Maria', apellido='Gomez', tipo_documento='V', numero_documento='11111111')
+        self.pedro = VGCliente.objects.create(nombre='Pedro', apellido='Perez', tipo_documento='V', numero_documento='22222222')
+
+        def nota(cliente, total, saldo, estado, dia):
+            creada = VGNotaEntrega.objects.create(
+                cliente=cliente, metodo_pago=self.metodo, total=Decimal(total), saldo_pendiente=Decimal(saldo),
+                estado=estado, moneda='VES', tasa_cambio_referencia=Decimal('800.0000'),
+            )
+            # fecha_emision es auto_now_add: se mueve de fecha con update().
+            fecha = timezone.make_aware(datetime(*dia, 12, 0))
+            VGNotaEntrega.objects.filter(pk=creada.pk).update(fecha_emision=fecha)
+            return creada
+
+        self.pend_maria = nota(self.maria, '50.00', '50.00', 'pendiente_pago', (2026, 9, 5))
+        self.abon_maria = nota(self.maria, '40.00', '10.00', 'abonada_parcial', (2026, 9, 20))
+        self.pend_sin = nota(None, '15.00', '15.00', 'pendiente_pago', (2026, 9, 25))
+        self.pagada_pedro = nota(self.pedro, '30.00', '0', 'pagada', (2026, 9, 10))
+        pago = VGPago.objects.create(
+            nota_entrega=self.pagada_pedro, monto=Decimal('30.00'), metodo_pago=self.metodo, estado='completado',
+            creado_por=self.admin,
+        )
+        VGPago.objects.filter(pk=pago.pk).update(fecha_pago=timezone.make_aware(datetime(2026, 9, 11, 9, 0)))
+        # anulada: nunca es una cuenta por cobrar, aunque conserve saldo
+        self.anulada = nota(self.pedro, '20.00', '20.00', 'anulada', (2026, 9, 12))
+        self.octubre = nota(self.pedro, '12.00', '12.00', 'pendiente_pago', (2026, 10, 2))
+
+    def pedir(self, **filtros):
+        from unittest import mock
+        self.client.force_login(self.admin)
+        consulta = '&'.join(f'{k}={v}' for k, v in filtros.items())
+        with mock.patch('sevens.reportes_pdf_views.generar_pdf_cuentas_por_cobrar', return_value=b'%PDF-falso') as generar:
+            r = self.client.get(f'{self.URL}?{consulta}')
+        return r, generar
+
+    def ids(self, generar):
+        return {n['id'] for n in generar.call_args.args[0]}
+
+    def test_lo_pueden_descargar_administradores_y_cajeras(self):
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+        for usuario in (self.admin, self.cajera):
+            self.client.force_login(usuario)
+            self.assertEqual(self.client.get(self.URL).status_code, 200, usuario.username)
+
+    def test_rechaza_filtros_invalidos(self):
+        self.client.force_login(self.admin)
+        for consulta in ('estado=otro', 'desde=nada', 'desde=2026-09-30&hasta=2026-09-01'):
+            self.assertEqual(self.client.get(f'{self.URL}?{consulta}').status_code, 400, consulta)
+
+    def test_por_defecto_trae_solo_lo_pendiente_y_nunca_las_anuladas(self):
+        r, generar = self.pedir()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(
+            self.ids(generar),
+            {self.pend_maria.id, self.abon_maria.id, self.pend_sin.id, self.octubre.id},
+        )
+
+    def test_pagadas_y_todas(self):
+        r, generar = self.pedir(estado='pagadas')
+        self.assertEqual(self.ids(generar), {self.pagada_pedro.id})
+        r, generar = self.pedir(estado='todas')
+        self.assertEqual(
+            self.ids(generar),
+            {self.pend_maria.id, self.abon_maria.id, self.pend_sin.id, self.octubre.id, self.pagada_pedro.id},
+        )
+
+    def test_filtra_por_rango_de_fecha_de_emision(self):
+        r, generar = self.pedir(desde='2026-09-01', hasta='2026-09-30')
+        self.assertEqual(self.ids(generar), {self.pend_maria.id, self.abon_maria.id, self.pend_sin.id})
+        r, generar = self.pedir(desde='2026-09-15')
+        self.assertEqual(self.ids(generar), {self.abon_maria.id, self.pend_sin.id, self.octubre.id})
+
+    def test_filtra_por_cliente(self):
+        for texto in ('maria', 'GOMEZ', 'maria%20gomez'):
+            r, generar = self.pedir(estado='todas', cliente=texto)
+            self.assertEqual(self.ids(generar), {self.pend_maria.id, self.abon_maria.id}, texto)
+        r, generar = self.pedir(estado='todas', cliente='nadie')
+        self.assertEqual(self.ids(generar), set())
+
+    def test_el_saldo_en_bs_es_el_de_la_pantalla_con_la_tasa_de_cobro_de_hoy(self):
+        r, generar = self.pedir()
+        por_id = {n['id']: n for n in generar.call_args.args[0]}
+        fiado = por_id[self.pend_maria.id]
+        pantalla = self.client.get(f'/api/notas-entrega/{self.pend_maria.id}/').json()['nota_entrega']
+        # nota de un dia anterior: se cobra a la tasa BCV de hoy (900), no a la congelada (800)
+        self.assertEqual(Decimal(fiado['tasa']), Decimal('900.0000'))
+        self.assertEqual(Decimal(fiado['saldo_bs']), Decimal('45000.00'))
+        self.assertEqual((fiado['tasa'], fiado['saldo_bs']), (pantalla['tasa_cobro_vigente'], pantalla['saldo_pendiente_bs_vigente']))
+        self.assertGreater(fiado['dias'], 0)
+        self.assertEqual(fiado['cliente'], 'Maria Gomez')
+        self.assertEqual(por_id[self.pend_sin.id]['cliente'], '')
+
+    def test_una_pagada_trae_la_fecha_de_pago_y_no_tiene_saldo(self):
+        r, generar = self.pedir(estado='pagadas')
+        pagada = generar.call_args.args[0][0]
+        self.assertEqual(str(pagada['fecha_pago']), '2026-09-11')
+        self.assertEqual(Decimal(pagada['saldo']), Decimal('0'))
+        self.assertIsNone(pagada['dias'])
+        self.assertIsNone(pagada['saldo_bs'])
+
+    def test_agrupa_por_cliente_con_sin_cliente_al_final_y_totales_que_cuadran(self):
+        from datetime import date
+        from sevens.pdf_reportes import armar_bloques_clientes
+        base = {'estado': 'pendiente_pago', 'fecha_pago': None, 'dias': 3}
+        notas = [
+            {**base, 'id': 3, 'codigo': 'C', 'cliente': '', 'fecha': date(2026, 9, 3), 'total': '10.004', 'saldo': '10.004', 'tasa': '900', 'saldo_bs': '9000.00'},
+            # dos clientes distintos con el mismo nombre no se mezclan (se agrupa por id)
+            {**base, 'id': 2, 'codigo': 'B', 'cliente_id': 8, 'cliente': 'Ana Lopez', 'fecha': date(2026, 9, 9), 'total': '20.005', 'saldo': '5.00', 'tasa': '900', 'saldo_bs': '4500.00'},
+            {**base, 'id': 1, 'codigo': 'A', 'cliente_id': 5, 'cliente': 'Ana Lopez', 'fecha': date(2026, 9, 1), 'total': '10', 'saldo': '10', 'tasa': None, 'saldo_bs': None},
+            {**base, 'id': 4, 'codigo': 'D', 'cliente': 'Zoe', 'fecha': date(2026, 9, 2), 'total': '1', 'saldo': '1', 'tasa': '900', 'saldo_bs': '900.00'},
+        ]
+        bloques = armar_bloques_clientes(notas)
+        self.assertEqual([b['cliente'] for b in bloques], ['Ana Lopez', 'Ana Lopez', 'Zoe', 'Sin cliente'])
+        self.assertEqual([b['filas'][0][0] for b in bloques], ['A', 'B', 'D', 'C'])
+        ana = bloques[0]
+        self.assertEqual(ana['saldo'], Decimal('10.00'))
+        self.assertEqual(ana['sin_tasa'], 1)  # tiene saldo y no tiene tasa: no suma en Bs
+        self.assertEqual(ana['saldo_bs'], Decimal('0'))
+        self.assertEqual(ana['filas'][0][7], '—')
+        sin = bloques[-1]
+        self.assertEqual(sin['total'], Decimal('10.00'))
+        self.assertEqual(sin['filas'][0][7], '900,00')
+
+    def test_responde_un_pdf_real_con_el_nombre_segun_los_filtros(self):
+        self.client.force_login(self.admin)
+        r = self.client.get(f'{self.URL}?estado=todas&desde=2026-09-01&hasta=2026-09-30')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r['Content-Type'], 'application/pdf')
+        self.assertEqual(r['Content-Disposition'], 'attachment; filename="cuentas-por-cobrar-todas-2026-09-01-al-2026-09-30.pdf"')
+        self.assertTrue(r.content.startswith(b'%PDF'))
+        vacio = self.client.get(f'{self.URL}?cliente=nadie')
+        self.assertEqual(vacio.status_code, 200)
+        self.assertTrue(vacio.content.startswith(b'%PDF'))
+
+
+class DeliveryZonasInicialesTests(TestCase):
+    def test_la_migracion_deja_las_tres_zonas_inactivas_y_sin_precio(self):
+        from sevens.models import VGZonaDelivery
+        zonas = {z.nombre: z for z in VGZonaDelivery.objects.all()}
+        self.assertEqual(set(zonas), {'Cerca', 'Media', 'Lejos'})
+        for zona in zonas.values():
+            self.assertFalse(zona.activo)
+            self.assertEqual(zona.tarifa, Decimal('0'))
+
+
+class DeliveryCargoTests(TestCase):
+    """
+    El delivery se cobra como un cargo propio del pedido (no como producto ni ingrediente), con tres
+    tarifas por zona que el administrador configura y que la cajera puede cambiar. Ver delivery.py.
+    """
+
+    def setUp(self):
+        from sevens.models import VGZonaDelivery
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        mesero_role, _ = VGRol.objects.get_or_create(nombre_role='Mesero')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='dl_admin', password='claveAdmin123', cedula='97000001', email='dl_admin@sevens.test', id_role=admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='dl_cajera', password='claveCajera123', cedula='97000002', email='dl_cajera@sevens.test', id_role=cajera_role,
+        )
+        self.mesero = VGUsuario.objects.create_user(
+            username='dl_mesero', password='claveMesero123', cedula='97000003', email='dl_mesero@sevens.test', id_role=mesero_role,
+        )
+        categoria = VGCategoriaProducto.objects.create(nombre='Platos DL', no_requiere_cocina=True)
+        self.plato = VGProducto.objects.create(nombre='Plato DL', categoria=categoria, precio_venta='10.00', disponible=True)
+        self.efectivo = VGMetodoPago.objects.create(nombre='Efectivo DL', moneda='USD', es_efectivo=True)
+        _set_tasa_actual('100.0000')
+        # La migracion deja Cerca/Media/Lejos inactivas y en 0: el admin les pone precio y las activa.
+        VGZonaDelivery.objects.filter(nombre='Cerca').update(tarifa=Decimal('1.00'), activo=True)
+        VGZonaDelivery.objects.filter(nombre='Media').update(tarifa=Decimal('2.00'), activo=True)
+        self.cerca = VGZonaDelivery.objects.get(nombre='Cerca')
+        self.media = VGZonaDelivery.objects.get(nombre='Media')
+        self.lejos = VGZonaDelivery.objects.get(nombre='Lejos')  # sigue inactiva
+
+    def post(self, url, payload=None, usuario=None):
+        self.client.force_login(usuario or self.cajera)
+        return self.client.post(url, data=json.dumps(payload or {}), content_type='application/json')
+
+    def crear(self, usuario=None, tipo='delivery', **extra):
+        payload = {
+            'tipo_pedido': tipo, 'cliente_nombre': 'Cliente DL',
+            'items': [{'product_id': self.plato.id, 'cantidad': 2}],
+            **extra,
+        }
+        return self.post('/api/pedidos/', payload, usuario)
+
+    def pedido(self, respuesta):
+        self.assertEqual(respuesta.status_code, 201, respuesta.content)
+        return VGPedido.objects.get(pk=respuesta.json()['pedido']['id'])
+
+    # --- registrar el pedido -------------------------------------------------------------------
+    def test_con_zona_cobra_la_tarifa_y_la_suma_al_total(self):
+        pedido = self.pedido(self.crear(zona_delivery_id=self.media.id))
+        self.assertEqual(pedido.subtotal, Decimal('20.00'))
+        self.assertEqual(pedido.cargo_delivery, Decimal('2.00'))
+        self.assertEqual(pedido.total, Decimal('22.00'))
+        self.assertEqual((pedido.zona_delivery_id, pedido.zona_delivery_nombre, pedido.tarifa_delivery), (self.media.id, 'Media', Decimal('2.00')))
+
+    def test_la_cajera_puede_cambiar_el_monto_y_queda_la_tarifa_original(self):
+        pedido = self.pedido(self.crear(zona_delivery_id=self.media.id, cargo_delivery='1.50'))
+        self.assertEqual(pedido.cargo_delivery, Decimal('1.50'))
+        self.assertEqual(pedido.total, Decimal('21.50'))
+        self.assertEqual(pedido.tarifa_delivery, Decimal('2.00'))
+
+    def test_la_cajera_puede_poner_un_monto_sin_zona_incluso_cero(self):
+        pedido = self.pedido(self.crear(cargo_delivery='3.25'))
+        self.assertEqual((pedido.cargo_delivery, pedido.total, pedido.zona_delivery_id), (Decimal('3.25'), Decimal('23.25'), None))
+        gratis = self.pedido(self.crear(zona_delivery_id=self.media.id, cargo_delivery='0'))
+        self.assertEqual((gratis.cargo_delivery, gratis.total), (Decimal('0.00'), Decimal('20.00')))
+
+    def test_un_mesero_solo_puede_mandar_la_tarifa_de_la_zona(self):
+        r = self.crear(usuario=self.mesero, zona_delivery_id=self.media.id, cargo_delivery='0.50')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('caja o administracion', r.json()['message'])
+        ok = self.pedido(self.crear(usuario=self.mesero, zona_delivery_id=self.media.id, cargo_delivery='2.00'))
+        self.assertEqual(ok.cargo_delivery, Decimal('2.00'))
+
+    def test_un_pedido_que_no_es_delivery_nunca_cobra_envio(self):
+        pedido = self.pedido(self.crear(tipo='llevar', zona_delivery_id=self.media.id, cargo_delivery='5'))
+        self.assertEqual((pedido.cargo_delivery, pedido.total, pedido.zona_delivery_id), (Decimal('0.00'), Decimal('20.00'), None))
+
+    def test_una_ronda_agregada_al_delivery_no_repite_el_cargo(self):
+        original = self.pedido(self.crear(zona_delivery_id=self.media.id))
+        ronda = self.pedido(self.crear(zona_delivery_id=self.media.id, grupo_pedido_id=original.id))
+        self.assertEqual((ronda.cargo_delivery, ronda.total), (Decimal('0.00'), Decimal('20.00')))
+        self.assertEqual(original.cargo_delivery, Decimal('2.00'))
+
+    def test_rechaza_zonas_inactivas_inexistentes_y_montos_invalidos(self):
+        for extra in ({'zona_delivery_id': self.lejos.id}, {'zona_delivery_id': 999999}, {'zona_delivery_id': 'abc'},
+                      {'cargo_delivery': '-1'}, {'cargo_delivery': 'mucho'}):
+            r = self.crear(**extra)
+            self.assertEqual(r.status_code, 400, extra)
+
+    def test_delivery_sin_zona_ni_monto_no_cobra_envio_como_antes(self):
+        pedido = self.pedido(self.crear())
+        self.assertEqual((pedido.cargo_delivery, pedido.total), (Decimal('0.00'), Decimal('20.00')))
+
+    # --- editar / quitar items ------------------------------------------------------------------
+    def test_editar_el_pedido_conserva_el_cargo_y_cambiar_a_llevar_lo_quita(self):
+        pedido = self.pedido(self.crear(zona_delivery_id=self.media.id))
+        # un pedido de categoria sin cocina nace 'entregado'; se fuerza 'pendiente' para poder editarlo
+        VGPedido.objects.filter(pk=pedido.pk).update(estado='pendiente')
+        base = {'tipo_pedido': 'delivery', 'cliente_nombre': 'Cliente DL', 'items': [{'product_id': self.plato.id, 'cantidad': 3}]}
+        r = self.post(f'/api/pedidos/{pedido.id}/actualizar/', base)
+        self.assertEqual(r.status_code, 200, r.content)
+        pedido.refresh_from_db()
+        self.assertEqual((pedido.subtotal, pedido.cargo_delivery, pedido.total), (Decimal('30.00'), Decimal('2.00'), Decimal('32.00')))
+        VGPedido.objects.filter(pk=pedido.pk).update(estado='pendiente')
+        r = self.post(f'/api/pedidos/{pedido.id}/actualizar/', {**base, 'tipo_pedido': 'llevar'})
+        self.assertEqual(r.status_code, 200, r.content)
+        pedido.refresh_from_db()
+        self.assertEqual((pedido.cargo_delivery, pedido.total, pedido.zona_delivery_id), (Decimal('0.00'), Decimal('30.00'), None))
+
+    def test_quitar_un_item_no_pierde_el_cargo(self):
+        r = self.post('/api/pedidos/', {
+            'tipo_pedido': 'delivery', 'cliente_nombre': 'Cliente DL', 'zona_delivery_id': self.media.id,
+            'items': [{'product_id': self.plato.id, 'cantidad': 1}, {'product_id': self.plato.id, 'cantidad': 1, 'notas': 'otro'}],
+        })
+        pedido = self.pedido(r)
+        self.assertEqual(pedido.total, Decimal('22.00'))
+        detalle = pedido.detalles.first()
+        r = self.post(f'/api/pedidos/{pedido.id}/items/{detalle.id}/eliminar/', {'motivo': 'se equivoco'})
+        self.assertIn(r.status_code, (200, 201), r.content)
+        pedido.refresh_from_db()
+        self.assertEqual((pedido.subtotal, pedido.total), (Decimal('10.00'), Decimal('12.00')))
+
+    # --- cambiar el cargo ya registrado ---------------------------------------------------------
+    def test_caja_puede_cambiar_el_cargo_de_un_pedido_ya_registrado(self):
+        pedido = self.pedido(self.crear(zona_delivery_id=self.media.id))
+        r = self.post(f'/api/pedidos/{pedido.id}/delivery/', {'cargo_delivery': '1'})
+        self.assertEqual(r.status_code, 200, r.content)
+        pedido.refresh_from_db()
+        self.assertEqual((pedido.cargo_delivery, pedido.total, pedido.zona_delivery_nombre, pedido.tarifa_delivery),
+                         (Decimal('1.00'), Decimal('21.00'), 'Media', Decimal('2.00')))
+        r = self.post(f'/api/pedidos/{pedido.id}/delivery/', {'zona_delivery_id': self.cerca.id})
+        pedido.refresh_from_db()
+        self.assertEqual((pedido.cargo_delivery, pedido.total, pedido.zona_delivery_nombre), (Decimal('1.00'), Decimal('21.00'), 'Cerca'))
+
+    def test_cambiar_el_cargo_valida_permiso_tipo_estado_y_ronda(self):
+        pedido = self.pedido(self.crear(zona_delivery_id=self.media.id))
+        self.assertEqual(self.post(f'/api/pedidos/{pedido.id}/delivery/', {'cargo_delivery': '1'}, self.mesero).status_code, 401)
+        self.assertEqual(self.post(f'/api/pedidos/{pedido.id}/delivery/', {}).status_code, 400)
+        self.assertEqual(self.post(f'/api/pedidos/{pedido.id}/delivery/', {'cargo_delivery': '-3'}).status_code, 400)
+        ronda = self.pedido(self.crear(grupo_pedido_id=pedido.id))
+        self.assertEqual(self.post(f'/api/pedidos/{ronda.id}/delivery/', {'cargo_delivery': '1'}).status_code, 400)
+        llevar = self.pedido(self.crear(tipo='llevar'))
+        self.assertEqual(self.post(f'/api/pedidos/{llevar.id}/delivery/', {'cargo_delivery': '1'}).status_code, 400)
+        VGPedido.objects.filter(pk=pedido.pk).update(estado='pagado')
+        self.assertEqual(self.post(f'/api/pedidos/{pedido.id}/delivery/', {'cargo_delivery': '1'}).status_code, 409)
+
+    # --- cobro, nota, cuenta del cliente y ticket ----------------------------------------------
+    def test_la_nota_de_entrega_incluye_el_delivery_como_linea_aparte(self):
+        from sevens.impresion_lpd import _build_recibo_bytes
+        pedido = self.pedido(self.crear(zona_delivery_id=self.media.id))
+        r = self.post('/api/pedidos/cobro/', {
+            'pedido_ids': [pedido.id], 'metodo_pago_id': self.efectivo.id,
+            'cliente_cedula': '97000111', 'cliente_nombre': 'Cliente DL',
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+        nota = r.json()['nota_entrega']
+        self.assertEqual(Decimal(nota['total']), Decimal('22.00'))
+
+        detalle = self.client.get(f'/api/notas-entrega/{nota["id"]}/').json()['nota_entrega']
+        self.assertEqual(Decimal(detalle['cargo_delivery']), Decimal('2.00'))
+        self.assertEqual(detalle['zona_delivery'], 'Media')
+        # no es un item: la lista de productos de la nota no lo trae
+        self.assertEqual({item['producto'] for item in detalle['items']}, {'Plato DL'})
+
+        # el ticket suma: Subtotal 20 + Delivery (Media) 2 = TOTAL 22
+        pedido.refresh_from_db()
+        ticket = _build_recibo_bytes([pedido], self.efectivo, 'REF', Decimal('22.00'), Decimal('100.0000'), titulo='NOTA DE ENTREGA', codigo='X')
+        texto = ticket.decode('cp1252', errors='replace')
+        self.assertIn('Delivery (Media): $2.00', texto)
+        self.assertIn('Subtotal: $20.00', texto)
+        self.assertIn('TOTAL: $22.00', texto)
+
+    def test_la_cuenta_del_cliente_trae_el_delivery_como_linea(self):
+        pedido = self.pedido(self.crear(zona_delivery_id=self.media.id))
+        r = self.post('/api/prefacturas/', {'pedido_ids': [pedido.id]})
+        self.assertEqual(r.status_code, 201, r.content)
+        prefactura = r.json()['prefactura']
+        lineas = {linea['descripcion']: linea for linea in prefactura['lineas']}
+        self.assertIn('Delivery (Media)', lineas)
+        self.assertEqual(Decimal(lineas['Delivery (Media)']['precio_unitario']), Decimal('2.00'))
+        # los precios incluyen IVA: la cuenta del cliente suma lo mismo que el total del pedido (20 + 2 de delivery)
+        self.assertEqual(Decimal(prefactura['total']), Decimal('22.00'))
+
+    def test_el_delivery_no_aparece_en_cocina(self):
+        pedido = self.pedido(self.crear(zona_delivery_id=self.media.id))
+        pedido.refresh_from_db()
+        self.assertEqual([d.producto.nombre for d in pedido.detalles.all()], ['Plato DL'])
+
+    # --- zonas ----------------------------------------------------------------------------------
+    def test_las_zonas_activas_las_ve_cualquier_usuario_con_sesion(self):
+        self.client.logout()
+        self.assertEqual(self.client.get('/api/delivery/zonas/').status_code, 401)
+        self.client.force_login(self.mesero)
+        r = self.client.get('/api/delivery/zonas/').json()
+        self.assertEqual([z['nombre'] for z in r['zonas']], ['Cerca', 'Media'])
+        self.assertFalse(r['puede_cambiar_monto'])
+        self.client.force_login(self.cajera)
+        self.assertTrue(self.client.get('/api/delivery/zonas/').json()['puede_cambiar_monto'])
+        # solo el admin ve las inactivas
+        self.assertEqual(len(self.client.get('/api/delivery/zonas/?todas=1').json()['zonas']), 2)
+        self.client.force_login(self.admin)
+        self.assertEqual(len(self.client.get('/api/delivery/zonas/?todas=1').json()['zonas']), 3)
+
+    def test_el_admin_crea_edita_y_activa_zonas(self):
+        r = self.post('/api/delivery/zonas/', {'action': 'update', 'id': self.lejos.id, 'nombre': 'Lejos', 'tarifa': '3.5'}, self.cajera)
+        self.assertEqual(r.status_code, 401)
+        r = self.post('/api/delivery/zonas/', {'action': 'update', 'id': self.lejos.id, 'nombre': 'Lejos', 'tarifa': '3.5'}, self.admin)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['zona']['tarifa'], '3.50')
+        r = self.post('/api/delivery/zonas/', {'action': 'toggle', 'id': self.lejos.id}, self.admin)
+        self.assertTrue(r.json()['zona']['activo'])
+        r = self.post('/api/delivery/zonas/', {'action': 'create', 'nombre': 'Centro', 'tarifa': '0.75'}, self.admin)
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(self.post('/api/delivery/zonas/', {'action': 'create', 'nombre': 'centro', 'tarifa': '1'}, self.admin).status_code, 400)
+        self.assertEqual(self.post('/api/delivery/zonas/', {'action': 'create', 'nombre': 'Otra', 'tarifa': '-1'}, self.admin).status_code, 400)
+        self.assertEqual(self.post('/api/delivery/zonas/', {'action': 'create', 'nombre': ' ', 'tarifa': '1'}, self.admin).status_code, 400)
+
+    def test_cambiar_la_tarifa_no_toca_los_pedidos_ya_registrados(self):
+        pedido = self.pedido(self.crear(zona_delivery_id=self.media.id))
+        self.post('/api/delivery/zonas/', {'action': 'update', 'id': self.media.id, 'nombre': 'Intermedia', 'tarifa': '9'}, self.admin)
+        pedido.refresh_from_db()
+        self.assertEqual((pedido.cargo_delivery, pedido.zona_delivery_nombre, pedido.total), (Decimal('2.00'), 'Media', Decimal('22.00')))

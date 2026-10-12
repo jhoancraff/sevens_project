@@ -39,6 +39,7 @@ import AnalystNewPromotionPage from './AnalystNewPromotionPage';
 import AnalystNewUserPage from './AnalystNewUserPage';
 import AnalystNewRecipePage from './AnalystNewRecipePage';
 import AnalystPaymentMethodsPage from './AnalystPaymentMethodsPage';
+import AnalystZonasDeliveryPage from './AnalystZonasDeliveryPage';
 import AnalystPreparationsReportPage from './AnalystPreparationsReportPage';
 import AnalystPrintersPage from './AnalysPrintersPage';
 import AnalystProductsPage from './AnalystProductsPage';
@@ -1407,6 +1408,11 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           />
         ) : activeView === 'admin-payment-methods' ? (
           <AnalystPaymentMethodsPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-delivery-zonas' ? (
+          <AnalystZonasDeliveryPage
             isMobile={isMobile}
             onBack={goBackView}
           />
