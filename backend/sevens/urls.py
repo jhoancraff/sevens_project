@@ -55,7 +55,6 @@ from .api_views import (
     product_image_view,
     promociones_activas_view,
     recomendaciones_chef_activas_view,
-    reporte_margen_ganancia_detalle_view,
     reporte_margen_ganancia_view,
     reporte_margen_productos_view,
     tasa_cambio_view,
@@ -65,6 +64,7 @@ from .reportes_pdf_views import (
     reporte_cuentas_por_cobrar_pdf_view,
     reporte_cuentas_por_pagar_pdf_view,
     reporte_facturado_pdf_view,
+    reporte_margen_por_plato_pdf_view,
     reporte_gastos_pdf_view,
     reporte_inventario_pdf_view,
 )
@@ -227,11 +227,14 @@ urlpatterns = [
     # --- Reportes ---------------------------------------------------------
     path('admin/reportes/estado-resultados/', reporte_estado_resultados_view, name='reporte_estado_resultados'),
     path('admin/reportes/margen-ganancia/', reporte_margen_ganancia_view, name='reporte_margen_ganancia'),
-    path('admin/reportes/margen-ganancia-detalle/', reporte_margen_ganancia_detalle_view, name='reporte_margen_ganancia_detalle'),
     path('admin/reportes/margen-productos/', reporte_margen_productos_view, name='reporte_margen_productos'),
     path('admin/reportes/inventario-pdf/', reporte_inventario_pdf_view, name='reporte_inventario_pdf'),
     path('admin/reportes/gastos-pdf/', reporte_gastos_pdf_view, name='reporte_gastos_pdf'),
     path('admin/reportes/facturado-pdf/', reporte_facturado_pdf_view, name='reporte_facturado_pdf'),
+    path(
+        'admin/reportes/margen-por-plato-pdf/', reporte_margen_por_plato_pdf_view,
+        name='reporte_margen_por_plato_pdf',
+    ),
     path('admin/reportes/cuentas-por-pagar-pdf/', reporte_cuentas_por_pagar_pdf_view, name='reporte_cuentas_por_pagar_pdf'),
     path('admin/reportes/cuentas-por-cobrar-pdf/', reporte_cuentas_por_cobrar_pdf_view, name='reporte_cuentas_por_cobrar_pdf'),
     path('admin/reportes/cuadre-caja/', reporte_cuadre_caja_view, name='reporte_cuadre_caja'),
