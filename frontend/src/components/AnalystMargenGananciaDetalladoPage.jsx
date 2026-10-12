@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import BotonDescargarPdf from './BotonDescargarPdf';
 import { RangoFechas } from './FiltroFechas';
 
 function toIso(date) {
@@ -35,6 +36,7 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
   const [busqueda, setBusqueda] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [productoSeleccionadoId, setProductoSeleccionadoId] = useState(null);
+  const [pdfError, setPdfError] = useState('');
 
   const loadReport = useCallback(async (desdeConsultado, hastaConsultado) => {
     setLoading(true);
@@ -64,6 +66,7 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
   useEffect(() => {
     setBusqueda('');
     setProductoSeleccionadoId(null);
+    setPdfError('');
   }, [desde, hasta]);
 
   const productos = useMemo(() => data?.productos || [], [data]);
@@ -119,9 +122,14 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
         <button type="button" onClick={onBack} style={backButtonStyle}>
           ← Volver
         </button>
-        <button type="button" onClick={() => window.print()} style={printButtonStyle}>
-          Imprimir / Guardar PDF
-        </button>
+        {/* PDF del rango elegido, agrupado por plato; con un plato elegido en el buscador, solo ese plato. */}
+        <BotonDescargarPdf
+          url="/api/admin/reportes/margen-por-plato-pdf/"
+          params={{ desde, hasta, producto_id: productoSeleccionadoId }}
+          onError={setPdfError}
+        >
+          {productoElegido ? `Descargar PDF de ${productoElegido.nombre}` : 'Descargar PDF'}
+        </BotonDescargarPdf>
       </div>
 
       <div>
@@ -136,6 +144,8 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
           setHasta(rango.hasta);
         }}
       />
+
+      {pdfError ? <div style={noticeStyle}>{pdfError}</div> : null}
 
       {loading ? <div style={emptyStyle}>Cargando reporte...</div> : null}
       {!loading && error ? <div style={noticeStyle}>{error}</div> : null}
@@ -308,7 +318,6 @@ const panelStyle = { display: 'grid', gap: 14, padding: 18, borderRadius: 20, bo
 const sectionTitleStyle = { color: '#fff', fontSize: 19, fontWeight: 700 };
 const emptyStyle = { minHeight: 80, display: 'grid', placeItems: 'center', borderRadius: 14, border: '1px dashed rgba(255,255,255,0.12)', color: '#c8bbbb' };
 const noticeStyle = { padding: '12px 14px', borderRadius: 12, border: '1px solid rgba(255,145,145,0.22)', background: 'rgba(255,98,98,0.12)', color: '#ffd8d8' };
-const printButtonStyle = { border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '10px 16px', background: 'rgba(255,255,255,0.04)', color: '#fff', fontWeight: 700, cursor: 'pointer' };
 const backButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', border: 'none', borderRadius: 999, padding: '11px 18px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(37, 99, 235, 0.35)' };
 const totalesWrapStyle = { display: 'grid', gap: 10 };
 const totalesTituloStyle = { color: '#ffb0b0', fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em' };

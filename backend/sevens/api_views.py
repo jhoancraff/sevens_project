@@ -1022,6 +1022,20 @@ def reporte_margen_ganancia_detalle_view(request):
     if desde > hasta:
         return _auth_response({'ok': False, 'message': '"Desde" no puede ser posterior a "Hasta".'}, status=400)
 
+    return _auth_response({
+        'ok': True,
+        'desde': desde.isoformat(),
+        'hasta': hasta.isoformat(),
+        **armar_margen_ganancia_detallado(desde, hasta),
+    })
+
+
+def armar_margen_ganancia_detallado(desde, hasta):
+    """
+    Los datos de reporte_margen_ganancia_detalle_view para el rango [desde, hasta] (fechas): un grupo
+    por producto con sus ventas linea por linea y los totales del periodo. Lo usan la pantalla (JSON) y
+    el PDF del reporte, para que los dos muestren exactamente los mismos numeros.
+    """
     # select_related trae producto/categoria/pedido en el mismo JOIN;
     # prefetch_related trae TODAS las notas de entrega de TODOS los pedidos
     # involucrados en una sola consulta aparte — sin esto, pedir
@@ -1172,10 +1186,7 @@ def reporte_margen_ganancia_detalle_view(request):
     ganancia_total = total_ingreso - total_costo_con_margen
     ganancia_pct_total = (ganancia_total / total_ingreso * Decimal('100')) if total_ingreso > 0 else Decimal('0')
 
-    return _auth_response({
-        'ok': True,
-        'desde': desde.isoformat(),
-        'hasta': hasta.isoformat(),
+    return {
         'productos': productos,
         'total_productos_distintos': len(productos),
         'total_lineas': total_lineas,
@@ -1186,7 +1197,7 @@ def reporte_margen_ganancia_detalle_view(request):
             'ganancia_monto': str(ganancia_total.quantize(Decimal('0.01'))),
             'ganancia_pct': str(ganancia_pct_total.quantize(Decimal('0.01'))),
         },
-    })
+    }
 
 
 class MesaListView(generics.ListAPIView):
