@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import useExchangeRate from '../hooks/useExchangeRate';
 import { formatBs, formatBsRaw } from '../utils/currency';
 import { consumirAperturaCuentasPorPagarPagadas } from '../utils/fechaContabilidad';
+import BotonDescargarPdf from './BotonDescargarPdf';
+import ReporteNotasCreditoCompra from './ReporteNotasCreditoCompra';
+import { RangoFechas } from './FiltroFechas';
 
 // `bsPreciso`, cuando viene, es el total_bs que ya calculó el backend (para
 // una compra con total_bs_factura, es el monto EXACTO que el analista
@@ -80,17 +83,38 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
   const [loadingDetalle, setLoadingDetalle] = useState(false);
   const [montoAbono, setMontoAbono] = useState('');
   const [monedaAbono, setMonedaAbono] = useState('USD');
+  // Tasa propia del abono (vacia = la de la factura/BCV). Ver tasaPorDefecto.
+  const [tasaAbono, setTasaAbono] = useState('');
   const [metodoAbono, setMetodoAbono] = useState('');
   const [savingAbono, setSavingAbono] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [feedbackType, setFeedbackType] = useState('success');
   const [ultimoAbonoId, setUltimoAbonoId] = useState(null);
+  // Nota de credito del proveedor (rebaja la deuda de una factura de compra cargada con monto equivocado).
+  const [ncAbierta, setNcAbierta] = useState(false);
+  const [ncMonto, setNcMonto] = useState('');
+  const [ncMoneda, setNcMoneda] = useState('USD');
+  const [ncMotivo, setNcMotivo] = useState('');
+  const [ncNumero, setNcNumero] = useState('');
+  const [savingNc, setSavingNc] = useState(false);
   const [busqueda, setBusqueda] = useState('');
   const [filtroTipo, setFiltroTipo] = useState('todos');
   const [pagina, setPagina] = useState(1);
   const detailPanelRef = useRef(null);
+  // Reporte PDF: tiene sus propios filtros (no depende de la pestana ni de la busqueda de la pantalla).
+  const [reporteAbierto, setReporteAbierto] = useState(false);
+  const [reporteTipo, setReporteTipo] = useState('todos');
+  const [reporteEstado, setReporteEstado] = useState('pendientes');
+  const [reporteConFechas, setReporteConFechas] = useState(false);
+  const [reporteDesde, setReporteDesde] = useState(startOfMonthIso());
+  const [reporteHasta, setReporteHasta] = useState(todayIso());
+  const [reporteError, setReporteError] = useState('');
 
   const fetchCompras = useCallback(async () => {
+    if (vista === 'notas_credito') {
+      setLoading(false);
+      return;
+    }
     try {
       const query = vista === 'pagadas'
         ? `?estado=pagadas&desde=${historialDesde}&hasta=${historialHasta}`
@@ -116,6 +140,21 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
     setCompraDetalle(null);
     fetchCompras();
   }, [fetchCompras]);
+
+  const alternarReporte = () => {
+    if (!reporteAbierto) {
+      // Al abrirlo arranca con lo que se esta viendo (la pestana, el tipo y el rango de "Facturas pagadas").
+      setReporteEstado(vista === 'pagadas' ? 'pagadas' : 'pendientes');
+      setReporteTipo(filtroTipo);
+      if (vista === 'pagadas') {
+        setReporteConFechas(true);
+        setReporteDesde(historialDesde);
+        setReporteHasta(historialHasta);
+      }
+      setReporteError('');
+    }
+    setReporteAbierto((abierto) => !abierto);
+  };
 
   const cambiarVista = (nuevaVista) => {
     setVista(nuevaVista);
@@ -165,9 +204,14 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
   }, []);
 
   const handleSelectCompra = (compra) => {
+    setNcAbierta(false);
+    setNcMonto('');
+    setNcMotivo('');
+    setNcNumero('');
     setFeedback('');
     setMontoAbono('');
     setMonedaAbono('USD');
+    setTasaAbono('');
     setSelectedCompraId(compra.id);
     setSelectedTipo(compra.tipo);
     fetchCompraDetalle(compra.id, compra.tipo);
@@ -177,6 +221,28 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
       detailPanelRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   };
+
+  // La tasa con la que se paga por defecto (la misma que usa el servidor si no se escribe
+  // ninguna): en dolares o con la deuda en dolares, la del BCV de hoy; en bolivares, la de la
+  // factura (congelada al cargarla). Los proveedores cobran a tasas distintas; quien paga puede
+  // escribir la suya para que los Bs registrados sean los que salieron del banco.
+  const tasaPorDefecto = (monedaAbono === 'USD' || compraDetalle?.moneda_origen === 'USD')
+    ? Number(tasaCambio)
+    : Number(compraDetalle?.tasa_cambio_referencia ?? tasaCambio);
+  const origenTasaPorDefecto = tasaPorDefecto === Number(tasaCambio) ? 'BCV de hoy' : 'de la factura';
+  const tasaAbonoNum = Number(tasaAbono);
+  const tasaAbonoManual = tasaAbono !== '' && Number.isFinite(tasaAbonoNum) && tasaAbonoNum > 0
+    && Math.abs(tasaAbonoNum - tasaPorDefecto) > 0.00005;
+  const tasaEfectiva = tasaAbonoManual ? tasaAbonoNum : tasaPorDefecto;
+  const montoAbonoNum = Number(montoAbono);
+  const vistaPreviaAbono = (() => {
+    if (!Number.isFinite(montoAbonoNum) || montoAbonoNum <= 0 || !Number.isFinite(tasaEfectiva) || tasaEfectiva <= 0) {
+      return '';
+    }
+    return monedaAbono === 'VES'
+      ? `Se descontarán $${(montoAbonoNum / tasaEfectiva).toFixed(2)} de la deuda (${formatBsRaw(montoAbonoNum)} ÷ ${tasaEfectiva})`
+      : `Se registrarán ${formatBsRaw(montoAbonoNum * tasaEfectiva)} (${'$'}${montoAbonoNum.toFixed(2)} × ${tasaEfectiva})`;
+  })();
 
   const handleRegistrarAbono = async (event) => {
     event.preventDefault();
@@ -203,6 +269,8 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
         credentials: 'include',
         body: JSON.stringify({
           ...(monedaAbono === 'VES' ? { monto_bs: montoAbono } : { monto: montoAbono }),
+          // Solo si la tasa se cambio a mano: asi un abono normal sigue usando la de la factura.
+          ...(selectedTipo === 'compra' && tasaAbonoManual ? { tasa_cambio: tasaAbono } : {}),
           metodo_pago_id: metodoPagoId,
         }),
       });
@@ -218,12 +286,95 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
       setCompraDetalle({ ...cuentaActualizada, tipo: selectedTipo });
       setUltimoAbonoId(data.abono.id);
       setMontoAbono('');
+      setTasaAbono('');
       await fetchCompras();
     } catch (requestError) {
       setFeedbackType('error');
       setFeedback('Error de red al registrar el abono.');
     } finally {
       setSavingAbono(false);
+    }
+  };
+
+  const abrirNotaCredito = () => {
+    setNcMoneda(compraDetalle?.moneda_origen === 'VES' ? 'VES' : 'USD');
+    setNcMonto('');
+    setNcMotivo('');
+    setNcNumero('');
+    setNcAbierta(true);
+  };
+
+  const handleRegistrarNotaCredito = async (event) => {
+    event.preventDefault();
+    if (!selectedCompraId || selectedTipo !== 'compra') {
+      return;
+    }
+    if (!ncMotivo.trim()) {
+      setFeedbackType('error');
+      setFeedback('Escribe el motivo de la nota de crédito.');
+      return;
+    }
+    setSavingNc(true);
+    setFeedback('');
+    try {
+      const response = await fetch(`/api/admin/compras/${selectedCompraId}/notas-credito/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          ...(ncMoneda === 'VES' ? { monto_bs: ncMonto } : { monto: ncMonto }),
+          motivo: ncMotivo,
+          numero_documento_proveedor: ncNumero,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        setFeedbackType('error');
+        setFeedback(data.message || 'No se pudo registrar la nota de crédito.');
+        return;
+      }
+      setFeedbackType('success');
+      setFeedback(data.message);
+      setCompraDetalle({ ...data.compra, tipo: 'compra' });
+      setNcAbierta(false);
+      await fetchCompras();
+    } catch (requestError) {
+      setFeedbackType('error');
+      setFeedback('Error de red al registrar la nota de crédito.');
+    } finally {
+      setSavingNc(false);
+    }
+  };
+
+  const handleAnularNotaCredito = async (nota) => {
+    const motivo = window.prompt(`Motivo para anular la nota de crédito ${nota.codigo} (la deuda vuelve a subir $${Number(nota.monto).toFixed(2)}):`);
+    if (!motivo || !motivo.trim()) {
+      return;
+    }
+    setSavingNc(true);
+    setFeedback('');
+    try {
+      const response = await fetch(`/api/admin/compras/notas-credito/${nota.id}/anular/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ motivo }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        setFeedbackType('error');
+        setFeedback(data.message || 'No se pudo anular la nota de crédito.');
+        return;
+      }
+      setFeedbackType('success');
+      setFeedback(data.message);
+      setCompraDetalle({ ...data.compra, tipo: 'compra' });
+      await fetchCompras();
+    } catch (requestError) {
+      setFeedbackType('error');
+      setFeedback('Error de red al anular la nota de crédito.');
+    } finally {
+      setSavingNc(false);
     }
   };
 
@@ -256,31 +407,95 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
         <button type="button" onClick={() => cambiarVista('pagadas')} style={tabButtonStyle(vista === 'pagadas')}>
           Facturas pagadas
         </button>
+        <button type="button" onClick={() => cambiarVista('notas_credito')} style={tabButtonStyle(vista === 'notas_credito')}>
+          Notas de crédito
+        </button>
+        <button type="button" onClick={alternarReporte} style={{ ...tabButtonStyle(reporteAbierto), marginLeft: 'auto' }}>
+          Reporte PDF
+        </button>
       </div>
 
+      {reporteAbierto ? (
+        <section style={reportePanelStyle}>
+          <div style={{ color: '#fff', fontWeight: 700 }}>Reporte de cuentas por pagar en PDF</div>
+          <div style={reporteFiltrosStyle(isMobile)}>
+            <label style={reporteLabelStyle}>
+              Qué incluir
+              <select
+                value={reporteTipo}
+                onChange={(event) => setReporteTipo(event.target.value)}
+                style={selectStyle}
+                className="admin-dark-select"
+              >
+                <option value="todos">Lotes y gastos</option>
+                <option value="compra">Solo lotes</option>
+                <option value="gasto">Solo gastos</option>
+              </select>
+            </label>
+            <label style={reporteLabelStyle}>
+              Estado
+              <select
+                value={reporteEstado}
+                onChange={(event) => setReporteEstado(event.target.value)}
+                style={selectStyle}
+                className="admin-dark-select"
+              >
+                <option value="pendientes">Pendientes (incluye abonadas)</option>
+                <option value="pagadas">Pagadas</option>
+                <option value="todos">Todas</option>
+              </select>
+            </label>
+          </div>
+
+          <label style={reporteCheckStyle}>
+            <input
+              type="checkbox"
+              checked={reporteConFechas}
+              onChange={(event) => setReporteConFechas(event.target.checked)}
+            />
+            Filtrar por rango de fechas
+          </label>
+          {reporteConFechas ? (
+            <>
+              <RangoFechas
+                desde={reporteDesde}
+                hasta={reporteHasta}
+                onChange={(rango) => { setReporteDesde(rango.desde); setReporteHasta(rango.hasta); }}
+              />
+              <div style={{ color: '#c8bbbb', fontSize: 12.5 }}>
+                Las pendientes se filtran por la fecha de la factura (lotes) o del gasto; las pagadas, por la fecha en que se pagaron.
+              </div>
+            </>
+          ) : null}
+
+          {reporteError ? <div style={errorStyle}>{reporteError}</div> : null}
+          <div>
+            <BotonDescargarPdf
+              url="/api/admin/reportes/cuentas-por-pagar-pdf/"
+              params={{
+                tipo: reporteTipo,
+                estado: reporteEstado,
+                desde: reporteConFechas ? reporteDesde : '',
+                hasta: reporteConFechas ? reporteHasta : '',
+              }}
+              onError={setReporteError}
+            >
+              Descargar PDF
+            </BotonDescargarPdf>
+          </div>
+        </section>
+      ) : null}
+
+      {vista === 'notas_credito' ? <ReporteNotasCreditoCompra isMobile={isMobile} /> : null}
+      {vista !== 'notas_credito' ? (
+        <>
+
       {vista === 'pagadas' ? (
-        <div style={historialFiltrosStyle(isMobile)}>
-          <label style={dateLabelStyle}>
-            Desde
-            <input
-              type="date"
-              value={historialDesde}
-              max={historialHasta}
-              onChange={(event) => setHistorialDesde(event.target.value)}
-              style={dateInputStyle}
-            />
-          </label>
-          <label style={dateLabelStyle}>
-            Hasta
-            <input
-              type="date"
-              value={historialHasta}
-              max={todayIso()}
-              onChange={(event) => setHistorialHasta(event.target.value)}
-              style={dateInputStyle}
-            />
-          </label>
-        </div>
+        <RangoFechas
+          desde={historialDesde}
+          hasta={historialHasta}
+          onChange={(rango) => { setHistorialDesde(rango.desde); setHistorialHasta(rango.hasta); }}
+        />
       ) : null}
 
       <div style={filtrosBusquedaRowStyle(isMobile)}>
@@ -422,6 +637,11 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
                 <div style={detailTotalsStyle}>
                   <span style={{ fontWeight: 800, color: '#fff' }}>Total: {formatUsdBs(compraDetalle.tipo === 'gasto' ? compraDetalle.monto : compraDetalle.total, compraDetalle.tasa_cambio_referencia ?? tasaCambio, compraDetalle.total_bs)}</span>
                   <span style={{ fontWeight: 800, color: '#ffcf7d' }}>Saldo pendiente: {formatSaldoUsdBs(compraDetalle.saldo_pendiente, compraDetalle.tasa_cambio_referencia ?? tasaCambio, compraDetalle.saldo_pendiente_bs)}</span>
+                  {compraDetalle.tipo === 'compra' && tasaAbonoManual && !esEstadoSaldado(compraDetalle.estado_pago) ? (
+                    <span style={{ fontWeight: 800, color: '#9fe3b0' }}>
+                      A tu tasa ({tasaAbonoNum}): {formatBsRaw(Number(compraDetalle.saldo_pendiente) * tasaAbonoNum)}
+                    </span>
+                  ) : null}
                 </div>
 
                 {compraDetalle.abonos.length > 0 ? (
@@ -431,7 +651,8 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
                       <div key={abono.id} style={lineaRowStyle}>
                         <span>{abono.metodo_pago} — {new Date(abono.fecha_pago).toLocaleString('es-VE')}</span>
                         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          {formatUsdBs(abono.monto, abono.tasa_cambio_referencia ?? tasaCambio)}
+                          {abono.tasa_manual ? <span title={`Pagado a tasa propia: ${abono.tasa_cambio_referencia}`} style={{ color: '#ffcf7d', fontSize: 11.5 }}>tasa {abono.tasa_cambio_referencia}</span> : null}
+                          {formatUsdBs(abono.monto, abono.tasa_cambio_referencia ?? tasaCambio, abono.monto_bs)}
                           {onVerComprobante ? (
                             <button type="button" onClick={() => onVerComprobante(compraDetalle.tipo, compraDetalle.id, abono.id)} style={miniPrintButtonStyle} title="Ver comprobante">
                               🖨
@@ -441,6 +662,80 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
                       </div>
                     ))}
                   </div>
+                ) : null}
+
+                {compraDetalle.tipo === 'compra' && (compraDetalle.notas_credito || []).length > 0 ? (
+                  <div style={{ display: 'grid', gap: 4 }}>
+                    <div style={{ color: '#9ecbff', fontWeight: 700, fontSize: 12, textTransform: 'uppercase' }}>
+                      Notas de crédito del proveedor · total original {formatUsdBs(compraDetalle.total_original, compraDetalle.tasa_cambio_referencia ?? tasaCambio)}
+                    </div>
+                    {compraDetalle.notas_credito.map((nota) => (
+                      <div key={nota.id} style={{ ...lineaRowStyle, opacity: nota.estado === 'anulada' ? 0.55 : 1 }}>
+                        <span>
+                          {nota.codigo}{nota.numero_documento_proveedor ? ` (proveedor: ${nota.numero_documento_proveedor})` : ''} · {new Date(`${nota.fecha}T00:00:00`).toLocaleDateString('es-VE')} · {nota.motivo}
+                          {nota.estado === 'anulada' ? ` — ANULADA: ${nota.motivo_anulacion}` : ''}
+                        </span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 8, textDecoration: nota.estado === 'anulada' ? 'line-through' : 'none' }}>
+                          −{formatUsdBs(nota.monto, nota.tasa_cambio_referencia ?? compraDetalle.tasa_cambio_referencia ?? tasaCambio, nota.monto_bs)}
+                          {nota.estado === 'vigente' ? (
+                            <button type="button" disabled={savingNc} onClick={() => handleAnularNotaCredito(nota)} style={miniPrintButtonStyle} title="Anular nota de crédito">
+                              Anular
+                            </button>
+                          ) : null}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                {compraDetalle.tipo === 'compra' && !esEstadoSaldado(compraDetalle.estado_pago) ? (
+                  ncAbierta ? (
+                    <form onSubmit={handleRegistrarNotaCredito} style={ncFormStyle}>
+                      <div style={{ color: '#fff', fontWeight: 700 }}>Nota de crédito del proveedor</div>
+                      <div style={{ color: '#c8bbbb', fontSize: 12.5 }}>
+                        Baja lo que se le debe al proveedor por esta factura (no puede ser mayor que el saldo pendiente). No cambia el inventario ni los abonos ya hechos.
+                      </div>
+                      <div style={monedaToggleStyle}>
+                        <button type="button" onClick={() => setNcMoneda('USD')} style={monedaToggleButtonStyle(ncMoneda === 'USD')}>Dólares ($)</button>
+                        <button type="button" onClick={() => setNcMoneda('VES')} style={monedaToggleButtonStyle(ncMoneda === 'VES')}>Bolívares (Bs)</button>
+                      </div>
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        placeholder={ncMoneda === 'VES' ? 'Monto de la nota en Bs' : 'Monto de la nota en $'}
+                        value={ncMonto}
+                        onChange={(event) => setNcMonto(event.target.value)}
+                        style={inputStyle}
+                        required
+                      />
+                      <input
+                        type="text"
+                        placeholder="Motivo (obligatorio): ej. se cargó mal el monto de la factura"
+                        value={ncMotivo}
+                        onChange={(event) => setNcMotivo(event.target.value)}
+                        style={inputStyle}
+                        required
+                      />
+                      <input
+                        type="text"
+                        placeholder="Nº de la nota de crédito del proveedor (opcional)"
+                        value={ncNumero}
+                        onChange={(event) => setNcNumero(event.target.value)}
+                        style={inputStyle}
+                      />
+                      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                        <button type="submit" style={primaryButtonStyle} disabled={savingNc}>
+                          {savingNc ? 'Registrando...' : 'Registrar nota de crédito'}
+                        </button>
+                        <button type="button" onClick={() => setNcAbierta(false)} style={miniPrintButtonStyle} disabled={savingNc}>Cancelar</button>
+                      </div>
+                    </form>
+                  ) : (
+                    <button type="button" onClick={abrirNotaCredito} style={ncOpenButtonStyle}>
+                      + Nota de crédito (bajar el monto de esta factura)
+                    </button>
+                  )
                 ) : null}
 
                 {!esEstadoSaldado(compraDetalle.estado_pago) ? (
@@ -464,13 +759,49 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
                     <input
                       type="number"
                       min="0.01"
-                      step="0.01"
+                      step="any"
                       placeholder={monedaAbono === 'VES' ? 'Monto del abono en Bs' : 'Monto del abono en $'}
                       value={montoAbono}
                       onChange={(event) => setMontoAbono(event.target.value)}
                       style={inputStyle}
                       required
                     />
+                    {selectedTipo === 'compra' ? (
+                      <div style={{ display: 'grid', gap: 4 }}>
+                        <label style={{ color: '#c8bbbb', fontSize: 12.5 }}>
+                          Tasa de este pago (Bs por $) — cámbiala si el proveedor cobró a otra tasa
+                        </label>
+                        <input
+                          type="number"
+                          min="0.0001"
+                          step="0.0001"
+                          placeholder={Number.isFinite(tasaPorDefecto) && tasaPorDefecto > 0 ? `Sin cambiar usa ${tasaPorDefecto} (${origenTasaPorDefecto})` : 'Tasa en Bs por $'}
+                          value={tasaAbono}
+                          onChange={(event) => setTasaAbono(event.target.value)}
+                          style={inputStyle}
+                        />
+                        {Number.isFinite(tasaEfectiva) && tasaEfectiva > 0 ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', color: tasaAbonoManual ? '#ffcf7d' : '#c8bbbb', fontSize: 12.5, fontWeight: 700 }}>
+                            <span>
+                              Saldo ${Number(compraDetalle.saldo_pendiente).toFixed(2)} × {tasaEfectiva} = {formatBsRaw(Number(compraDetalle.saldo_pendiente) * tasaEfectiva)}
+                              {tasaAbonoManual ? ' (con tu tasa)' : ''}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => { setMonedaAbono('USD'); setMontoAbono(String(Number(Number(compraDetalle.saldo_pendiente).toFixed(6)))); }}
+                              style={miniPrintButtonStyle}
+                            >
+                              Pagar todo el saldo
+                            </button>
+                          </div>
+                        ) : null}
+                        {vistaPreviaAbono ? (
+                          <div style={{ color: tasaAbonoManual ? '#ffcf7d' : '#9fe3b0', fontSize: 12.5, fontWeight: 700 }}>
+                            {vistaPreviaAbono}{tasaAbonoManual ? ' · con tu tasa' : ''}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                     <select
                       value={metodoAbono || (metodosPago[0] && metodosPago[0].id) || ''}
                       onChange={(event) => setMetodoAbono(Number(event.target.value))}
@@ -493,9 +824,14 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
           </div>
         </div>
       ) : null}
+        </>
+      ) : null}
     </section>
   );
 }
+
+const ncFormStyle = { display: 'grid', gap: 10, padding: 14, borderRadius: 16, border: '1px solid rgba(120, 180, 255, 0.35)', background: 'rgba(59, 130, 246, 0.07)' };
+const ncOpenButtonStyle = { border: '1px dashed rgba(120, 180, 255, 0.5)', borderRadius: 14, padding: '10px 14px', background: 'rgba(59, 130, 246, 0.08)', color: '#cfe4ff', fontWeight: 700, cursor: 'pointer', textAlign: 'left' };
 
 function estadoLabel(estado) {
   if (estado === 'pendiente') return 'Pendiente';
@@ -564,15 +900,16 @@ const comprobanteLinkStyle = { display: 'block', marginTop: 8, border: 'none', b
 const miniPrintButtonStyle = { border: '1px solid rgba(255,255,255,0.14)', borderRadius: 8, padding: '2px 6px', background: 'rgba(255,255,255,0.04)', cursor: 'pointer', fontSize: 12, lineHeight: 1 };
 
 const tabsRowStyle = { display: 'flex', gap: 8, flexWrap: 'wrap' };
+const reportePanelStyle = { display: 'grid', gap: 12, padding: '16px 18px', borderRadius: 20, border: '1px solid rgba(255, 255, 255, 0.1)', background: 'linear-gradient(180deg, rgba(20, 10, 10, 0.95) 0%, rgba(8, 8, 8, 0.98) 100%)' };
+const reporteFiltrosStyle = (isMobile) => ({ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, minmax(0, 260px))', gap: 12 });
+const reporteLabelStyle = { display: 'grid', gap: 6, color: '#f2e6e6', fontSize: 13, fontWeight: 700 };
+const reporteCheckStyle = { display: 'flex', alignItems: 'center', gap: 8, color: '#f2e6e6', fontSize: 13, fontWeight: 700, cursor: 'pointer' };
 const tabButtonStyle = (activo) => ({
   border: activo ? '1px solid rgba(255, 130, 130, 0.6)' : '1px solid rgba(255, 255, 255, 0.14)',
   borderRadius: 999, padding: '9px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer',
   background: activo ? 'rgba(255, 90, 90, 0.16)' : 'rgba(255, 255, 255, 0.03)',
   color: activo ? '#ffb0b0' : '#d2c4c4',
 });
-const historialFiltrosStyle = (isMobile) => ({ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: isMobile ? 'stretch' : 'flex-end', flexDirection: isMobile ? 'column' : 'row' });
-const dateLabelStyle = { display: 'flex', flexDirection: 'column', gap: 6, color: '#f2e6e6', fontSize: 13, fontWeight: 700 };
-const dateInputStyle = { borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: '#161010', padding: '10px 12px', color: '#fff' };
 const monedaToggleStyle = { display: 'flex', gap: 8 };
 const monedaToggleButtonStyle = (activo) => ({
   flex: 1, border: activo ? 'none' : '1px solid rgba(255,255,255,0.14)', borderRadius: 12, padding: '9px 10px',

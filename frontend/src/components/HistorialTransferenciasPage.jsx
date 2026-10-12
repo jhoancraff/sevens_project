@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { RangoFechas } from './FiltroFechas';
 
 function todayIso() {
   const now = new Date();
@@ -103,25 +104,11 @@ function HistorialTransferenciasPage({ isMobile, onBack }) {
       </div>
 
       <form onSubmit={handleBuscar} style={filtrosFormStyle(isMobile)}>
-        <label style={fieldStyle}>
-          <span style={labelStyle}>Desde</span>
-          <input
-            type="date"
-            value={filtros.desde}
-            onChange={(event) => setFiltros((c) => ({ ...c, desde: event.target.value }))}
-            style={inputStyle}
-          />
-        </label>
-        <label style={fieldStyle}>
-          <span style={labelStyle}>Hasta</span>
-          <input
-            type="date"
-            value={filtros.hasta}
-            max={todayIso()}
-            onChange={(event) => setFiltros((c) => ({ ...c, hasta: event.target.value }))}
-            style={inputStyle}
-          />
-        </label>
+        <RangoFechas
+          desde={filtros.desde}
+          hasta={filtros.hasta}
+          onChange={(rango) => setFiltros((f) => ({ ...f, desde: rango.desde, hasta: rango.hasta }))}
+        />
         <label style={fieldStyle}>
           <span style={labelStyle}>ID de transferencia</span>
           <input

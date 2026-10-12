@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ConfirmModal from './ConfirmModal';
+import MoneyInput from './MoneyInput';
 import useExchangeRate from '../hooks/useExchangeRate';
 import { formatBs, formatBsRaw, formatMontoDocumento } from '../utils/currency';
+import { RangoFechas } from './FiltroFechas';
 
 function getCookie(name) {
   const all = `; ${document.cookie}`;
@@ -525,26 +527,12 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
       )}
 
       <form onSubmit={handleBuscar} style={buscadorFormStyle(isMobile)}>
-        <label style={dateFieldStyle}>
-          <span style={dateLabelStyle}>Desde</span>
-          <input
-            type="date"
-            value={desde}
-            onChange={(event) => setDesde(event.target.value)}
-            style={inputStyle}
-            className="admin-dark-select"
-          />
-        </label>
-        <label style={dateFieldStyle}>
-          <span style={dateLabelStyle}>Hasta</span>
-          <input
-            type="date"
-            value={hasta}
-            onChange={(event) => setHasta(event.target.value)}
-            style={inputStyle}
-            className="admin-dark-select"
-          />
-        </label>
+        <RangoFechas
+          desde={desde}
+          hasta={hasta}
+          onChange={(rango) => { setDesde(rango.desde); setHasta(rango.hasta); }}
+          max={null}
+        />
         <button type="submit" style={secondaryButtonStyle} disabled={loading}>
           {loading ? 'Buscando...' : 'Buscar'}
         </button>
@@ -709,6 +697,12 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                 </div>
 
                 <div style={detailTotalsStyle}>
+                  {Number(notaDetalle.cargo_delivery) > 0 ? (
+                    <span>
+                      Incluye delivery{notaDetalle.zona_delivery ? ` (${notaDetalle.zona_delivery})` : ''}:{' '}
+                      {montoNota(notaDetalle.cargo_delivery, notaDetalle)}
+                    </span>
+                  ) : null}
                   <span style={{ fontWeight: 800, color: '#fff' }}>
                     Total: {montoNota(notaDetalle.total, notaDetalle)}
                   </span>
@@ -1078,14 +1072,10 @@ function AbonoForm({
       <label style={dateFieldStyle}>
         <span style={dateLabelStyle}>Monto a cobrar ({esBs ? 'Bs' : '$'})</span>
         <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            type="number"
-            min="0.01"
-            step="0.01"
-            inputMode="decimal"
+          <MoneyInput
             placeholder={esBs ? 'Monto en Bs' : 'Monto en $'}
             value={montoAbono}
-            onChange={(event) => setMontoAbono(event.target.value)}
+            onChange={setMontoAbono}
             style={{ ...inputStyle, flex: 1 }}
           />
           <button

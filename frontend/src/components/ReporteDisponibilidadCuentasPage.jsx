@@ -4,6 +4,7 @@ import IngresoNoFacturadoModal from './IngresoNoFacturadoModal';
 import Toast from './Toast';
 import TransferenciaCuentasModal from './TransferenciaCuentasModal';
 import useToast from '../hooks/useToast';
+import { DiaFecha } from './FiltroFechas';
 
 function todayIso() {
   const now = new Date();
@@ -17,7 +18,7 @@ function formatMonto(value) {
   return number.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTransferencias, onViewHistorialIngresos }) {
+function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTransferencias, onViewHistorialIngresos, onNavigate }) {
   const [fecha, setFecha] = useState(todayIso());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -53,6 +54,8 @@ function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTra
 
   const cuentas = data?.cuentas || [];
   const bancos = data?.bancos || [];
+  const hayPuntoVenta = bancos.some((banco) => banco.tiene_punto_venta);
+  const transitorio = data?.pos_por_cobrar || null;
 
   const handleTransferenciaSuccess = (resultado) => {
     setTransferenciaModalOpen(false);
@@ -120,16 +123,7 @@ function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTra
         <div>
           <h2 style={titleStyle(isMobile)}>Disponibilidad diaria</h2>
         </div>
-        <label className="no-print" style={dateLabelStyle}>
-          Fecha
-          <input
-            type="date"
-            value={fecha}
-            max={todayIso()}
-            onChange={(event) => setFecha(event.target.value)}
-            style={dateInputStyle}
-          />
-        </label>
+        <DiaFecha value={fecha} onChange={setFecha} />
       </div>
 
       {loading ? <div style={emptyStyle}>Cargando disponibilidad...</div> : null}
@@ -145,6 +139,12 @@ function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTra
               <div style={{ fontSize: 12, color: '#ffcf85' }}>No hay tasa BCV registrada para esta fecha; las cuentas en bolívares no muestran conversión.</div>
             )}
 
+            {hayPuntoVenta ? (
+              <div style={{ fontSize: 12, color: '#c8bbbb' }}>
+                En los puntos de venta, el saldo disponible solo cuenta los lotes ya acreditados; lo demás está por acreditar.
+              </div>
+            ) : null}
+
             <div style={cuentasGridStyle(isMobile)}>
               {bancos.map((banco) => (
                 <article key={banco.nombre} style={cuentaCardStyle(Number(banco.saldo_disponible) < 0)}>
@@ -152,7 +152,6 @@ function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTra
                     <div style={cuentaNombreStyle}>
                       {banco.nombre}
                       {!banco.agrupado && !banco.metodos[0].activo ? <span style={inactivaBadgeStyle}>Inactiva</span> : null}
-                      {banco.agrupado ? <span style={efectivoBadgeStyle}>{banco.metodos.length} métodos</span> : null}
                       {banco.moneda_mixta ? <span style={inactivaBadgeStyle}>Monedas mixtas</span> : null}
                     </div>
                   </div>
@@ -166,46 +165,51 @@ function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTra
                       <>${formatMonto(banco.saldo_disponible)}</>
                     )}
                   </div>
-                  {banco.agrupado ? (
-                    <div style={metodosAnidadosStyle}>
-                      {banco.metodos.map((metodo) => (
-                        <div key={metodo.id} style={metodoAnidadoRowStyle}>
-                          <span>
-                            {metodo.nombre}
-                            {!metodo.activo ? <span style={inactivaBadgeStyle}> Inactiva</span> : null}
-                          </span>
-                          <span>
-                            {metodo.moneda === 'VES'
-                              ? `Bs. ${metodo.saldo_disponible_bs !== null ? formatMonto(metodo.saldo_disponible_bs) : '—'}`
-                              : `$${formatMonto(metodo.saldo_disponible)}`}
-                          </span>
-                        </div>
-                      ))}
+                  {banco.tiene_punto_venta ? (
+                    <div style={porAcreditarBoxStyle}>
+                      <div style={{ fontWeight: 800, color: '#ffe3a3' }}>
+                        Por acreditar: {banco.moneda === 'VES' ? `Bs. ${formatMonto(banco.por_acreditar_bs)} ` : ''}
+                        <span style={secondaryAmountStyle}>(${formatMonto(banco.por_acreditar_usd)})</span>
+                      </div>
+                      <div>{banco.lotes_por_acreditar.length} lote(s) sin acreditar</div>
                     </div>
-                  ) : (
-                    <div style={cuentaDetalleStyle}>
-                      <span>+${formatMonto(banco.metodos[0].ingresos_acumulados)} cobrado</span>
-                      {Number(banco.metodos[0].ingresos_extra_acumulados) > 0 ? (
-                        <span>+${formatMonto(banco.metodos[0].ingresos_extra_acumulados)} propinas/extra</span>
-                      ) : null}
-                      <span>−${formatMonto(banco.metodos[0].gastos_acumulados)} gastos</span>
-                      <span>−${formatMonto(banco.metodos[0].compras_acumuladas)} proveedores</span>
-                      {Number(banco.metodos[0].consignado_acumulado) > 0 ? (
-                        <span>−${formatMonto(banco.metodos[0].consignado_acumulado)} consignado</span>
-                      ) : null}
-                      {Number(banco.metodos[0].transferencias_entrantes_acumuladas) > 0 ? (
-                        <span>+${formatMonto(banco.metodos[0].transferencias_entrantes_acumuladas)} transferido a esta cuenta</span>
-                      ) : null}
-                      {Number(banco.metodos[0].transferencias_salientes_acumuladas) > 0 ? (
-                        <span>−${formatMonto(banco.metodos[0].transferencias_salientes_acumuladas)} transferido desde esta cuenta</span>
-                      ) : null}
-                      {banco.metodos[0].es_efectivo ? <span style={efectivoBadgeStyle}>Efectivo</span> : null}
-                    </div>
-                  )}
+                  ) : null}
+                  {/* Las tarjetas muestran solo el saldo: el desglose (cobrado, gastos, proveedores, metodos)
+                      confundia. Ese detalle sigue en la tabla "Detalle por cuenta" de mas abajo. */}
                 </article>
               ))}
             </div>
           </section>
+
+          {transitorio && Number(transitorio.total_usd) > 0 ? (
+            <section style={panelStyle}>
+              <div style={sectionTitleStyle}>Puntos de venta por cobrar (transitorio) — al {fecha}</div>
+              <div style={{ fontSize: 12.5, color: '#c8bbbb' }}>
+                Lotes de punto de venta abiertos o cerrados que todavía no se acreditan: ${formatMonto(transitorio.total_usd)} en total.
+              </div>
+              <div style={tableWrapStyle}>
+                <div style={transitorioTableStyle}>
+                  <div style={headStyle}>Banco</div>
+                  <div style={headStyle}>Lotes abiertos</div>
+                  <div style={headStyle}>Lotes cerrados</div>
+                  <div style={headStyle}>Por acreditar</div>
+                  {transitorio.por_banco.map((item) => (
+                    <Fragment key={item.banco}>
+                      <div style={cellStyle}>{item.banco}</div>
+                      <div style={cellStyle}>{item.lotes_abiertos}</div>
+                      <div style={cellStyle}>{item.lotes_cerrados}</div>
+                      <div style={cellStyle}>${formatMonto(item.monto_usd)}</div>
+                    </Fragment>
+                  ))}
+                </div>
+              </div>
+              {onNavigate ? (
+                <button type="button" className="no-print" onClick={() => onNavigate('contabilidad-lotes-pos')} style={verLotesLinkStyle}>
+                  Ver lotes de punto de venta →
+                </button>
+              ) : null}
+            </section>
+          ) : null}
 
           <section style={panelStyle}>
             <div style={sectionTitleStyle}>Detalle por cuenta</div>
@@ -218,6 +222,7 @@ function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTra
                 <div style={headStyle}>Proveedores</div>
                 <div style={headStyle}>Consignado</div>
                 <div style={headStyle}>Saldo disponible</div>
+                <div style={headStyle}>Por acreditar</div>
                 {cuentas.map((cuenta) => (
                   <Fragment key={cuenta.id}>
                     <div style={cellStyle}>{cuenta.nombre}{cuenta.es_efectivo ? ' (efectivo)' : ''}</div>
@@ -229,6 +234,7 @@ function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTra
                     <div style={{ ...cellStyle, fontWeight: 800, color: Number(cuenta.saldo_disponible) < 0 ? '#ff9d9d' : '#8fffb0' }}>
                       ${formatMonto(cuenta.saldo_disponible)}
                     </div>
+                    <div style={cellStyle}>{cuenta.es_punto_venta ? `$${formatMonto(cuenta.por_acreditar_usd)}` : '—'}</div>
                   </Fragment>
                 ))}
                 <div style={{ ...cellStyle, fontWeight: 800 }}>Total disponible</div>
@@ -238,6 +244,7 @@ function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTra
                 <div style={cellStyle} />
                 <div style={cellStyle} />
                 <div style={{ ...cellStyle, fontWeight: 800 }}>${formatMonto(data.total_disponible)}</div>
+                <div style={{ ...cellStyle, fontWeight: 800 }}>${formatMonto(data.total_por_acreditar)}</div>
               </div>
             </div>
           </section>
@@ -251,8 +258,6 @@ const containerStyle = (isMobile) => ({ display: 'grid', gap: 16, padding: isMob
 const headerRowStyle = (isMobile) => ({ display: 'flex', justifyContent: 'space-between', alignItems: isMobile ? 'flex-start' : 'center', flexDirection: isMobile ? 'column' : 'row', gap: 12 });
 const titleStyle = (isMobile) => ({ margin: 0, color: '#fff', fontSize: isMobile ? 28 : 34 });
 const subtitleStyle = { margin: '8px 0 0', color: '#d2c3c3', maxWidth: 680, lineHeight: 1.6 };
-const dateLabelStyle = { display: 'flex', flexDirection: 'column', gap: 6, color: '#f2e6e6', fontSize: 13, fontWeight: 700 };
-const dateInputStyle = { borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: '#161010', padding: '10px 12px', color: '#fff' };
 const panelStyle = { display: 'grid', gap: 14, padding: 18, borderRadius: 20, border: '1px solid rgba(255,255,255,0.1)', background: 'linear-gradient(180deg, rgba(20,10,10,0.95) 0%, rgba(8,8,8,0.98) 100%)' };
 const sectionTitleStyle = { color: '#fff', fontSize: 19, fontWeight: 700 };
 const emptyStyle = { minHeight: 80, display: 'grid', placeItems: 'center', borderRadius: 14, border: '1px dashed rgba(255,255,255,0.12)', color: '#c8bbbb' };
@@ -267,15 +272,14 @@ const cuentaCardStyle = (negativo) => ({
 const cuentaHeaderStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 };
 const cuentaNombreStyle = { color: '#fff', fontWeight: 700, fontSize: 15, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' };
 const inactivaBadgeStyle = { fontSize: 10.5, fontWeight: 800, color: '#c8bbbb', background: 'rgba(255,255,255,0.08)', padding: '2px 8px', borderRadius: 999, textTransform: 'uppercase', letterSpacing: '0.04em' };
-const efectivoBadgeStyle = { fontSize: 10.5, fontWeight: 800, color: '#bdf0cf', background: 'rgba(70,200,120,0.14)', padding: '2px 8px', borderRadius: 999, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' };
 const cuentaSaldoStyle = (negativo) => ({ fontSize: 22, fontWeight: 800, color: negativo ? '#ff9d9d' : '#fff' });
-const cuentaDetalleStyle = { display: 'flex', flexDirection: 'column', gap: 2, color: '#c8bbbb', fontSize: 12.5 };
 const secondaryAmountStyle = { color: '#c8bbbb', fontSize: 13, marginLeft: 6, fontWeight: 600 };
-const metodosAnidadosStyle = { display: 'grid', gap: 4, paddingTop: 6, borderTop: '1px dashed rgba(255,255,255,0.12)' };
-const metodoAnidadoRowStyle = { display: 'flex', justifyContent: 'space-between', gap: 8, color: '#d2c3c3', fontSize: 12.5 };
 
+const porAcreditarBoxStyle = { display: 'grid', gap: 2, padding: '8px 10px', borderRadius: 10, border: '1px dashed rgba(255,207,133,0.4)', background: 'rgba(255,207,133,0.06)', color: '#e8d9b6', fontSize: 12.5 };
+const transitorioTableStyle = { display: 'grid', gridTemplateColumns: 'minmax(140px,1.2fr) repeat(3, minmax(110px,0.8fr))', minWidth: 520, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, overflow: 'hidden' };
+const verLotesLinkStyle = { border: 'none', background: 'none', color: '#ff9d9d', fontSize: 13, fontWeight: 700, cursor: 'pointer', padding: 0, textAlign: 'left', width: 'fit-content' };
 const tableWrapStyle = { overflowX: 'auto' };
-const tableStyle = { display: 'grid', gridTemplateColumns: 'minmax(160px,1.1fr) minmax(110px,0.8fr) minmax(120px,0.8fr) minmax(100px,0.7fr) minmax(120px,0.8fr) minmax(110px,0.7fr) minmax(140px,0.9fr)', minWidth: 940, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, overflow: 'hidden' };
+const tableStyle = { display: 'grid', gridTemplateColumns: 'minmax(160px,1.1fr) minmax(110px,0.8fr) minmax(120px,0.8fr) minmax(100px,0.7fr) minmax(120px,0.8fr) minmax(110px,0.7fr) minmax(140px,0.9fr) minmax(120px,0.8fr)', minWidth: 1060, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, overflow: 'hidden' };
 const headStyle = { padding: '12px 14px', background: 'rgba(255,255,255,0.06)', color: '#ffb0b0', fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 800 };
 const cellStyle = { padding: '14px', borderTop: '1px solid rgba(255,255,255,0.08)', color: '#f2e6e6', display: 'grid', alignContent: 'center' };
 

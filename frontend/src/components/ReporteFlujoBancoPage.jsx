@@ -208,14 +208,15 @@ function ReporteFlujoBancoPage({ isMobile, onBack }) {
               <div style={emptyStyle}>No hay movimientos de este tipo en este día.</div>
             ) : (
               <div style={tableWrapStyle}>
-                <div style={detalleTableStyle}>
+                <div style={detalleSeleccionado.tipo === 'salida' ? detalleSalidaTableStyle : detalleTableStyle}>
                   <div style={headStyle}>Hora</div>
+                  {detalleSeleccionado.tipo === 'salida' ? <div style={headStyle}>ID</div> : null}
                   <div style={headStyle}>Método</div>
                   <div style={headStyle}>Origen</div>
                   <div style={headStyle}>Referencia</div>
                   <div style={headStyle}>Monto</div>
                   {detalleData.movimientos.map((movimiento, index) => (
-                    <FragmentMovimiento key={index} movimiento={movimiento} moneda={detalleData.moneda} />
+                    <FragmentMovimiento key={index} movimiento={movimiento} moneda={detalleData.moneda} conId={detalleSeleccionado.tipo === 'salida'} />
                   ))}
                 </div>
               </div>
@@ -254,10 +255,11 @@ function FilaDia({ dia, moneda, onAbrirDetalle }) {
   );
 }
 
-function FragmentMovimiento({ movimiento, moneda }) {
+function FragmentMovimiento({ movimiento, moneda, conId }) {
   return (
     <>
       <div style={cellStyle}>{movimiento.hora || '—'}</div>
+      {conId ? <div style={{ ...cellStyle, fontWeight: 700, color: '#ffd9a0' }}>{movimiento.documento_codigo || '—'}</div> : null}
       <div style={cellStyle}>{movimiento.metodo_pago || '—'}</div>
       <div style={cellStyle}>{movimiento.origen}</div>
       <div style={cellStyle}>{movimiento.referencia || '—'}</div>
@@ -294,6 +296,7 @@ const summaryStyle = { color: '#c8bbbb', fontSize: 14 };
 const tableWrapStyle = { overflowX: 'auto' };
 const tableStyle = { display: 'grid', gridTemplateColumns: 'minmax(120px,0.7fr) minmax(140px,1fr) minmax(140px,1fr)', gap: '4px 12px', alignItems: 'center', minWidth: 480 };
 const detalleTableStyle = { display: 'grid', gridTemplateColumns: 'minmax(70px,0.5fr) minmax(120px,0.8fr) minmax(160px,1.2fr) minmax(120px,0.8fr) minmax(110px,0.7fr)', gap: '4px 12px', alignItems: 'center', minWidth: 700 };
+const detalleSalidaTableStyle = { display: 'grid', gridTemplateColumns: 'minmax(70px,0.5fr) minmax(90px,0.6fr) minmax(120px,0.8fr) minmax(160px,1.2fr) minmax(120px,0.8fr) minmax(110px,0.7fr)', gap: '4px 12px', alignItems: 'center', minWidth: 800 };
 const headStyle = { color: '#f0b4b4', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', padding: '4px 2px', borderBottom: '1px solid rgba(255,255,255,0.1)' };
 const cellStyle = { color: '#f2e6e6', fontSize: 13, padding: '6px 2px', borderBottom: '1px solid rgba(255,255,255,0.05)' };
 const montoClicableStyle = (tipo) => ({

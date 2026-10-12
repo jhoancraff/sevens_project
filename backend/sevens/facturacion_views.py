@@ -26,6 +26,7 @@ from .api_views import (
     _snapshot_costo_venta_detalles,
 )
 from .auth_helpers import _auth_response, _is_admin_user, _is_cajera_user, _is_owner_or_contador_user
+from .delivery import texto_cargo
 from .impresion_lpd import (
     codigo_cobro,
     imprimir_factura_caja,
@@ -49,7 +50,9 @@ from .models import (
     VGPreFactura,
     VGPreFacturaLinea,
 )
+from .lotes_pos import asignar_pago_a_lote
 from .tasa_cambio import obtener_tasa_actual
+from .tasa_cuenta import minutos_restantes, prefactura_que_cubre, resolver_tasa_cuenta
 
 logger = logging.getLogger(__name__)
 
@@ -220,10 +223,20 @@ def _lineas_data_desde_pedidos(pedidos, porcentaje_iva):
                     'precio_unitario': opcion.precio_unitario,
                     'porcentaje_iva': porcentaje_iva,
                 })
+        # El cargo de delivery no es un producto: va como su propia linea para que la cuenta del cliente
+        # y la factura sumen lo mismo que el total del pedido (ver delivery.py).
+        if pedido.cargo_delivery and pedido.cargo_delivery > 0:
+            lineas.append({
+                'descripcion': texto_cargo(pedido),
+                'producto_id': None,
+                'cantidad': Decimal('1'),
+                'precio_unitario': pedido.cargo_delivery,
+                'porcentaje_iva': porcentaje_iva,
+            })
     return lineas
 
 
-def _emitir_factura(pedidos, cliente, request_user, pre_factura=None, porcentaje_iva=None, moneda='USD'):
+def _emitir_factura(pedidos, cliente, request_user, pre_factura=None, porcentaje_iva=None, moneda='USD', usar_tasa_actual=False):
     """
     Crea la VGFactura + lineas + VGOrdenCobro a partir de pedidos ya
     validados y bloqueados (ver _pedidos_facturables_por_ids). Descuenta
@@ -238,7 +251,8 @@ def _emitir_factura(pedidos, cliente, request_user, pre_factura=None, porcentaje
 
     numero_factura = VGCorrelativoFiscal.siguiente('FACTURA')
     numero_control = VGCorrelativoFiscal.siguiente('CONTROL')
-    tasa_actual = obtener_tasa_actual()
+    # Misma tasa que se le dijo al cliente en la pre-factura mientras siga vigente (ver tasa_cuenta.py).
+    tasa_emision = resolver_tasa_cuenta([pedido.id for pedido in pedidos], usar_tasa_actual, prefactura=pre_factura)['tasa']
 
     factura = VGFactura.objects.create(
         numero_factura=numero_factura,
@@ -246,7 +260,7 @@ def _emitir_factura(pedidos, cliente, request_user, pre_factura=None, porcentaje
         cliente=cliente,
         pre_factura=pre_factura,
         moneda=moneda,
-        tasa_cambio_referencia=tasa_actual.tasa if tasa_actual else None,
+        tasa_cambio_referencia=tasa_emision,
         creado_por=request_user,
         actualizado_por=request_user,
     )
@@ -358,6 +372,7 @@ def _serialize_prefactura(prefactura):
         'total': str(prefactura.total),
         'moneda': prefactura.moneda,
         'tasa_cambio_referencia': str(prefactura.tasa_cambio_referencia) if prefactura.tasa_cambio_referencia is not None else None,
+        'tasa_minutos_restantes': minutos_restantes(prefactura) if prefactura.tasa_cambio_referencia is not None else 0,
         'estado': prefactura.estado,
         'notas': prefactura.notas,
         'lineas': [_serialize_linea(linea) for linea in prefactura.lineas.all()],
@@ -566,12 +581,22 @@ def prefacturas_view(request):
 
         porcentaje_iva = _porcentaje_iva_default()
         numero = VGCorrelativoFiscal.siguiente('PREFACTURA')
-        tasa_actual = obtener_tasa_actual()
+        # Generar la cuenta otra vez (doble clic, reimpresion) NO cambia lo que se le dijo al cliente: si ya hay
+        # una pre-factura vigente de estos pedidos con la tasa dentro de la ventana, se hereda su tasa y su hora
+        # de congelado. Solo 'renovar_tasa' congela la tasa de hoy y reinicia la ventana (ver tasa_cuenta.py).
+        renovar_tasa = bool(data.get('renovar_tasa'))
+        previa = None if renovar_tasa else prefactura_que_cubre(pedido_ids)
+        if previa is not None:
+            tasa_cuenta, tasa_fijada_en = previa.tasa_cambio_referencia, (previa.tasa_fijada_en or previa.fecha_emision)
+        else:
+            tasa_actual = obtener_tasa_actual()
+            tasa_cuenta, tasa_fijada_en = (tasa_actual.tasa if tasa_actual else None), timezone.now()
         prefactura = VGPreFactura.objects.create(
             numero=numero,
             cliente=cliente,
             moneda=moneda,
-            tasa_cambio_referencia=tasa_actual.tasa if tasa_actual else None,
+            tasa_cambio_referencia=tasa_cuenta,
+            tasa_fijada_en=tasa_fijada_en,
             notas=str(data.get('notas', '') or '').strip(),
             creado_por=request.user,
             actualizado_por=request.user,
@@ -602,6 +627,7 @@ def prefacturas_view(request):
         'ok': True,
         'message': 'Pre-factura generada correctamente.',
         'prefactura': _serialize_prefactura(prefactura),
+        'tasa_reutilizada': previa is not None,
     }, status=201)
 
 
@@ -612,6 +638,12 @@ def prefactura_convertir_view(request, prefactura_id):
 
     if not (_is_admin_user(request.user) or _is_cajera_user(request.user)):
         return _auth_response({'ok': False, 'message': 'No tienes permiso para emitir facturas.'}, status=401)
+
+    try:
+        cuerpo = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        cuerpo = {}
+    usar_tasa_actual = bool(cuerpo.get('usar_tasa_actual'))
 
     with transaction.atomic():
         try:
@@ -643,7 +675,7 @@ def prefactura_convertir_view(request, prefactura_id):
 
         factura = _emitir_factura(
             pedidos, cliente, request.user, pre_factura=prefactura, porcentaje_iva=porcentaje_iva,
-            moneda=prefactura.moneda,
+            moneda=prefactura.moneda, usar_tasa_actual=usar_tasa_actual,
         )
 
         prefactura.estado = 'convertida'
@@ -750,7 +782,7 @@ def facturas_view(request):
         if error:
             return _auth_response({'ok': False, 'message': error}, status=409)
 
-        factura = _emitir_factura(pedidos, cliente, request.user, moneda=moneda)
+        factura = _emitir_factura(pedidos, cliente, request.user, moneda=moneda, usar_tasa_actual=bool(data.get('usar_tasa_actual')))
 
     try:
         imprimir_factura_caja(factura)
@@ -877,6 +909,8 @@ def factura_abono_view(request, factura_id):
             ),
             creado_por=request.user,
         )
+        # Metodo de punto de venta: el cobro entra al lote POS abierto del metodo.
+        asignar_pago_a_lote(pago, request.user)
 
         # Se redondea a 6 decimales (mismos que VGPago.monto), no a 2 — con 2
         # decimales, un abono exacto por Bs dejaba un residuo de varios
@@ -1041,6 +1075,12 @@ def _serialize_nota_entrega(nota, incluir_detalle=True, tasa_pago_actual=None):
         'motivo_anulacion': nota.motivo_anulacion,
         'creado_por': (nota.creado_por.get_full_name() or nota.creado_por.username) if nota.creado_por else '',
         'pedidos': [pedido.id for pedido in nota.pedidos.all()],
+        # Lo que se cobro de delivery en esta nota (ya esta dentro de `total`), para mostrarlo como linea aparte.
+        'cargo_delivery': str(sum((pedido.cargo_delivery for pedido in nota.pedidos.all()), Decimal('0'))),
+        'zona_delivery': ', '.join(sorted({
+            pedido.zona_delivery_nombre for pedido in nota.pedidos.all()
+            if pedido.cargo_delivery > 0 and pedido.zona_delivery_nombre
+        })),
     }
     if nota.estado != 'pagada':
         # Tasa que se usaria AHORA MISMO si se le registrara un abono a esta
@@ -1118,7 +1158,7 @@ def notas_entrega_view(request):
         'ok': True,
         'notas_entrega': [
             _serialize_nota_entrega(nota, incluir_detalle=False, tasa_pago_actual=tasa_pago_actual)
-            for nota in notas[:200]
+            for nota in notas
         ],
     })
 
@@ -1271,6 +1311,8 @@ def nota_entrega_abono_view(request, nota_id):
             creado_por=request.user,
             numero_cobro=VGCorrelativoFiscal.siguiente('NOTA_COBRO'),
         )
+        # Metodo de punto de venta: el cobro entra al lote POS abierto del metodo.
+        asignar_pago_a_lote(pago, request.user)
 
         # Ver el comentario equivalente en factura_abono_view: se redondea a 6
         # decimales (mismos que VGPago.monto), no a 2, para no perder

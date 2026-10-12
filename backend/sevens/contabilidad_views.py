@@ -6,15 +6,37 @@ menu, inventario, pedidos, cocina, checkout...) para que ninguno de los
 dos archivos seguiera creciendo junto por cosas sin relacion.
 """
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
+from types import SimpleNamespace
 
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from .api_views import _calcular_margen_periodo, _serialize_detalle_adicionales, _serialize_detalle_opciones
+from .api_views import (
+    _costo_con_margen_detalle,
+    _product_recipe_components,
+    _costo_unitario_efectivo,
+    _load_preparation_cost_map,
+    _serialize_detalle_adicionales,
+    _serialize_detalle_opciones,
+)
+from .impresion_lpd import imprimir_cierre_lote_pos
+from .lotes_pos import (
+    LoteError,
+    acreditar_lote,
+    anular_lote,
+    aplicar_cambio_metodo_pago,
+    autoclausurar_lotes_abiertos,
+    backfill_historico_metodo,
+    cerrar_lote,
+    mover_pago_de_lote,
+    reabrir_lote,
+    revertir_acreditacion,
+    validar_cambio_metodo_pago,
+)
 from .auth_helpers import _auth_response, _is_admin_user, _is_cajera_user
 from .models import (
     VGAbonoCompra,
@@ -23,8 +45,11 @@ from .models import (
     VGConsignacionCaja,
     VGCorreccionMetodoPago,
     VGDetallePedido,
+    VGConfiguracionCosteo,
     VGGasto,
+    VGIngrediente,
     VGIngresoExtra,
+    VGLotePOS,
     VGMetodoPago,
     VGNotaEntrega,
     VGPago,
@@ -39,7 +64,9 @@ from .reportes import (
     detalle_ventas_rango,
     disponibilidad_por_cuenta,
     efectivo_esperado_dia,
+    efectivo_esperado_por_moneda,
     gastos_efectivo_dia,
+    pos_por_cobrar_transitorio,
     resumen_cuadre_caja_rango,
     resumen_flujo_banco_mes,
     resumen_ventas_rango,
@@ -57,6 +84,7 @@ def _serialize_metodo_pago(metodo):
         'es_efectivo': metodo.es_efectivo,
         'cuenta_bancaria': metodo.cuenta_bancaria,
         'activo': metodo.activo,
+        'es_punto_venta': metodo.es_punto_venta,
     }
 
 
@@ -109,6 +137,7 @@ def ingresos_extra_view(request):
         ingresos = (
             VGIngresoExtra.objects
             .filter(fecha_creacion__date=timezone.localdate())
+            .exclude(tipo='ingreso_no_facturado')
             .select_related('metodo_pago', 'creado_por')
             .order_by('-fecha_creacion')
         )
@@ -308,6 +337,42 @@ def admin_metodos_pago_view(request):
             'metodo_pago': _serialize_metodo_pago(metodo),
         })
 
+    if action == 'marcar_punto_venta':
+        try:
+            metodo = VGMetodoPago.objects.get(pk=int(data.get('id')))
+        except (TypeError, ValueError, VGMetodoPago.DoesNotExist):
+            return _auth_response({'ok': False, 'message': 'El metodo de pago no existe.'}, status=400)
+
+        es_punto_venta = bool(data.get('es_punto_venta'))
+        if es_punto_venta and metodo.moneda != 'VES':
+            return _auth_response({
+                'ok': False,
+                'message': 'Solo un metodo en bolivares puede ser punto de venta.',
+            }, status=400)
+        if metodo.es_punto_venta and not es_punto_venta:
+            if VGLotePOS.objects.filter(metodo_pago=metodo, estado__in=('abierto', 'cerrado')).exists():
+                return _auth_response({
+                    'ok': False,
+                    'message': 'Este metodo tiene lotes abiertos o cerrados sin acreditar: acreditalos antes de quitarle punto de venta.',
+                }, status=400)
+
+        activando = es_punto_venta and not metodo.es_punto_venta
+        with transaction.atomic():
+            metodo.es_punto_venta = es_punto_venta
+            metodo.actualizado_por = request.user
+            metodo.save(update_fields=['es_punto_venta', 'actualizado_por', 'fecha_actualizacion'])
+            # Al marcar el metodo como POS por primera vez, sus cobros anteriores se agrupan
+            # en lotes historicos ya acreditados para no alterar los saldos que el usuario ya conoce.
+            lotes_historicos = backfill_historico_metodo(metodo, request.user) if activando else 0
+        return _auth_response({
+            'ok': True,
+            'message': 'Metodo actualizado.' + (
+                f' Se agruparon {lotes_historicos} dias de cobros anteriores en lotes historicos ya acreditados.' if lotes_historicos else ''
+            ),
+            'lotes_historicos_creados': lotes_historicos,
+            'metodo_pago': _serialize_metodo_pago(metodo),
+        })
+
     return _auth_response({'ok': False, 'message': 'Accion invalida.'}, status=400)
 
 
@@ -376,6 +441,8 @@ def _serialize_cierre_caja(cierre):
         'total_consignado': str(cierre.total_consignado),
         'efectivo_contado_final': str(cierre.efectivo_contado_final),
         'diferencia': str(cierre.diferencia),
+        'conteo_efectivo_realizado': cierre.conteo_efectivo_realizado,
+        'pos_por_acreditar_usd': str(cierre.pos_por_acreditar_usd),
         'notas': cierre.notas,
         'cerrado_por': cierre.creado_por.get_full_name() or cierre.creado_por.username if cierre.creado_por else '',
         'fecha_creacion': cierre.fecha_creacion.isoformat(),
@@ -478,6 +545,7 @@ def reporte_cuadre_caja_view(request):
         ingresos_extra_dia = (
             VGIngresoExtra.objects
             .filter(fecha_creacion__date=fecha)
+            .exclude(tipo='ingreso_no_facturado')
             .select_related('metodo_pago', 'creado_por')
             .order_by('-fecha_creacion')
         )
@@ -492,6 +560,8 @@ def reporte_cuadre_caja_view(request):
 
         correcciones_pago = _ultimas_correcciones_por_registro('pago', [item.id for item in pagos_dia])
         correcciones_ingreso = _ultimas_correcciones_por_registro('ingreso_extra', [item.id for item in ingresos_extra_dia])
+        cuentas_disp, _bancos_disp = disponibilidad_por_cuenta(fecha)
+        disponibilidad_real = sum((cuenta['saldo_disponible'] for cuenta in cuentas_disp), Decimal('0'))
 
         return _auth_response({
             'ok': True,
@@ -526,7 +596,12 @@ def reporte_cuadre_caja_view(request):
             'metodos_pago': [_serialize_metodo_pago(metodo) for metodo in VGMetodoPago.objects.filter(activo=True).order_by('nombre')],
             'gastos_efectivo_dia': str(gastos_efectivo_dia(fecha)),
             'efectivo_esperado_preview': str(efectivo_esperado_dia(fecha)),
+            'efectivo_por_moneda': {
+                clave: (str(valor) if valor is not None else None)
+                for clave, valor in efectivo_esperado_por_moneda(fecha).items()
+            },
             'cierre': _serialize_cierre_caja(cierre),
+            'pos': _bloque_pos_cuadre(fecha, disponibilidad_real),
         })
 
     try:
@@ -573,8 +648,17 @@ def reporte_cuadre_caja_view(request):
             if metodo_nuevo.id == pago.metodo_pago_id:
                 return _auth_response({'ok': False, 'message': 'Ya está en esa cuenta.'}, status=400)
 
+            # Un cobro que ya esta en un lote POS cerrado/acreditado no se mueve de
+            # cuenta sin reabrir el lote antes (su dinero ya esta en una maquina y un banco).
+            bloqueo_lote = validar_cambio_metodo_pago(pago)
+            if bloqueo_lote:
+                return _auth_response({'ok': False, 'message': bloqueo_lote}, status=400)
+            if metodo_nuevo.es_punto_venta and metodo_nuevo.moneda != 'VES':
+                return _auth_response({'ok': False, 'message': 'Un metodo de punto de venta debe ser en bolivares.'}, status=400)
+
             pago.metodo_pago = metodo_nuevo
             pago.save(update_fields=['metodo_pago'])
+            aplicar_cambio_metodo_pago(pago, request.user)
             VGCorreccionMetodoPago.objects.create(
                 tipo='pago', registro_id=pago.id, metodo_anterior=metodo_anterior, metodo_nuevo=metodo_nuevo,
                 motivo=motivo, creado_por=request.user, actualizado_por=request.user,
@@ -641,34 +725,66 @@ def reporte_cuadre_caja_view(request):
         }, status=201)
 
     if action == 'cerrar_caja':
+        # Ya NO se cuenta el efectivo a mano (esa seccion se quito del cuadre):
+        # cerrar la caja registra el efectivo esperado, lo consignado, autoclausura
+        # los lotes POS que sigan abiertos (decision cerrada: lotes automaticos) y
+        # congela cuanto queda por acreditar. `efectivo_contado_final` solo se
+        # acepta si alguien lo manda explicitamente (clientes viejos).
         if VGCierreCaja.objects.filter(fecha=fecha).exists():
             return _auth_response({'ok': False, 'message': 'La caja de ese dia ya esta cerrada.'}, status=400)
 
-        try:
-            efectivo_contado_final = Decimal(str(data.get('efectivo_contado_final', '')))
-        except InvalidOperation:
-            return _auth_response({'ok': False, 'message': 'El monto contado no es valido.'}, status=400)
-        if efectivo_contado_final < 0:
-            return _auth_response({'ok': False, 'message': 'El monto contado no puede ser negativo.'}, status=400)
+        efectivo_contado_raw = data.get('efectivo_contado_final')
+        contado_explicito = efectivo_contado_raw not in (None, '')
+        if contado_explicito:
+            try:
+                efectivo_contado_final = Decimal(str(efectivo_contado_raw))
+            except InvalidOperation:
+                return _auth_response({'ok': False, 'message': 'El monto contado no es valido.'}, status=400)
+            if efectivo_contado_final < 0:
+                return _auth_response({'ok': False, 'message': 'El monto contado no puede ser negativo.'}, status=400)
 
-        efectivo_esperado = efectivo_esperado_dia(fecha)
-        consignado = total_consignado(fecha)
-        diferencia = (consignado + efectivo_contado_final) - efectivo_esperado
+        with transaction.atomic():
+            # Solo se autoclausura al cerrar el dia de HOY: los lotes se cierran "ahora"
+            # (hora de corte real), no con la hora de un dia pasado.
+            lotes_autocerrados = []
+            if fecha == timezone.localdate():
+                lotes_autocerrados = autoclausurar_lotes_abiertos(request.user)
 
-        cierre = VGCierreCaja.objects.create(
-            fecha=fecha,
-            efectivo_esperado=efectivo_esperado,
-            total_consignado=consignado,
-            efectivo_contado_final=efectivo_contado_final,
-            diferencia=diferencia,
-            notas=str(data.get('notas', '') or '').strip(),
-            creado_por=request.user,
-        )
+            efectivo_esperado = efectivo_esperado_dia(fecha)
+            consignado = total_consignado(fecha)
+            if not contado_explicito:
+                efectivo_contado_final = efectivo_esperado - consignado
+            diferencia = (consignado + efectivo_contado_final) - efectivo_esperado
+
+            cierre = VGCierreCaja.objects.create(
+                fecha=fecha,
+                efectivo_esperado=efectivo_esperado,
+                total_consignado=consignado,
+                efectivo_contado_final=efectivo_contado_final,
+                diferencia=diferencia,
+                conteo_efectivo_realizado=contado_explicito,
+                pos_por_acreditar_usd=pos_por_cobrar_transitorio(fecha)['total_usd'],
+                notas=str(data.get('notas', '') or '').strip(),
+                creado_por=request.user,
+            )
+        # Los lotes que se cerraron solos tambien se imprimen (cobro por cobro) para compararlos
+        # con el cierre del punto fisico; ya con la caja cerrada, un fallo de impresora no la tumba.
+        mensaje = 'Caja cerrada correctamente.'
+        fallos_impresion = [
+            lote.numero for lote in lotes_autocerrados if not _imprimir_cierre_lote(lote)['ok']
+        ]
+        if lotes_autocerrados:
+            if fallos_impresion:
+                mensaje += f' No se pudo imprimir el detalle de los lotes {", ".join(f"#{n}" for n in fallos_impresion)}: reimprímelos desde Lotes de punto de venta.'
+            else:
+                mensaje += f' Se imprimió el detalle de {len(lotes_autocerrados)} lote(s) de punto de venta.'
         return _auth_response({
             'ok': True,
-            'message': 'Caja cerrada correctamente.',
+            'message': mensaje,
             'cierre': _serialize_cierre_caja(cierre),
         }, status=201)
+
+    return _auth_response({'ok': False, 'message': 'Accion invalida.'}, status=400)
 
 
 MAX_DIAS_RANGO_CUADRE_CAJA = 92
@@ -709,6 +825,7 @@ def reporte_cuadre_caja_rango_view(request):
     ingresos_extra_rango = (
         VGIngresoExtra.objects
         .filter(fecha_creacion__date__gte=desde, fecha_creacion__date__lte=hasta)
+        .exclude(tipo='ingreso_no_facturado')
         .select_related('metodo_pago', 'creado_por')
         .order_by('-fecha_creacion')
     )
@@ -851,6 +968,14 @@ def reporte_venta_nota_detalle_view(request, nota_id):
         },
         'mesas': mesas,
         'meseros': meseros,
+        # El delivery cobrado va aparte de los productos (no es un item de cocina).
+        'delivery': {
+            'monto': str(sum((pedido.cargo_delivery for pedido in pedidos), Decimal('0'))),
+            'zona': ', '.join(sorted({
+                pedido.zona_delivery_nombre for pedido in pedidos
+                if pedido.cargo_delivery > 0 and pedido.zona_delivery_nombre
+            })),
+        },
         'items': [
             {
                 'producto': item['producto'],
@@ -1074,6 +1199,7 @@ def reporte_disponibilidad_cuentas_view(request):
             'transferencias_entrantes_acumuladas': str(cuenta['transferencias_entrantes_acumuladas']),
             'saldo_disponible': str(cuenta['saldo_disponible']),
             'saldo_disponible_bs': str(cuenta['saldo_disponible_bs'].quantize(Decimal('0.01'))) if cuenta['saldo_disponible_bs'] is not None else None,
+            **_serialize_campos_pos(cuenta),
         }
 
     return _auth_response({
@@ -1089,11 +1215,15 @@ def reporte_disponibilidad_cuentas_view(request):
                 'moneda_mixta': banco.get('moneda_mixta', False),
                 'saldo_disponible': str(banco['saldo_disponible']),
                 'saldo_disponible_bs': str(banco['saldo_disponible_bs'].quantize(Decimal('0.01'))) if banco['saldo_disponible_bs'] is not None else None,
+                'tiene_punto_venta': banco['tiene_punto_venta'],
+                **_serialize_campos_pos(banco),
                 'metodos': [_serialize_cuenta(cuenta) for cuenta in banco['metodos']],
             }
             for banco in bancos
         ],
         'total_disponible': str(sum((cuenta['saldo_disponible'] for cuenta in cuentas), Decimal('0'))),
+        'total_por_acreditar': str(sum((cuenta['por_acreditar_usd'] for cuenta in cuentas), Decimal('0'))),
+        'pos_por_cobrar': _serialize_transitorio(pos_por_cobrar_transitorio(fecha)),
     })
 
 
@@ -1435,6 +1565,7 @@ def reporte_flujo_banco_detalle_view(request):
             {
                 'hora': movimiento['hora'].strftime('%H:%M') if movimiento['hora'] else None,
                 'metodo_pago': movimiento['metodo_pago'],
+                'documento_codigo': movimiento.get('documento_codigo'),
                 'origen': movimiento['origen'],
                 'referencia': movimiento['referencia'],
                 'monto_usd': str(movimiento['monto_usd'].quantize(Decimal('0.01'))),
@@ -1624,20 +1755,25 @@ def reporte_conciliacion_bancaria_view(request):
 # ---------------------------------------------------------------------------
 def reporte_estado_resultados_view(request):
     """
-    Ventas − costo de ingredientes = utilidad bruta; utilidad bruta − gastos
-    operativos = utilidad neta, para un rango de fechas. Reusa
-    _calcular_margen_periodo (api_views.py, la misma logica del reporte de
-    margen por plato) para "ventas" y "costo de ingredientes", y suma VGGasto
-    por fecha_gasto (no por fecha de pago: un gasto cuenta para el periodo en
-    que se incurrio, se haya pagado ya o no) para los gastos operativos.
+    Ventas − costo de ventas = utilidad bruta; utilidad bruta − gastos operativos = utilidad neta,
+    para un rango de fechas.
 
-    Las facturas de compra a proveedores (VGCompra, inventario subido por Excel)
-    tambien se suman aca como si fueran un gasto mas — a diferencia de VGGasto,
-    por fecha_pago de cada VGAbonoCompra (cuando de verdad se abono/pago, no
-    cuando se cargo la factura): asi decidio el usuario tratarlas (2026-09),
-    aceptando que un ingrediente ya vendido se cuenta dos veces (una vez aca al
-    pagarlo, otra vez en costo_ingredientes_total via el costeo por receta) —
-    ver la decision registrada en la conversacion de esa fecha.
+    - Ventas: el total cobrado de las notas de entrega pagadas o abonadas parcialmente, por fecha de
+      emision; las pendientes y anuladas no se incluyen.
+    - Costo de ventas: el costo de cada producto que se vendio en esas notas, con el mismo criterio
+      del reporte de margen por plato (costo de receta congelado al cobrar, con el margen de
+      produccion; ver _costo_con_margen_detalle). En una nota abonada a medias cuenta la misma
+      fraccion del costo que de la venta cobrada.
+    - Gastos operativos: VGGasto por fecha_gasto (no por fecha de pago: un gasto cuenta para el
+      periodo en que se incurrio, se haya pagado ya o no).
+
+    Las compras a proveedores (lotes, por Excel o manuales) NO suman: su costo ya entra por el
+    costo de lo vendido, asi que sumarlas aqui contaria el mismo ingrediente dos veces. Ver el
+    detalle de lo que se les pago en Cuentas por pagar.
+
+    `ventas_sin_costo` avisa de los productos vendidos cuyo costo salio en 0 (no tienen receta,
+    subreceta ni ingredientes anclados, o el costo de sus ingredientes es 0): sus ventas cuentan
+    completas como utilidad y por eso inflan la utilidad bruta.
     """
     if request.method != 'GET':
         return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
@@ -1655,8 +1791,76 @@ def reporte_estado_resultados_view(request):
     if desde > hasta:
         return _auth_response({'ok': False, 'message': '"Desde" no puede ser posterior a "Hasta".'}, status=400)
 
-    _platos, ventas_total, costo_ingredientes_total, ventas_total_bs = _calcular_margen_periodo(desde, hasta)
-    utilidad_bruta = ventas_total - costo_ingredientes_total
+    notas_cobradas = (
+        VGNotaEntrega.objects.filter(
+            fecha_emision__date__gte=desde,
+            fecha_emision__date__lte=hasta,
+            estado__in=['pagada', 'abonada_parcial'],
+        )
+        .prefetch_related('pedidos__detalles__producto')
+    )
+    # Costos actuales de ingredientes/preparaciones: solo como ultimo recurso para lineas viejas sin costo
+    # congelado (ver _costo_con_margen_detalle). Se cargan una sola vez.
+    ingredient_costs = {
+        row['id']: _costo_unitario_efectivo(row['costo_unitario'], row['precio_compra'], row['peso_real'])
+        for row in VGIngrediente.objects.values('id', 'costo_unitario', 'precio_compra', 'peso_real')
+    }
+    preparation_cost_map = _load_preparation_cost_map()
+    costo_puro_cache = {}
+    config_sin_rendimiento = SimpleNamespace(rendimiento_receta_pct=Decimal('0'))
+    margen_produccion_actual = VGConfiguracionCosteo.obtener_config().rendimiento_receta_pct or Decimal('0')
+
+    ventas_total = Decimal('0')
+    ventas_total_bs = Decimal('0')
+    costo_ventas = Decimal('0')
+    costo_ventas_bs = Decimal('0')
+    lineas_costo_estimado = 0
+    # producto_id -> {nombre, motivo, unidades, ventas}: lo vendido cuyo costo salio en 0.
+    productos_sin_costo = {}
+    motivo_por_producto = {}
+    for nota in notas_cobradas:
+        monto_cobrado = nota.total - nota.saldo_pendiente
+        ventas_total += monto_cobrado
+        tasa = nota.tasa_cambio_referencia or tasa_para_fecha(timezone.localdate(nota.fecha_emision))
+        if tasa:
+            ventas_total_bs += monto_cobrado * tasa
+
+        # Una nota abonada a medias cuenta solo la parte cobrada de la venta: el costo, la misma parte.
+        fraccion_cobrada = min(Decimal('1'), monto_cobrado / nota.total) if nota.total > 0 else Decimal('1')
+
+        costo_nota = Decimal('0')
+        for pedido in nota.pedidos.all():
+            for detalle in pedido.detalles.all():
+                peso_factor = (detalle.peso_gramos / Decimal('1000')) if detalle.peso_gramos else Decimal('1')
+                costo_unitario, estimado = _costo_con_margen_detalle(
+                    detalle, costo_puro_cache, ingredient_costs, preparation_cost_map,
+                    config_sin_rendimiento, margen_produccion_actual,
+                )
+                costo_nota += costo_unitario * Decimal(detalle.cantidad) * peso_factor
+                if estimado:
+                    lineas_costo_estimado += 1
+                venta_linea = detalle.precio_unitario * Decimal(detalle.cantidad) * peso_factor
+                if costo_unitario <= 0 and venta_linea > 0:
+                    producto = detalle.producto
+                    if producto.id not in motivo_por_producto:
+                        # Sin componentes: nada anclado que costear. Con componentes: costean 0.
+                        motivo_por_producto[producto.id] = (
+                            'costo_cero' if _product_recipe_components(producto) else 'sin_receta'
+                        )
+                    fila = productos_sin_costo.setdefault(producto.id, {
+                        'producto_id': producto.id,
+                        'nombre': producto.nombre,
+                        'motivo': motivo_por_producto[producto.id],
+                        'unidades': Decimal('0'),
+                        'ventas': Decimal('0'),
+                    })
+                    fila['unidades'] += Decimal(detalle.cantidad) * peso_factor
+                    fila['ventas'] += venta_linea * fraccion_cobrada
+        costo_nota *= fraccion_cobrada
+        costo_ventas += costo_nota
+        if tasa:
+            # A la tasa de esa misma venta, igual que sus bolivares de venta (el costo no tiene tasa propia).
+            costo_ventas_bs += costo_nota * tasa
 
     gastos = VGGasto.objects.filter(fecha_gasto__gte=desde, fecha_gasto__lte=hasta).select_related('categoria')
 
@@ -1677,27 +1881,6 @@ def reporte_estado_resultados_view(request):
             monto_bs = gasto.monto * gasto.tasa_cambio_referencia
             gastos_total_bs += monto_bs
             entry['total_bs'] += monto_bs
-    # Abonos a compras de proveedores pagados DENTRO del rango (por fecha_pago,
-    # no por cuándo se cargó la factura) — se agrupan bajo una categoría
-    # sintética para que aparezcan en el mismo desglose que los gastos.
-    abonos_compra = VGAbonoCompra.objects.filter(
-        fecha_pago__date__gte=desde, fecha_pago__date__lte=hasta,
-    ).select_related('compra')
-    compras_pagadas_total = Decimal('0')
-    compras_pagadas_total_bs = Decimal('0')
-    for abono in abonos_compra:
-        compras_pagadas_total += abono.monto
-        if abono.tasa_cambio_referencia:
-            compras_pagadas_total_bs += abono.monto * abono.tasa_cambio_referencia
-    if compras_pagadas_total > 0:
-        gastos_total += compras_pagadas_total
-        gastos_total_bs += compras_pagadas_total_bs
-        totales_por_categoria['__compras_proveedores'] = {
-            'categoria_nombre': 'Compras a proveedores (pagadas)',
-            'total': compras_pagadas_total,
-            'total_bs': compras_pagadas_total_bs,
-        }
-
     gastos_por_categoria = sorted(
         [
             {
@@ -1710,18 +1893,26 @@ def reporte_estado_resultados_view(request):
         key=lambda item: Decimal(item['total']), reverse=True,
     )
 
-    # costo_ingredientes_total NO tiene una tasa propia que congelar: es un costo
-    # unitario corriente (VGIngrediente.costo_unitario, promedio móvil por
-    # VGCompra), no una transacción individual — ver el docstring de
-    # _calcular_margen_periodo. Se convierte con la tasa vigente al CIERRE del
-    # período (no la de hoy), para que el mismo período reportado no cambie de
-    # valor en bolívares según cuándo se consulte, aunque no sea una suma
-    # registro-por-registro como ventas_total_bs/gastos_total_bs.
-    tasa_fin_periodo = tasa_para_fecha(hasta)
-    costo_ingredientes_total_bs = (costo_ingredientes_total * tasa_fin_periodo) if tasa_fin_periodo else None
-    utilidad_bruta_bs = (ventas_total_bs - costo_ingredientes_total_bs) if costo_ingredientes_total_bs is not None else None
-    utilidad_neta_bs = (utilidad_bruta_bs - gastos_total_bs) if utilidad_bruta_bs is not None else None
+    ventas_sin_costo_lista = sorted(
+        (
+            {
+                'producto_id': fila['producto_id'],
+                'nombre': fila['nombre'],
+                'motivo': fila['motivo'],
+                'unidades': str(fila['unidades'].quantize(Decimal('0.01'))),
+                'ventas': str(fila['ventas'].quantize(Decimal('0.01'))),
+            }
+            for fila in productos_sin_costo.values()
+        ),
+        key=lambda fila: Decimal(fila['ventas']), reverse=True,
+    )
+    ventas_sin_costo_total = sum((fila['ventas'] for fila in productos_sin_costo.values()), Decimal('0'))
+    ventas_sin_costo_pct = (ventas_sin_costo_total / ventas_total * Decimal('100')) if ventas_total > 0 else Decimal('0')
 
+    utilidad_bruta = ventas_total - costo_ventas
+    utilidad_bruta_bs = ventas_total_bs - costo_ventas_bs
+    utilidad_bruta_pct = (utilidad_bruta / ventas_total * Decimal('100')) if ventas_total > 0 else Decimal('0')
+    utilidad_neta_bs = utilidad_bruta_bs - gastos_total_bs
     utilidad_neta = utilidad_bruta - gastos_total
     utilidad_neta_pct = (utilidad_neta / ventas_total * Decimal('100')) if ventas_total > 0 else Decimal('0')
 
@@ -1731,15 +1922,24 @@ def reporte_estado_resultados_view(request):
         'hasta': hasta.isoformat(),
         'ventas_total': str(ventas_total.quantize(Decimal('0.01'))),
         'ventas_total_bs': str(ventas_total_bs.quantize(Decimal('0.01'))),
-        'costo_ingredientes_total': str(costo_ingredientes_total.quantize(Decimal('0.01'))),
-        'costo_ingredientes_total_bs': str(costo_ingredientes_total_bs.quantize(Decimal('0.01'))) if costo_ingredientes_total_bs is not None else None,
+        'costo_ventas': str(costo_ventas.quantize(Decimal('0.01'))),
+        'costo_ventas_bs': str(costo_ventas_bs.quantize(Decimal('0.01'))),
+        # Lineas vendidas sin costo congelado al cobrar (ventas viejas): su costo es el actual, estimado.
+        'costo_lineas_estimadas': lineas_costo_estimado,
+        # Productos vendidos cuyo costo salio en 0: sus ventas cuentan enteras como utilidad.
+        'ventas_sin_costo': {
+            'total': str(ventas_sin_costo_total.quantize(Decimal('0.01'))),
+            'pct_de_ventas': str(ventas_sin_costo_pct.quantize(Decimal('0.01'))),
+            'productos': ventas_sin_costo_lista,
+        },
         'utilidad_bruta': str(utilidad_bruta.quantize(Decimal('0.01'))),
-        'utilidad_bruta_bs': str(utilidad_bruta_bs.quantize(Decimal('0.01'))) if utilidad_bruta_bs is not None else None,
+        'utilidad_bruta_bs': str(utilidad_bruta_bs.quantize(Decimal('0.01'))),
+        'utilidad_bruta_pct': str(utilidad_bruta_pct.quantize(Decimal('0.01'))),
         'gastos_total': str(gastos_total.quantize(Decimal('0.01'))),
         'gastos_total_bs': str(gastos_total_bs.quantize(Decimal('0.01'))),
         'gastos_por_categoria': gastos_por_categoria,
         'utilidad_neta': str(utilidad_neta.quantize(Decimal('0.01'))),
-        'utilidad_neta_bs': str(utilidad_neta_bs.quantize(Decimal('0.01'))) if utilidad_neta_bs is not None else None,
+        'utilidad_neta_bs': str(utilidad_neta_bs.quantize(Decimal('0.01'))),
         'utilidad_neta_pct': str(utilidad_neta_pct.quantize(Decimal('0.01'))),
     })
 
@@ -1864,3 +2064,255 @@ def reporte_movimiento_productos_view(request):
         'total_unidades_vendidas': str(total_unidades.quantize(Decimal('0.01'))),
         'total_kg_vendidos': str(total_kg.quantize(Decimal('0.01'))),
     })
+
+
+# ---------------------------------------------------------------------------
+# Lotes de punto de venta (POS)
+# ---------------------------------------------------------------------------
+def _fecha_iso(valor):
+    return valor.isoformat() if valor is not None else None
+
+
+def _str_o_none(valor):
+    return str(valor) if valor is not None else None
+
+
+def _serialize_lote(lote, incluir_pagos=False):
+    data = {
+        'id': lote.id,
+        'numero': lote.numero,
+        'codigo': f'LOTE-{lote.numero:06d}',
+        'metodo_pago_id': lote.metodo_pago_id,
+        'metodo_pago_nombre': lote.metodo_pago.nombre,
+        'cuenta_bancaria': lote.cuenta_bancaria,
+        'estado': lote.estado,
+        'estado_label': lote.get_estado_display(),
+        'fecha_operacion': _fecha_iso(lote.fecha_operacion),
+        'fecha_cierre': lote.fecha_cierre.isoformat() if lote.fecha_cierre else None,
+        'cerrado_por': (lote.cerrado_por.get_full_name() or lote.cerrado_por.username) if lote.cerrado_por else '',
+        'fecha_abono': _fecha_iso(lote.fecha_abono_real),
+        'fecha_acreditacion': lote.fecha_acreditacion.isoformat() if lote.fecha_acreditacion else None,
+        'acreditado_por': (lote.acreditado_por.get_full_name() or lote.acreditado_por.username) if lote.acreditado_por else '',
+        'notas': lote.notas,
+        'num_pagos': lote.pagos.filter(estado='completado').count(),
+        'monto_usd': str(lote.monto_bruto_usd),
+        'monto_bs': str(lote.monto_bruto_sistema_bs),
+    }
+    if incluir_pagos:
+        pagos = []
+        for pago in lote.pagos.select_related('nota_entrega__cliente', 'factura').order_by('fecha_pago'):
+            tasa = pago.tasa_cambio_referencia or (pago.nota_entrega.tasa_cambio_referencia if pago.nota_entrega_id else None)
+            pagos.append({
+                'id': pago.id,
+                'monto_usd': str(pago.monto),
+                'monto_bs': str((pago.monto * tasa).quantize(Decimal('0.01'))) if tasa else None,
+                'cliente': (
+                    f'{pago.nota_entrega.cliente.nombre} {pago.nota_entrega.cliente.apellido}'.strip()
+                    if pago.nota_entrega_id and pago.nota_entrega.cliente_id else ''
+                ),
+                'origen': (
+                    f'Nota {pago.nota_entrega.codigo}' if pago.nota_entrega_id
+                    else (f'Factura #{pago.factura_id}' if pago.factura_id else f'Pedido #{pago.pedido_id}')
+                ),
+                'referencia': pago.referencia,
+                'fecha_pago': pago.fecha_pago.isoformat(),
+                'estado': pago.estado,
+            })
+        data['pagos'] = pagos
+    return data
+
+
+def _bloque_pos_cuadre(fecha, disponibilidad_total):
+    """
+    Bloque de punto de venta del cuadre de caja de `fecha`: lotes del dia, lo que
+    sigue por acreditar (transitorio), lo acreditado ese dia y la disponibilidad
+    REAL (que excluye los lotes sin acreditar). None si no hay metodos POS ni lotes.
+    """
+    hay_metodos = VGMetodoPago.objects.filter(activo=True, es_punto_venta=True).exists()
+    lotes_dia = list(
+        VGLotePOS.objects.filter(fecha_operacion=fecha).exclude(estado='anulado')
+        .select_related('metodo_pago', 'cerrado_por', 'acreditado_por').order_by('numero')
+    )
+    abiertos = list(
+        VGLotePOS.objects.filter(estado='abierto', fecha_operacion__lte=fecha)
+        .select_related('metodo_pago', 'cerrado_por', 'acreditado_por').order_by('numero')
+    )
+    if not (hay_metodos or lotes_dia or abiertos):
+        return None
+    transitorio = pos_por_cobrar_transitorio(fecha)
+    acreditado_hoy_usd = sum(
+        (lote.monto_bruto_usd for lote in VGLotePOS.objects.filter(estado='acreditado', fecha_abono_real=fecha)),
+        Decimal('0'),
+    )
+    ids_dia = {lote.id for lote in lotes_dia}
+    return {
+        'hay_metodos_pos': hay_metodos,
+        'lotes_dia': [_serialize_lote(lote) for lote in lotes_dia],
+        'lotes_abiertos_anteriores': [_serialize_lote(lote) for lote in abiertos if lote.id not in ids_dia],
+        'cobrado_dia_usd': str(sum((lote.monto_bruto_usd for lote in lotes_dia), Decimal('0'))),
+        'acreditado_hoy_usd': str(acreditado_hoy_usd),
+        'por_acreditar_usd': str(transitorio['total_usd']),
+        'disponibilidad_real_usd': str(disponibilidad_total),
+    }
+
+
+def _serialize_campos_pos(fila):
+    """Campos POS (por acreditar y sus lotes) de una cuenta o banco."""
+    return {
+        'por_acreditar_usd': str(fila['por_acreditar_usd']),
+        'por_acreditar_bs': str(fila['por_acreditar_bs'].quantize(Decimal('0.01'))),
+        'lotes_por_acreditar': [
+            {
+                **lote,
+                'fecha_operacion': _fecha_iso(lote['fecha_operacion']),
+                'monto_bruto_usd': str(lote['monto_bruto_usd']),
+                'monto_bruto_bs': str(lote['monto_bruto_bs']),
+            }
+            for lote in fila['lotes_por_acreditar']
+        ],
+    }
+
+
+def _serialize_transitorio(transitorio):
+    return {
+        'total_usd': str(transitorio['total_usd']),
+        'por_banco': [
+            {
+                'banco': item['banco'],
+                'lotes_abiertos': item['lotes_abiertos'],
+                'lotes_cerrados': item['lotes_cerrados'],
+                'monto_usd': str(item['monto_usd']),
+            }
+            for item in transitorio['por_banco']
+        ],
+    }
+
+
+def _imprimir_cierre_lote(lote, es_reimpresion=False):
+    lote = VGLotePOS.objects.select_related('metodo_pago', 'cerrado_por').get(pk=lote.pk)
+    exito, motivo = imprimir_cierre_lote_pos(lote, es_reimpresion=es_reimpresion)
+    return {'ok': exito, 'message': motivo or 'Impreso.'}
+
+
+@csrf_exempt
+def admin_lotes_pos_view(request):
+    """
+    Lotes de punto de venta (ver VGLotePOS y lotes_pos.py).
+
+    GET: lista por rango de fecha de operacion / estado / metodo — SIEMPRE incluye
+    los lotes abiertos o cerrados sin acreditar, sin importar la fecha, porque son
+    los que requieren accion. Con `lote_id` devuelve el detalle con sus cobros.
+    POST (patron `action`): cerrar_lote y acreditar_lote (cajera/admin);
+    reabrir_lote, anular_lote y revertir_acreditacion (admin/contador).
+    """
+    if request.method not in ['GET', 'POST']:
+        return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
+
+    es_admin = _is_admin_user(request.user)
+    es_cajera = _is_cajera_user(request.user)
+    if not (es_admin or es_cajera):
+        return _auth_response({'ok': False, 'message': 'No tienes permiso para ver los lotes POS.'}, status=401)
+
+    if request.method == 'GET':
+        base = VGLotePOS.objects.select_related('metodo_pago', 'cerrado_por', 'acreditado_por')
+
+        lote_id = request.GET.get('lote_id')
+        if lote_id:
+            try:
+                lote = base.get(pk=int(lote_id))
+            except (TypeError, ValueError, VGLotePOS.DoesNotExist):
+                return _auth_response({'ok': False, 'message': 'El lote no existe.'}, status=404)
+            return _auth_response({'ok': True, 'lote': _serialize_lote(lote, incluir_pagos=True)})
+
+        hoy = timezone.localdate()
+        desde = _parse_fecha_reporte(request.GET.get('desde')) if request.GET.get('desde') else hoy - timedelta(days=30)
+        hasta = _parse_fecha_reporte(request.GET.get('hasta')) if request.GET.get('hasta') else hoy
+        if desde is None or hasta is None or desde > hasta:
+            return _auth_response({'ok': False, 'message': 'Rango de fechas invalido.'}, status=400)
+
+        lotes = base.filter(Q(fecha_operacion__gte=desde, fecha_operacion__lte=hasta) | Q(estado__in=('abierto', 'cerrado')))
+        estado = request.GET.get('estado')
+        if estado:
+            if estado not in {clave for clave, _ in VGLotePOS.ESTADOS}:
+                return _auth_response({'ok': False, 'message': 'Estado invalido.'}, status=400)
+            lotes = lotes.filter(estado=estado)
+        metodo_id = request.GET.get('metodo_pago_id')
+        if metodo_id:
+            try:
+                lotes = lotes.filter(metodo_pago_id=int(metodo_id))
+            except (TypeError, ValueError):
+                return _auth_response({'ok': False, 'message': 'Metodo invalido.'}, status=400)
+
+        lotes = list(lotes.order_by('-numero'))
+        metodos_pos = VGMetodoPago.objects.filter(es_punto_venta=True).order_by('nombre')
+        return _auth_response({
+            'ok': True,
+            'desde': desde.isoformat(),
+            'hasta': hasta.isoformat(),
+            'metodos_pos': [_serialize_metodo_pago(metodo) for metodo in metodos_pos],
+            'es_admin': es_admin,
+            'lotes': [_serialize_lote(lote) for lote in lotes],
+        })
+
+    try:
+        data = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        return _auth_response({'ok': False, 'message': 'Formato JSON invalido.'}, status=400)
+
+    action = str(data.get('action', '')).strip().lower()
+    if action not in ('cerrar_lote', 'acreditar_lote', 'imprimir_lote', 'reabrir_lote', 'anular_lote', 'revertir_acreditacion', 'mover_pago'):
+        return _auth_response({'ok': False, 'message': 'Accion invalida.'}, status=400)
+    if action not in ('cerrar_lote', 'acreditar_lote', 'imprimir_lote') and not es_admin:
+        return _auth_response({'ok': False, 'message': 'Solo administrador o contador puede hacer esto.'}, status=401)
+
+    try:
+        lote = VGLotePOS.objects.select_related('metodo_pago').get(pk=int(data.get('lote_id')))
+    except (TypeError, ValueError, VGLotePOS.DoesNotExist):
+        return _auth_response({'ok': False, 'message': 'El lote no existe.'}, status=404)
+
+    impresion = None
+    try:
+        if action == 'cerrar_lote':
+            lote = cerrar_lote(lote, request.user)
+            mensaje = f'Lote #{lote.numero} cerrado. Cuando caiga en el banco, acredítalo.'
+            # Al cerrar se imprime el detalle (cobro por cobro, con su nota de entrega) para
+            # compararlo con el cierre del punto fisico. Un fallo de impresora no tumba el cierre.
+            impresion = _imprimir_cierre_lote(lote)
+            mensaje += ' Detalle enviado a la impresora.' if impresion['ok'] else f' No se pudo imprimir el cierre: {impresion["message"]}'
+        elif action == 'imprimir_lote':
+            if lote.estado == 'anulado':
+                raise LoteError('Un lote anulado no se imprime.')
+            impresion = _imprimir_cierre_lote(lote, es_reimpresion=lote.estado != 'abierto')
+            if not impresion['ok']:
+                return _auth_response({'ok': False, 'message': impresion['message']}, status=502)
+            mensaje = f'Detalle del lote #{lote.numero} enviado a la impresora.'
+        elif action == 'acreditar_lote':
+            lote = acreditar_lote(lote, request.user)
+            mensaje = f'Lote #{lote.numero} acreditado: ${lote.monto_bruto_usd:.2f} sumados a {lote.metodo_pago.nombre}.'
+        elif action == 'reabrir_lote':
+            lote = reabrir_lote(lote, request.user, data.get('motivo'))
+            mensaje = f'Lote #{lote.numero} reabierto.'
+        elif action == 'mover_pago':
+            try:
+                pago = lote.pagos.get(pk=int(data.get('pago_id')))
+            except (TypeError, ValueError, VGPago.DoesNotExist):
+                raise LoteError('Ese cobro no pertenece a este lote.')
+            metodo_destino = None
+            if data.get('metodo_pago_id'):
+                try:
+                    metodo_destino = VGMetodoPago.objects.get(pk=int(data.get('metodo_pago_id')))
+                except (TypeError, ValueError, VGMetodoPago.DoesNotExist):
+                    raise LoteError('La cuenta elegida no existe.')
+            lote = mover_pago_de_lote(pago, request.user, data.get('motivo'), metodo_destino)
+            mensaje = f'Cobro movido fuera del lote #{lote.numero}.' + (' El lote quedo sin cobros y se anulo.' if lote.estado == 'anulado' else '')
+        elif action == 'revertir_acreditacion':
+            lote = revertir_acreditacion(lote, request.user, data.get('motivo'))
+            mensaje = f'Acreditación del lote #{lote.numero} revertida.'
+        else:
+            lote = anular_lote(lote, request.user, data.get('motivo'))
+            mensaje = f'Lote #{lote.numero} anulado.'
+    except LoteError as error:
+        return _auth_response({'ok': False, 'message': str(error)}, status=400)
+
+    lote = VGLotePOS.objects.select_related('metodo_pago', 'cerrado_por', 'acreditado_por').get(pk=lote.pk)
+    return _auth_response({'ok': True, 'message': mensaje, 'impresion': impresion, 'lote': _serialize_lote(lote, incluir_pagos=True)})

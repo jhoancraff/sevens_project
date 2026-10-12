@@ -3,6 +3,8 @@ import { limpiarFechaSeleccionada, limpiarRangoSeleccionado } from '../utils/fec
 import AdminPanelPage from './AdminPanelPage';
 import ContabilidadPanelPage from './ContabilidadPanelPage';
 import ReporteCuadreCajaPage from './ReporteCuadreCajaPage';
+import CierreCajaPage from './CierreCajaPage';
+import LotesPOSPage from './LotesPOSPage';
 import ReporteVentasDiaPage from './ReporteVentasDiaPage';
 import ReporteCuentasPorCobrarPage from './ReporteCuentasPorCobrarPage';
 import ReporteCuentasCobradasPage from './ReporteCuentasCobradasPage';
@@ -37,6 +39,7 @@ import AnalystNewPromotionPage from './AnalystNewPromotionPage';
 import AnalystNewUserPage from './AnalystNewUserPage';
 import AnalystNewRecipePage from './AnalystNewRecipePage';
 import AnalystPaymentMethodsPage from './AnalystPaymentMethodsPage';
+import AnalystZonasDeliveryPage from './AnalystZonasDeliveryPage';
 import AnalystPreparationsReportPage from './AnalystPreparationsReportPage';
 import AnalystPrintersPage from './AnalysPrintersPage';
 import AnalystProductsPage from './AnalystProductsPage';
@@ -50,12 +53,14 @@ import AnalystAjusteInventarioPage from './AnalystAjusteInventarioPage';
 import CuentasPorCobrarPage from './CuentasPorCobrarPage';
 import CuentasPorPagarPage from './CuentasPorPagarPage';
 import AnalystGastosPage from './AnalystGastosPage';
+import ReporteGastosPage from './ReporteGastosPage';
 import ComprobantePagoPage from './ComprobantePagoPage';
 import EstadoResultadosPage from './EstadoResultadosPage';
 import HistorialFacturasPage from './HistorialFacturasPage';
 import AnalystDatosFiscalesPage from './AnalystDatosFiscalesPage';
 import AnalystComprasPage from './AnalystComprasPage';
 import AnalystMargenGananciaPage from './AnalystMargenGananciaPage';
+import AnalystMargenGananciaDetalladoPage from './AnalystMargenGananciaDetalladoPage';
 import AnalystMovimientoProductosPage from './AnalystMovimientoProductosPage';
 import AnalystConfiguracionCosteoPage from './AnalystConfiguracionCosteoPage';
 import EditOrderPage from './EditOrderPage';
@@ -71,7 +76,7 @@ import useViewHistory from '../hooks/useViewHistory';
 // (no solo las suyas, ver mesas_atendidas_view) y a registrarle una ronda a un
 // mesero desbordado que le pide ayuda — "Agregar ronda a esta mesa" navega a
 // 'orders' con la mesa/cliente precargados (ver handleAddRoundToTable).
-const CAJERA_ALLOWED_VIEWS = ['checkout', 'contabilidad', 'contabilidad-cuadre-caja', 'cuentas-cobrar', 'mesas-atendidas', 'orders', 'pedidos-delivery'];
+const CAJERA_ALLOWED_VIEWS = ['checkout', 'contabilidad', 'contabilidad-cuadre-caja', 'contabilidad-cierre-caja', 'contabilidad-lotes-pos', 'cuentas-cobrar', 'mesas-atendidas', 'orders', 'pedidos-delivery'];
 // Mismas 3 tarjetas que AdminPanelPage oculta (CARTAS_RESTRINGIDAS) — reservadas al
 // dueño real del negocio o al Contador, nunca a un Administrador de rol común.
 const RESTRICTED_ADMIN_VIEWS = ['admin-printers', 'admin-datos-fiscales', 'admin-compras'];
@@ -122,8 +127,8 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
     }
   };
 
-  const handleAddRoundToTable = ({ mesaId, cliente }) => {
-    setNewOrderPreset({ mesaId, cliente, token: Date.now() });
+  const handleAddRoundToTable = ({ mesaId, cliente, clienteCedula, clienteTelefono }) => {
+    setNewOrderPreset({ mesaId, cliente, clienteCedula, clienteTelefono, token: Date.now() });
     goToView('orders');
     if (isSidebarOverlayMode) {
       setIsSidebarOpen(false);
@@ -1047,6 +1052,13 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           <AnalystGastosPage
             isMobile={isMobile}
             onBack={goBackView}
+            onVerReporte={() => goToView('gastos-reporte')}
+            onVerComprobante={(tipo, documentoId, abonoId) => goToView(`comprobante-pago:${tipo}:${documentoId}:${abonoId}`)}
+          />
+        ) : activeView === 'gastos-reporte' ? (
+          <ReporteGastosPage
+            isMobile={isMobile}
+            onBack={goBackView}
             onVerComprobante={(tipo, documentoId, abonoId) => goToView(`comprobante-pago:${tipo}:${documentoId}:${abonoId}`)}
           />
         ) : activeView.startsWith('comprobante-pago:') ? (
@@ -1064,6 +1076,12 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           />
         ) : activeView === 'margen-ganancia' ? (
           <AnalystMargenGananciaPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onVerDetalle={() => goToView('margen-ganancia-detallado')}
+          />
+        ) : activeView === 'margen-ganancia-detallado' ? (
+          <AnalystMargenGananciaDetalladoPage
             isMobile={isMobile}
             onBack={goBackView}
           />
@@ -1105,7 +1123,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             isMobile={isMobile}
             onBack={goBackView}
             onNavigate={handleAnalystNavigation}
-            onlyCardIds={isCajera ? ['contabilidad-cuadre-caja', 'cuentas-cobrar'] : null}
+            onlyCardIds={isCajera ? ['contabilidad-cuadre-caja', 'contabilidad-lotes-pos', 'cuentas-cobrar'] : null}
           />
         ) : activeView === 'contabilidad-cuadre-caja' ? (
           <ReporteCuadreCajaPage
@@ -1113,6 +1131,16 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             onBack={goBackView}
             onNavigate={handleAnalystNavigation}
             backLabel={isCajera ? '← Volver a Cobro' : '← Volver a Contabilidad'}
+          />
+        ) : activeView === 'contabilidad-cierre-caja' ? (
+          <CierreCajaPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'contabilidad-lotes-pos' ? (
+          <LotesPOSPage
+            isMobile={isMobile}
+            onBack={goBackView}
           />
         ) : activeView === 'contabilidad-ventas-dia' ? (
           <ReporteVentasDiaPage
@@ -1152,6 +1180,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             onBack={goBackView}
             onViewHistorialTransferencias={() => goToView('historial-transferencias')}
             onViewHistorialIngresos={() => goToView('historial-ingresos-no-facturados')}
+            onNavigate={handleAnalystNavigation}
           />
         ) : activeView === 'historial-transferencias' ? (
           <HistorialTransferenciasPage
@@ -1379,6 +1408,11 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           />
         ) : activeView === 'admin-payment-methods' ? (
           <AnalystPaymentMethodsPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-delivery-zonas' ? (
+          <AnalystZonasDeliveryPage
             isMobile={isMobile}
             onBack={goBackView}
           />

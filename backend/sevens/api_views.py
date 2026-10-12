@@ -4,6 +4,7 @@ import mimetypes
 import logging
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from types import SimpleNamespace
 from pathlib import Path
 from django.conf import settings
 from django.core.files.storage import default_storage
@@ -60,6 +61,7 @@ from .auth_helpers import (
     _is_owner_or_contador_user,
     _is_owner_user,
 )
+from .delivery import CargoDeliveryInvalido, aplicar_cargo, resolver_cargo_delivery
 from .impresion_lpd import imprimir_nota_entrega_caja
 from .impresion_termica import imprimir_comandas_pedido
 from .ingredientes_excel import (
@@ -74,6 +76,7 @@ from .notifications import send_whatsapp_new_order_alert
 from .reportes import tasa_para_fecha
 from .serializers import MesaSerializer, ProductoSerializer
 from .tasa_cambio import obtener_tasa_actual, tasa_cambio_para_registro
+from .tasa_cuenta import prefacturas_con_tasa_vigente, resolver_tasa_cuenta
 
 logger = logging.getLogger(__name__)
 
@@ -696,15 +699,21 @@ def _snapshot_costo_venta_detalles(pedido, ingredient_costs, preparation_cost_ma
     """
     if unit_cost_cache is None:
         unit_cost_cache = {}
+    # El margen de produccion vigente se congela junto al costo (ya viene sumado dentro de
+    # costo_unitario_venta para las recetas): asi el reporte detallado puede separar el costo
+    # puro del margen sin recalcular nada con valores de hoy.
+    config = VGConfiguracionCosteo.obtener_config()
+    margen_produccion = config.rendimiento_receta_pct or Decimal('0')
     detalles = list(pedido.detalles.all())
     for detalle in detalles:
         if detalle.producto_id not in unit_cost_cache:
             unit_cost_cache[detalle.producto_id] = _compute_product_unit_cost(
-                detalle.producto, ingredient_costs, preparation_cost_map,
+                detalle.producto, ingredient_costs, preparation_cost_map, config,
             )
         detalle.costo_unitario_venta = unit_cost_cache[detalle.producto_id]
+        detalle.margen_produccion_pct_venta = margen_produccion
     if detalles:
-        VGDetallePedido.objects.bulk_update(detalles, ['costo_unitario_venta'])
+        VGDetallePedido.objects.bulk_update(detalles, ['costo_unitario_venta', 'margen_produccion_pct_venta'])
 
 
 def _tasas_venta_por_pedido(pedido_ids):
@@ -878,17 +887,89 @@ def _calcular_margen_periodo(desde, hasta):
     return filas, total_ingreso, total_costo, total_ingreso_bs
 
 
+def _costo_con_margen_detalle(
+    detalle, costo_puro_cache, ingredient_costs, preparation_cost_map, config_sin_rendimiento, margen_produccion_actual,
+):
+    """
+    Costo (con margen de produccion) de UNA unidad vendible de la linea `detalle` — el mismo
+    criterio historico de reporte_margen_ganancia_view, para que el estado de resultados y el
+    reporte de margen por plato den el mismo costo (ver su docstring):
+      - con costo congelado al cobrar (costo_unitario_venta): se usa ese; si tambien se congelo el
+        margen de produccion de ese dia, el costo ya lo trae sumado para las recetas (no para un
+        producto ligado a una subreceta), asi que se separa y se vuelve a sumar una sola vez;
+      - sin costo congelado (ventas de antes de que existiera): el costo actual de la receta
+        (estimado), con el margen de hoy.
+    Devuelve (costo_con_margen_unitario, costo_estimado).
+    """
+    producto = detalle.producto
+    cien = Decimal('100')
+    if detalle.costo_unitario_venta is not None:
+        if detalle.margen_produccion_pct_venta is not None:
+            margen_pct = detalle.margen_produccion_pct_venta
+            costo_unitario = (
+                detalle.costo_unitario_venta if producto.subreceta_vinculada_id
+                else detalle.costo_unitario_venta / (Decimal('1') + margen_pct / cien)
+            )
+        else:
+            margen_pct = margen_produccion_actual
+            costo_unitario = detalle.costo_unitario_venta
+        costo_estimado = False
+    else:
+        if producto.id not in costo_puro_cache:
+            costo_puro_cache[producto.id] = _compute_product_unit_cost(
+                producto, ingredient_costs, preparation_cost_map, config_sin_rendimiento,
+            )
+        costo_unitario = costo_puro_cache[producto.id]
+        margen_pct = margen_produccion_actual
+        costo_estimado = True
+    return costo_unitario * (Decimal('1') + margen_pct / cien), costo_estimado
+
+
 def reporte_margen_ganancia_view(request):
     """
-    Margen de ganancia por plato vendido en un rango de fechas: cuánto entró
-    (precio de venta x cantidad), cuánto costó y la ganancia resultante,
-    agrupado por producto. Usa el costo histórico congelado al momento del
-    cobro (VGDetallePedido.costo_unitario_venta, ver _snapshot_costo_venta_detalles)
-    cuando existe; para ventas de antes de que ese campo existiera (o cualquier
-    fila vieja sin snapshot), cae al costo_unitario ACTUAL de los ingredientes
-    como estimación — mismo criterio "último costo" que el reporte de
-    referencia (Profit Plus) — y esa fila queda marcada con 'costo_estimado':
-    true para que quede claro que no es un costo histórico real.
+    Margen de ganancia DETALLADO, fila por fila (una por cada VGDetallePedido,
+    sin sumar entre pedidos distintos) agrupado por seccion = PRODUCTO — mismo
+    patron que reporte_movimiento_productos_view (contabilidad_views.py), pero
+    con ingreso/costo/ganancia por fila en vez de solo cantidad. Cada seccion
+    lleva un total al final (suma de todas sus filas).
+
+    ESTRICTAMENTE historico, a proposito — este reporte NUNCA recalcula con
+    valores de HOY una venta que ya paso:
+      - `ingreso` de cada fila sale de VGDetallePedido.precio_unitario/subtotal,
+        que se congela en la LINEA del pedido al crearla (ver pedido_create_view)
+        y nunca se vuelve a sincronizar contra producto.precio_venta despues —
+        si el precio del plato cambia hoy, las ventas de ayer (o del año
+        pasado) siguen mostrando el precio al que se vendieron en su momento.
+      - `costo` de cada fila sale de VGDetallePedido.costo_unitario_venta,
+        congelado en el momento del COBRO (ver _snapshot_costo_venta_detalles)
+        con los costos de ingredientes vigentes ESE dia — si el costo de un
+        ingrediente de la receta cambia hoy, las ventas ya cobradas no se
+        recalculan con el costo nuevo.
+      - El costo actual de la receta (_compute_product_unit_cost) SOLO se usa
+        como ultimo recurso, fila por fila, para ventas de antes de que
+        costo_unitario_venta existiera (o cualquier fila vieja sin snapshot) —
+        y esa fila puntual (no toda la seccion) queda marcada con
+        'costo_estimado': true para que quede clarisimo que esa fila en
+        particular no es costo historico real. Nunca extiendas esa estimacion
+        a filas que SI tienen su propio costo_unitario_venta congelado.
+      - `costo` es el costo PURO de la receta/sub-receta anclada al producto
+        (ingredientes), sin margen de produccion ni de ganancia. El margen de
+        produccion vigente el dia del cobro se congela en
+        VGDetallePedido.margen_produccion_pct_venta; con el se separa el costo
+        puro (el costo congelado ya trae ese margen sumado para las recetas, no
+        para un producto ligado a una subreceta) y se calcula `costo_con_margen`
+        = costo puro x (1 + margen). La ganancia se calcula contra
+        `costo_con_margen`, igual que el reporte por producto
+        (reporte_margen_productos_view). Una fila vieja sin margen congelado usa
+        el margen de HOY y queda marcada con 'margen_estimado': true.
+
+    Cada fila trae ademas pedido_id y, si existe, la nota de entrega asociada
+    a ese pedido (nota_entrega_id/nota_entrega_codigo), igual que en
+    reporte_movimiento_productos_view, para poder rastrear cualquier fila
+    hasta el documento de venta real.
+
+    Solo incluye pedidos pagados (mismo criterio de "venta real" que el resto
+    de los reportes de contabilidad).
     """
     if request.method != 'GET':
         return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
@@ -905,72 +986,22 @@ def reporte_margen_ganancia_view(request):
         return _auth_response({'ok': False, 'message': 'Las fechas no son validas.'}, status=400)
     if desde > hasta:
         return _auth_response({'ok': False, 'message': '"Desde" no puede ser posterior a "Hasta".'}, status=400)
-
-    filas, total_ingreso, total_costo, _total_ingreso_bs = _calcular_margen_periodo(desde, hasta)
-
-    total_ganancia = total_ingreso - total_costo
-    total_ganancia_pct = (total_ganancia / total_ingreso * Decimal('100')) if total_ingreso > 0 else Decimal('0')
 
     return _auth_response({
         'ok': True,
         'desde': desde.isoformat(),
         'hasta': hasta.isoformat(),
-        'platos': filas,
-        'totales': {
-            'ingreso_total': str(total_ingreso.quantize(Decimal('0.01'))),
-            'costo_total': str(total_costo.quantize(Decimal('0.01'))),
-            'ganancia_monto': str(total_ganancia.quantize(Decimal('0.01'))),
-            'ganancia_pct': str(total_ganancia_pct.quantize(Decimal('0.01'))),
-        },
+        **armar_margen_ganancia_detallado(desde, hasta),
     })
 
 
-def reporte_margen_ganancia_detalle_view(request):
+def armar_margen_ganancia_detallado(desde, hasta):
     """
-    Detalle de margen de ganancia VENTA POR VENTA (nunca agregado), agrupado
-    por producto — mismo patron de fila-por-fila que
-    reporte_movimiento_productos_view (contabilidad_views.py), pero con
-    ingreso/costo/ganancia por linea.
-
-    A proposito NO reutiliza _calcular_margen_periodo (la agregacion que ya
-    usa reporte_estado_resultados_view): itera linea por linea de forma
-    independiente para no arriesgar romper ese reporte agregado si esta
-    vista cambia. Sí reutiliza la MISMA funcion de costeo de ultimo recurso
-    (_compute_product_unit_cost) para no duplicar esa logica.
-
-    Historial estricto, sin excepciones salvo la marcada:
-    - Ingreso: siempre detalle.subtotal — usa el precio_unitario que quedo
-      congelado en la linea al CREAR el pedido, nunca el precio de venta
-      actual del producto.
-    - Costo: detalle.costo_unitario_venta si existe — congelado en el
-      momento del COBRO con los costos de ingredientes vigentes ese
-      instante (ver _snapshot_costo_venta_detalles), nunca recalculado
-      despues aunque cambie el costo de un ingrediente. Solo si esa venta es
-      tan vieja que no tiene ese snapshot (costo_unitario_venta es None), se
-      cae al costo ACTUAL de la receta como ultimo recurso, y ESA fila (no
-      el producto completo) queda marcada 'costo_estimado': true.
+    Los datos de reporte_margen_ganancia_view para el rango [desde, hasta] (fechas): una seccion por
+    producto con sus ventas linea por linea y los totales del periodo. Lo usan la pantalla (JSON) y el
+    PDF del reporte, para que los dos muestren exactamente los mismos numeros. Ver el docstring de la
+    vista para el criterio de costo (historico, congelado al cobrar).
     """
-    if request.method != 'GET':
-        return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
-
-    if not _is_admin_user(request.user):
-        return _auth_response({'ok': False, 'message': 'Debes iniciar sesion como administrador.'}, status=401)
-
-    desde_raw = request.GET.get('desde')
-    hasta_raw = request.GET.get('hasta')
-    try:
-        desde = date.fromisoformat(desde_raw) if desde_raw else timezone.localdate()
-        hasta = date.fromisoformat(hasta_raw) if hasta_raw else timezone.localdate()
-    except ValueError:
-        return _auth_response({'ok': False, 'message': 'Las fechas no son validas.'}, status=400)
-    if desde > hasta:
-        return _auth_response({'ok': False, 'message': '"Desde" no puede ser posterior a "Hasta".'}, status=400)
-
-    # select_related trae producto/categoria/pedido en el mismo JOIN;
-    # prefetch_related trae TODAS las notas de entrega de TODOS los pedidos
-    # involucrados en una sola consulta aparte — sin esto, pedir
-    # detalle.pedido.notas_entrega.all() por cada fila dispararia una
-    # consulta nueva por fila (N+1).
     detalles = (
         VGDetallePedido.objects
         .filter(
@@ -980,118 +1011,159 @@ def reporte_margen_ganancia_detalle_view(request):
         )
         .select_related('producto__categoria', 'pedido')
         .prefetch_related('pedido__notas_entrega')
-        .order_by('pedido__fecha_creacion')
     )
 
+    # Costos de ingredientes/preparaciones ACTUALES — solo se usan como ultimo
+    # recurso para filas viejas sin costo_unitario_venta congelado (ver
+    # docstring). Cargarlos una sola vez, no por fila.
     ingredient_costs = {
         row['id']: _costo_unitario_efectivo(row['costo_unitario'], row['precio_compra'], row['peso_real'])
         for row in VGIngrediente.objects.values('id', 'costo_unitario', 'precio_compra', 'peso_real')
     }
     preparation_cost_map = _load_preparation_cost_map()
-    config_costeo = VGConfiguracionCosteo.obtener_config()
-    unit_cost_cache = {}
+    # Solo para filas sin costo congelado: costo puro actual (sin margen de produccion).
+    costo_puro_cache = {}
+    config_sin_rendimiento = SimpleNamespace(rendimiento_receta_pct=Decimal('0'))
+    margen_produccion_actual = VGConfiguracionCosteo.obtener_config().rendimiento_receta_pct or Decimal('0')
+    cien = Decimal('100')
 
-    grupos_por_producto = {}
+    secciones_por_producto = {}
     for detalle in detalles:
         producto = detalle.producto
-        grupo = grupos_por_producto.setdefault(producto.id, {
+        seccion = secciones_por_producto.setdefault(producto.id, {
             'producto_id': producto.id,
             'nombre': producto.nombre,
+            'categoria_id': producto.categoria_id,
             'categoria': producto.categoria.nombre if producto.categoria_id else 'Sin categoría',
             'filas': [],
-            'ingreso_total': Decimal('0'),
-            'costo_total': Decimal('0'),
-            'tiene_estimado': False,
+            'total_unidades': Decimal('0'),
+            'total_kg': Decimal('0'),
+            'total_ingreso': Decimal('0'),
+            'total_costo': Decimal('0'),
+            'total_costo_con_margen': Decimal('0'),
         })
-
-        if detalle.costo_unitario_venta is not None:
-            costo_unitario = detalle.costo_unitario_venta
-            es_estimado = False
-        else:
-            if producto.id not in unit_cost_cache:
-                unit_cost_cache[producto.id] = _compute_product_unit_cost(
-                    producto, ingredient_costs, preparation_cost_map, config_costeo,
-                )
-            costo_unitario = unit_cost_cache[producto.id]
-            es_estimado = True
 
         peso_factor = (detalle.peso_gramos / Decimal('1000')) if detalle.peso_gramos else Decimal('1')
         cantidad_equivalente = Decimal(detalle.cantidad) * peso_factor
 
+        if detalle.costo_unitario_venta is not None:
+            costo_estimado = False
+            if detalle.margen_produccion_pct_venta is not None:
+                # Venta con foto completa: el costo congelado ya trae el margen de ESE dia sumado
+                # para las recetas (no para un producto ligado a una subreceta). Se separa para
+                # mostrar el costo puro y sumar el margen una sola vez.
+                margen_pct = detalle.margen_produccion_pct_venta
+                costo_unitario = (
+                    detalle.costo_unitario_venta if producto.subreceta_vinculada_id
+                    else detalle.costo_unitario_venta / (Decimal('1') + margen_pct / cien)
+                )
+                margen_estimado = False
+            else:
+                # Venta vieja: se congelo el costo pero no el margen. Se toma el costo guardado
+                # como costo puro y se le suma el margen de HOY (estimado).
+                margen_pct = margen_produccion_actual
+                costo_unitario = detalle.costo_unitario_venta
+                margen_estimado = True
+        else:
+            if producto.id not in costo_puro_cache:
+                costo_puro_cache[producto.id] = _compute_product_unit_cost(
+                    producto, ingredient_costs, preparation_cost_map, config_sin_rendimiento,
+                )
+            costo_unitario = costo_puro_cache[producto.id]
+            margen_pct = margen_produccion_actual
+            costo_estimado = True
+            margen_estimado = True
+
+        costo_con_margen_unitario = costo_unitario * (Decimal('1') + margen_pct / cien)
+
         ingreso_linea = detalle.subtotal
         costo_linea = costo_unitario * cantidad_equivalente
-        ganancia_linea = ingreso_linea - costo_linea
-        ganancia_pct_linea = (ganancia_linea / ingreso_linea * Decimal('100')) if ingreso_linea > 0 else Decimal('0')
+        costo_con_margen_linea = costo_con_margen_unitario * cantidad_equivalente
+        ganancia_linea = ingreso_linea - costo_con_margen_linea
+        ganancia_linea_pct = (ganancia_linea / ingreso_linea * Decimal('100')) if ingreso_linea > 0 else Decimal('0')
 
-        nota = next(
-            (n for n in sorted(detalle.pedido.notas_entrega.all(), key=lambda n: n.fecha_emision, reverse=True)
-             if n.estado != 'anulada'),
-            None,
-        )
+        if producto.venta_por_peso:
+            seccion['total_kg'] += cantidad_equivalente
+        else:
+            seccion['total_unidades'] += cantidad_equivalente
+        seccion['total_ingreso'] += ingreso_linea
+        seccion['total_costo'] += costo_linea
+        seccion['total_costo_con_margen'] += costo_con_margen_linea
 
-        grupo['filas'].append({
+        notas_entrega_pedido = list(detalle.pedido.notas_entrega.all())
+        nota_entrega = notas_entrega_pedido[0] if notas_entrega_pedido else None
+
+        seccion['filas'].append({
             'detalle_id': detalle.id,
             'pedido_id': detalle.pedido_id,
-            'fecha_hora': detalle.pedido.fecha_creacion.isoformat(),
+            'nota_entrega_id': nota_entrega.id if nota_entrega else None,
+            'nota_entrega_codigo': nota_entrega.codigo if nota_entrega else None,
+            'fecha_hora': timezone.localtime(detalle.pedido.fecha_creacion).isoformat(),
             'cantidad': str(detalle.cantidad),
             'peso_gramos': str(detalle.peso_gramos) if detalle.peso_gramos is not None else None,
-            'nota_entrega_codigo': nota.codigo if nota else None,
+            'unidad': 'kg' if producto.venta_por_peso else 'unidad',
+            'costo_unitario': str(costo_unitario.quantize(Decimal('0.0001'))),
             'ingreso': str(ingreso_linea.quantize(Decimal('0.01'))),
             'costo': str(costo_linea.quantize(Decimal('0.01'))),
+            'margen_produccion_pct': str(margen_pct),
+            'costo_con_margen': str(costo_con_margen_linea.quantize(Decimal('0.01'))),
+            'margen_estimado': margen_estimado,
             'ganancia_monto': str(ganancia_linea.quantize(Decimal('0.01'))),
-            'ganancia_pct': str(ganancia_pct_linea.quantize(Decimal('0.01'))),
-            'costo_estimado': es_estimado,
-        })
-        grupo['ingreso_total'] += ingreso_linea
-        grupo['costo_total'] += costo_linea
-        if es_estimado:
-            grupo['tiene_estimado'] = True
-
-    productos = []
-    total_lineas = 0
-    total_ingreso = Decimal('0')
-    total_costo = Decimal('0')
-    for grupo in grupos_por_producto.values():
-        total_lineas += len(grupo['filas'])
-        total_ingreso += grupo['ingreso_total']
-        total_costo += grupo['costo_total']
-        ganancia_grupo = grupo['ingreso_total'] - grupo['costo_total']
-        ganancia_pct_grupo = (
-            (ganancia_grupo / grupo['ingreso_total'] * Decimal('100')) if grupo['ingreso_total'] > 0 else Decimal('0')
-        )
-        productos.append({
-            'producto_id': grupo['producto_id'],
-            'nombre': grupo['nombre'],
-            'categoria': grupo['categoria'],
-            'filas': grupo['filas'],
-            'num_ventas': len(grupo['filas']),
-            'ingreso_total': str(grupo['ingreso_total'].quantize(Decimal('0.01'))),
-            'costo_total': str(grupo['costo_total'].quantize(Decimal('0.01'))),
-            'ganancia_monto': str(ganancia_grupo.quantize(Decimal('0.01'))),
-            'ganancia_pct': str(ganancia_pct_grupo.quantize(Decimal('0.01'))),
-            'tiene_estimado': grupo['tiene_estimado'],
+            'ganancia_pct': str(ganancia_linea_pct.quantize(Decimal('0.01'))),
+            'costo_estimado': costo_estimado,
         })
 
-    # De mayor a menor ingreso.
-    productos.sort(key=lambda item: Decimal(item['ingreso_total']), reverse=True)
+    total_ingreso_general = Decimal('0')
+    total_costo_general = Decimal('0')
+    total_costo_con_margen_general = Decimal('0')
+    total_lineas_general = 0
+    secciones = []
+    for seccion in secciones_por_producto.values():
+        filas_ordenadas = sorted(seccion['filas'], key=lambda fila: fila['fecha_hora'])
+        total_ganancia = seccion['total_ingreso'] - seccion['total_costo_con_margen']
+        total_ganancia_pct = (total_ganancia / seccion['total_ingreso'] * Decimal('100')) if seccion['total_ingreso'] > 0 else Decimal('0')
+        secciones.append({
+            'producto_id': seccion['producto_id'],
+            'nombre': seccion['nombre'],
+            'categoria_id': seccion['categoria_id'],
+            'categoria': seccion['categoria'],
+            'filas': filas_ordenadas,
+            'total_unidades': str(seccion['total_unidades'].quantize(Decimal('0.01'))),
+            'total_kg': str(seccion['total_kg'].quantize(Decimal('0.01'))),
+            'total_ingreso': str(seccion['total_ingreso'].quantize(Decimal('0.01'))),
+            'total_costo': str(seccion['total_costo'].quantize(Decimal('0.01'))),
+            'total_costo_con_margen': str(seccion['total_costo_con_margen'].quantize(Decimal('0.01'))),
+            'total_ganancia_monto': str(total_ganancia.quantize(Decimal('0.01'))),
+            'total_ganancia_pct': str(total_ganancia_pct.quantize(Decimal('0.01'))),
+            'total_lineas': len(filas_ordenadas),
+            'tiene_costo_estimado': any(fila['costo_estimado'] for fila in filas_ordenadas),
+            'tiene_margen_estimado': any(fila['margen_estimado'] for fila in filas_ordenadas),
+        })
+        total_ingreso_general += seccion['total_ingreso']
+        total_costo_general += seccion['total_costo']
+        total_costo_con_margen_general += seccion['total_costo_con_margen']
+        total_lineas_general += len(filas_ordenadas)
 
-    ganancia_total = total_ingreso - total_costo
-    ganancia_pct_total = (ganancia_total / total_ingreso * Decimal('100')) if total_ingreso > 0 else Decimal('0')
+    secciones.sort(key=lambda item: Decimal(item['total_ingreso']), reverse=True)
 
-    return _auth_response({
-        'ok': True,
-        'desde': desde.isoformat(),
-        'hasta': hasta.isoformat(),
-        'productos': productos,
-        'total_productos_distintos': len(productos),
-        'total_lineas': total_lineas,
+    # Totales de TODAS las ventas del periodo, sumadas linea por linea: un plato que se repite
+    # (varias ventas del mismo producto) cuenta cada vez, no una sola.
+    total_ganancia_general = total_ingreso_general - total_costo_con_margen_general
+    total_ganancia_general_pct = (
+        (total_ganancia_general / total_ingreso_general * Decimal('100')) if total_ingreso_general > 0 else Decimal('0')
+    )
+
+    return {
+        'secciones': secciones,
+        'total_lineas': total_lineas_general,
         'totales': {
-            'ingreso_total': str(total_ingreso.quantize(Decimal('0.01'))),
-            'costo_total': str(total_costo.quantize(Decimal('0.01'))),
-            'ganancia_monto': str(ganancia_total.quantize(Decimal('0.01'))),
-            'ganancia_pct': str(ganancia_pct_total.quantize(Decimal('0.01'))),
+            'ingreso_total': str(total_ingreso_general.quantize(Decimal('0.01'))),
+            'costo_total': str(total_costo_general.quantize(Decimal('0.01'))),
+            'costo_con_margen_total': str(total_costo_con_margen_general.quantize(Decimal('0.01'))),
+            'ganancia_monto': str(total_ganancia_general.quantize(Decimal('0.01'))),
+            'ganancia_pct': str(total_ganancia_general_pct.quantize(Decimal('0.01'))),
         },
-    })
+    }
 
 
 class MesaListView(generics.ListAPIView):
@@ -1114,6 +1186,135 @@ class ProductoListView(generics.ListAPIView):
         .order_by('nombre')
     )
     serializer_class = ProductoSerializer
+
+
+def _ingredientes_sin_costo_de_producto(producto, ingredient_costs, components_by_preparation, nombres_ingredientes):
+    """
+    Nombres de los ingredientes de la receta de `producto` (directos, o dentro de sus subrecetas
+    y sub-subrecetas) cuyo costo es 0. Un ingrediente sin precio de compra aporta $0 al costo del
+    producto sin dar ningun aviso, y el costo mostrado queda incompleto: esta lista permite
+    senalarlo en las tablas de costo.
+    """
+    faltan = set()
+    visitadas = set()
+
+    def revisar(ingrediente_id):
+        if not ingredient_costs.get(ingrediente_id):
+            faltan.add(ingrediente_id)
+
+    def visitar(preparacion_id):
+        if preparacion_id in visitadas:
+            return
+        visitadas.add(preparacion_id)
+        for componente in components_by_preparation.get(preparacion_id, []):
+            if componente['tipo'] == 'ingrediente':
+                revisar(componente['referencia_id'])
+            else:
+                visitar(componente['referencia_id'])
+
+    for componente in _product_recipe_components(producto):
+        if componente['tipo'] == 'ingrediente':
+            revisar(componente['referencia_id'])
+        else:
+            visitar(componente['referencia_id'])
+    return sorted(nombres_ingredientes.get(ingrediente_id, '?') for ingrediente_id in faltan)
+
+
+def reporte_margen_productos_view(request):
+    """
+    Margen de ganancia POR PRODUCTO, en vivo — una fila por producto con su costo de
+    receta, el margen de produccion, el costo que se toma para el margen, el margen de
+    ganancia, el precio sugerido, el precio real de venta y la ganancia ($ y %).
+
+    A diferencia de reporte_margen_ganancia_view (historico, venta por venta, con el
+    costo congelado al cobrar), este reporte NO mira ventas: se recalcula con los
+    costos de HOY, asi que si cambia el costo de un ingrediente, de una subreceta o de
+    la receta, la fila cambia sola.
+
+      costo_receta       = costo de la receta / subreceta / ingrediente anclado al
+                           producto, SIN margen de produccion.
+      margen_produccion  = rendimiento_receta_pct de VGConfiguracionCosteo (compensa
+                           mermas). Aplica a TODOS los productos de este reporte, tambien
+                           a los vinculados directamente a una subreceta — a diferencia de
+                           _compute_product_unit_cost (inventario/costo congelado al cobrar),
+                           que a esos no les suma el margen. Subir o bajar el margen mueve
+                           el costo_a_tomar de toda la tabla.
+      costo_a_tomar      = costo_receta x (1 + margen_produccion/100).
+      margen_ganancia    = el propio del producto si lo definio, si no el defecto global.
+      precio_sugerido    = costo_a_tomar x (1 + margen_ganancia/100).
+      precio_real        = VGProducto.precio_venta (por kg si es venta_por_peso).
+      ganancia           = precio_real - costo_a_tomar;  ganancia_pct = ganancia / costo_a_tomar.
+    """
+    if request.method != 'GET':
+        return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
+
+    if not _is_admin_user(request.user):
+        return _auth_response({'ok': False, 'message': 'Debes iniciar sesion como administrador.'}, status=401)
+
+    config = VGConfiguracionCosteo.obtener_config()
+    # Costo "puro" de receta (sin margen de produccion); el margen se suma aparte, abajo.
+    config_sin_rendimiento = SimpleNamespace(rendimiento_receta_pct=Decimal('0'))
+    margen_produccion = config.rendimiento_receta_pct or Decimal('0')
+    ingredient_costs = {
+        row['id']: _costo_unitario_efectivo(row['costo_unitario'], row['precio_compra'], row['peso_real'])
+        for row in VGIngrediente.objects.values('id', 'costo_unitario', 'precio_compra', 'peso_real')
+    }
+    preparation_cost_map = _load_preparation_cost_map()
+    components_by_preparation, _rendimientos = _load_preparation_structure()
+    nombres_ingredientes = dict(VGIngrediente.objects.values_list('id', 'nombre'))
+
+    # Solo productos vendibles: la categoria 'Recetas' agrupa las recetas maestras (que otros productos
+    # enlazan), no platos a la venta — igual que la lista de Productos (admin_products_view).
+    productos = (
+        VGProducto.objects
+        .exclude(categoria__nombre__iexact='Recetas')
+        .select_related('categoria', 'receta_vinculada', 'subreceta_vinculada')
+        .prefetch_related('receta', 'receta_vinculada__receta', 'subreceta_vinculada__componentes')
+        .order_by('categoria__nombre', 'nombre')
+    )
+
+    cien = Decimal('100')
+    filas = []
+    for producto in productos:
+        tiene_receta = bool(_product_recipe_components(producto))
+        costo_receta = _compute_product_unit_cost(producto, ingredient_costs, preparation_cost_map, config_sin_rendimiento)
+        costo_a_tomar = costo_receta * (Decimal('1') + margen_produccion / cien)
+        margen_ganancia = _resolver_margen_ganancia_producto(producto, config)
+        precio_sugerido = (costo_a_tomar * (Decimal('1') + margen_ganancia / cien)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        precio_real = producto.precio_venta
+        ganancia = precio_real - costo_a_tomar
+        ganancia_pct = (ganancia / costo_a_tomar * cien) if costo_a_tomar > 0 else None
+
+        filas.append({
+            'producto_id': producto.id,
+            'nombre': producto.nombre,
+            'categoria_id': producto.categoria_id,
+            'categoria': producto.categoria.nombre if producto.categoria_id else 'Sin categoría',
+            'disponible': producto.disponible,
+            'venta_por_peso': producto.venta_por_peso,
+            'tiene_receta': tiene_receta,
+            'ingredientes_sin_costo': _ingredientes_sin_costo_de_producto(
+                producto, ingredient_costs, components_by_preparation, nombres_ingredientes,
+            ),
+            'costo_receta': str(costo_receta.quantize(Decimal('0.0001'))),
+            'margen_produccion_pct': str(margen_produccion),
+            'costo_a_tomar': str(costo_a_tomar.quantize(Decimal('0.0001'))),
+            'margen_ganancia_pct': str(margen_ganancia),
+            'margen_ganancia_propio': producto.margen_ganancia_pct is not None,
+            'precio_sugerido': str(precio_sugerido),
+            'precio_real': str(precio_real),
+            'ganancia': str(ganancia.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+            'ganancia_pct': str(ganancia_pct.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)) if ganancia_pct is not None else None,
+        })
+
+    return _auth_response({
+        'ok': True,
+        'config': {
+            'rendimiento_receta_pct': str(config.rendimiento_receta_pct),
+            'margen_ganancia_defecto_pct': str(config.margen_ganancia_defecto_pct),
+        },
+        'productos': filas,
+    })
 
 
 def adicionales_disponibles_view(request):
@@ -1516,6 +1717,10 @@ def _serialize_order_detail(pedido):
         'impuesto': str(pedido.impuesto),
         'descuento': str(pedido.descuento),
         'propina': str(pedido.propina),
+        'cargo_delivery': str(pedido.cargo_delivery),
+        'zona_delivery_id': pedido.zona_delivery_id,
+        'zona_delivery_nombre': pedido.zona_delivery_nombre,
+        'tarifa_delivery': str(pedido.tarifa_delivery) if pedido.tarifa_delivery is not None else None,
         'subtotal': str(pedido.subtotal),
         'total': str(pedido.total),
         'items': _serialize_order_items(pedido),
@@ -1526,21 +1731,39 @@ def _resolve_or_create_cliente(nombre, cedula, telefono):
     """
     Resuelve el cliente por cédula cuando se da (identificador confiable para
     historial de movimientos y futuros sorteos): si ya existe un VGCliente con
-    esa cédula, se reutiliza tal cual (no se pisa nombre/teléfono ya guardados
-    con lo que haya escrito el mesero esta vez). Si no existe, se crea con los
-    datos capturados ahora. Sin cédula, cae al comportamiento previo
-    (get_or_create solo por nombre), ya que no hay forma confiable de saber si
-    es el mismo cliente.
+    esa cédula SE REUTILIZA — nunca se crea otro — y si el nombre (o el
+    teléfono) que llega ahora es distinto al guardado, se ACTUALIZA el
+    registro existente (el mesero corrigió o completó el nombre; antes esto
+    chocaba y obligaba a cambiar una letra para poder registrar la ronda).
+    Un dato vacío nunca borra uno ya guardado. Sin cédula, se reutiliza el
+    cliente de ese mismo nombre (sin distinguir mayúsculas) o se crea uno; ya
+    no puede fallar si hay varios con el mismo nombre (se toma el más
+    antiguo), que es lo que tumbaba el registro con `get_or_create(nombre=...)`
+    (MultipleObjectsReturned).
     """
+    nombre = nombre.strip()
     cedula = cedula.strip()
+    telefono = telefono.strip()
     if cedula:
-        cliente, _ = VGCliente.objects.get_or_create(
+        cliente, creado = VGCliente.objects.get_or_create(
             tipo_documento='V',
             numero_documento=cedula,
             defaults={'nombre': nombre, 'telefono': telefono},
         )
+        if not creado:
+            cambios = []
+            if nombre and cliente.nombre != nombre:
+                cliente.nombre = nombre
+                cambios.append('nombre')
+            if telefono and cliente.telefono != telefono:
+                cliente.telefono = telefono
+                cambios.append('telefono')
+            if cambios:
+                cliente.save(update_fields=cambios)
         return cliente
-    cliente, _ = VGCliente.objects.get_or_create(nombre=nombre)
+    cliente = VGCliente.objects.filter(nombre__iexact=nombre).order_by('id').first()
+    if cliente is None:
+        cliente = VGCliente.objects.create(nombre=nombre, telefono=telefono)
     return cliente
 
 
@@ -1616,6 +1839,15 @@ def pedido_create_view(request):
 
     notas = str(data.get('notas', '') or '').strip()
 
+    # Cargo de delivery (ver delivery.py): solo el pedido delivery original lo cobra; una ronda agregada
+    # a un delivery o un pedido de canje no lo repiten.
+    try:
+        cargo = resolver_cargo_delivery(
+            data, parsed['tipo_pedido'], request.user, es_ronda=grupo_pedido is not None or nota_credito is not None,
+        )
+    except CargoDeliveryInvalido as error:
+        return _auth_response({'ok': False, 'message': str(error)}, status=400)
+
     with transaction.atomic():
         built_lines, subtotal = _build_order_lines(parsed['parsed_lines'], parsed['products_map'], parsed['preparaciones_map'])
         # Si TODOS los productos del pedido son de categorías "no_requiere_cocina" (ej.
@@ -1639,6 +1871,10 @@ def pedido_create_view(request):
             impuesto=parsed['impuesto'],
             descuento=parsed['descuento'],
             propina=parsed['propina'],
+            cargo_delivery=cargo['cargo_delivery'],
+            zona_delivery=cargo['zona_delivery'],
+            zona_delivery_nombre=cargo['zona_delivery_nombre'],
+            tarifa_delivery=cargo['tarifa_delivery'],
             creado_por=request.user,
             actualizado_por=request.user,
         )
@@ -1671,7 +1907,7 @@ def pedido_create_view(request):
                     precio_unitario=opcion['precio_unitario'],
                 )
 
-        total = subtotal + parsed['impuesto'] + parsed['propina'] - parsed['descuento']
+        total = subtotal + parsed['impuesto'] + parsed['propina'] - parsed['descuento'] + cargo['cargo_delivery']
         pedido.subtotal = subtotal.quantize(Decimal('0.01'))
         pedido.total = total.quantize(Decimal('0.01'))
         pedido.actualizado_por = request.user
@@ -1692,6 +1928,7 @@ def pedido_create_view(request):
                 'estado': pedido.estado,
                 'tipo_pedido': pedido.tipo_pedido,
                 'subtotal': str(pedido.subtotal),
+                'cargo_delivery': str(pedido.cargo_delivery),
                 'total': str(pedido.total),
                 'items': len(parsed['parsed_lines']),
             },
@@ -1770,6 +2007,14 @@ def pedido_update_view(request, pedido_id):
                     'message': f'La Mesa {parsed["mesa"].numero} ya la está atendiendo {mesero_nombre}.',
                 }, status=409)
 
+        try:
+            cargo = resolver_cargo_delivery(
+                data, parsed['tipo_pedido'], request.user, es_ronda=pedido.grupo_pedido_id is not None,
+                pedido_actual=pedido,
+            )
+        except CargoDeliveryInvalido as error:
+            return _auth_response({'ok': False, 'message': str(error)}, status=400)
+
         built_lines, subtotal = _build_order_lines(parsed['parsed_lines'], parsed['products_map'], parsed['preparaciones_map'])
         # Mismo criterio que pedido_create_view: si el pedido editado queda compuesto
         # solo por categorías "no_requiere_cocina", pasa a 'entregado' de una vez.
@@ -1783,6 +2028,7 @@ def pedido_update_view(request, pedido_id):
         pedido.impuesto = parsed['impuesto']
         pedido.descuento = parsed['descuento']
         pedido.propina = parsed['propina']
+        aplicar_cargo(pedido, cargo)
         pedido.estado = estado_inicial
 
         pedido.detalles.all().delete()
@@ -1815,7 +2061,7 @@ def pedido_update_view(request, pedido_id):
                     precio_unitario=opcion['precio_unitario'],
                 )
 
-        total = subtotal + parsed['impuesto'] + parsed['propina'] - parsed['descuento']
+        total = subtotal + parsed['impuesto'] + parsed['propina'] - parsed['descuento'] + cargo['cargo_delivery']
         pedido.subtotal = subtotal.quantize(Decimal('0.01'))
         pedido.total = total.quantize(Decimal('0.01'))
         pedido.actualizado_por = request.user
@@ -1847,7 +2093,7 @@ def _recalcular_totales_pedido(pedido, usuario):
         )
         for d in pedido.detalles.all()
     )
-    total = subtotal + pedido.impuesto + pedido.propina - pedido.descuento
+    total = subtotal + pedido.impuesto + pedido.propina - pedido.descuento + pedido.cargo_delivery
     pedido.subtotal = subtotal.quantize(Decimal('0.01'))
     pedido.total = total.quantize(Decimal('0.01'))
     pedido.actualizado_por = usuario
@@ -3670,7 +3916,30 @@ def _serialize_abono_compra(abono):
         'referencia': abono.referencia,
         'fecha_pago': abono.fecha_pago.isoformat(),
         'tasa_cambio_referencia': str(abono.tasa_cambio_referencia) if abono.tasa_cambio_referencia is not None else None,
+        'tasa_manual': abono.tasa_manual,
+        'monto_bs': (
+            str((abono.monto * abono.tasa_cambio_referencia).quantize(Decimal('0.01')))
+            if abono.tasa_cambio_referencia else None
+        ),
         'creado_por': (abono.creado_por.get_full_name() or abono.creado_por.username) if abono.creado_por else '',
+    }
+
+
+def _serialize_nota_credito_compra(nota):
+    return {
+        'id': nota.id,
+        'numero': nota.numero,
+        'codigo': f'NCC-{nota.numero:06d}',
+        'numero_documento_proveedor': nota.numero_documento_proveedor,
+        'fecha': nota.fecha.isoformat(),
+        'monto': str(nota.monto),
+        'monto_bs': str(nota.monto_bs) if nota.monto_bs is not None else None,
+        'tasa_cambio_referencia': str(nota.tasa_cambio_referencia) if nota.tasa_cambio_referencia is not None else None,
+        'motivo': nota.motivo,
+        'estado': nota.estado,
+        'motivo_anulacion': nota.motivo_anulacion,
+        'registrada_por': (nota.creado_por.get_full_name() or nota.creado_por.username) if nota.creado_por else '',
+        'fecha_creacion': nota.fecha_creacion.isoformat(),
     }
 
 
@@ -3699,14 +3968,52 @@ def _serialize_compra(compra, incluir_detalle=False):
         # que haya en caché, sin forzar una consulta nueva al BCV), en vez de
         # quedarse pegado a la tasa del día en que se cargó la factura — igual
         # que ya hace _serialize_gasto para un gasto en dólares.
+        #
+        # Solo el SALDO PENDIENTE sigue a la tasa de hoy. Lo que ya se pago queda
+        # fijo en los bolivares de cada abono (con SU tasa congelada), asi que
+        # total_bs = lo abonado (fijo) + lo que falta (a tasa de hoy): una vez
+        # saldada la cuenta el total deja de moverse, en vez de seguir subiendo
+        # con el BCV semana tras semana (reportado 2026-10).
         tasa_actual = obtener_tasa_actual()
         tasa_para_bs = tasa_actual.tasa if tasa_actual else compra.tasa_cambio_referencia
-        total_bs = (compra.total * tasa_para_bs).quantize(Decimal('0.01')) if tasa_para_bs else None
-        saldo_pendiente_bs = (compra.saldo_pendiente * tasa_para_bs).quantize(Decimal('0.01')) if tasa_para_bs else None
+        if tasa_para_bs:
+            abonado_bs = sum(
+                (abono.monto * (abono.tasa_cambio_referencia or tasa_para_bs) for abono in compra.abonos.all()),
+                Decimal('0'),
+            )
+            saldo_pendiente_bs = (
+                Decimal('0.00') if compra.estado_pago == 'pagada'
+                else (compra.saldo_pendiente * tasa_para_bs).quantize(Decimal('0.01'))
+            )
+            total_bs = (abonado_bs + saldo_pendiente_bs).quantize(Decimal('0.01'))
+        else:
+            total_bs = None
+            saldo_pendiente_bs = None
     else:
         tasa_para_bs = compra.tasa_cambio_referencia
         total_bs = (compra.total * tasa_para_bs).quantize(Decimal('0.01')) if tasa_para_bs else None
         saldo_pendiente_bs = (compra.saldo_pendiente * tasa_para_bs).quantize(Decimal('0.01')) if tasa_para_bs else None
+
+    # Si algun abono se pago a una tasa propia (ver VGAbonoCompra.tasa_manual), los Bs ya
+    # pagados son los que salieron del banco, y lo que falta se valora a la tasa de la
+    # factura: restar esos Bs del total en Bs de la factura daria un saldo que no
+    # corresponde a los dolares que de verdad se deben. Total en Bs = pagado + lo que falta.
+    # (La compra en dolares ya se calcula asi arriba.)
+    if compra.moneda_origen != 'USD' and any(abono.tasa_manual for abono in compra.abonos.all()):
+        if compra.total_bs_factura is not None and compra.total > 0:
+            tasa_saldo = compra.total_bs_factura / compra.total
+        else:
+            tasa_saldo = compra.tasa_cambio_referencia
+        if tasa_saldo:
+            abonado_bs = sum(
+                (abono.monto * abono.tasa_cambio_referencia for abono in compra.abonos.all() if abono.tasa_cambio_referencia),
+                Decimal('0'),
+            )
+            saldo_pendiente_bs = (
+                Decimal('0.00') if compra.estado_pago == 'pagada'
+                else (compra.saldo_pendiente * tasa_saldo).quantize(Decimal('0.01'))
+            )
+            total_bs = (abonado_bs + saldo_pendiente_bs).quantize(Decimal('0.01'))
 
     data = {
         'id': compra.id,
@@ -3725,7 +4032,14 @@ def _serialize_compra(compra, incluir_detalle=False):
         'creado_por': (compra.creado_por.get_full_name() or compra.creado_por.username) if compra.creado_por else '',
         'cantidad_items': compra.detalles.count() if incluir_detalle else None,
     }
+    # Notas de credito del proveedor (vigentes): el total y el saldo ya vienen rebajados;
+    # total_original es lo que se cargo antes de ellas.
+    notas_vigentes = [nota for nota in compra.notas_credito.all() if nota.estado == 'vigente']
+    monto_notas = sum((nota.monto for nota in notas_vigentes), Decimal('0'))
+    data['monto_notas_credito'] = str(monto_notas)
+    data['total_original'] = str(compra.total + monto_notas)
     if incluir_detalle:
+        data['notas_credito'] = [_serialize_nota_credito_compra(nota) for nota in compra.notas_credito.all()]
         data['detalles'] = [
             {
                 'id': detalle.id,
@@ -3785,7 +4099,7 @@ def compra_detail_view(request, compra_id):
         return _auth_response({'ok': False, 'message': 'Debes iniciar sesion como administrador.'}, status=401)
 
     try:
-        compra = VGCompra.objects.select_related('creado_por').prefetch_related('detalles__ingrediente').get(pk=compra_id)
+        compra = VGCompra.objects.select_related('creado_por').prefetch_related('detalles__ingrediente', 'notas_credito__creado_por').get(pk=compra_id)
     except VGCompra.DoesNotExist:
         return _auth_response({'ok': False, 'message': 'El lote de compra no existe.'}, status=404)
 
@@ -4536,6 +4850,7 @@ def admin_products_view(request):
             .select_related('categoria', 'receta_vinculada', 'subreceta_vinculada')
             .prefetch_related(
                 'receta__ingrediente', 'receta__preparacion',
+                'receta_vinculada__receta', 'subreceta_vinculada__componentes',
                 'grupos_opciones__opciones__preparacion', 'grupos_opciones__categoria_opciones',
                 'grupos_opciones__raciones_por_tamano__producto',
             )
@@ -4543,6 +4858,32 @@ def admin_products_view(request):
         )
         preparation_cost_map = _load_preparation_cost_map()
         config_costeo = VGConfiguracionCosteo.obtener_config()
+        # Costo de receta de cada producto, EN VIVO y sin margen de produccion (la columna "Costo"
+        # de la lista): lo que cuesta la receta, subreceta o ingrediente anclado al producto con los
+        # costos de hoy. `tiene_receta` distingue "sin receta" de una receta cuyo costo da cero.
+        ingredient_costs_vivos = {
+            row['id']: _costo_unitario_efectivo(row['costo_unitario'], row['precio_compra'], row['peso_real'])
+            for row in VGIngrediente.objects.values('id', 'costo_unitario', 'precio_compra', 'peso_real')
+        }
+        config_sin_rendimiento = SimpleNamespace(rendimiento_receta_pct=Decimal('0'))
+        components_by_preparation, _rendimientos = _load_preparation_structure()
+        nombres_ingredientes = dict(VGIngrediente.objects.values_list('id', 'nombre'))
+        # Segunda columna: el mismo costo con el margen de produccion sumado (igual que el "costo a
+        # tomar" del reporte de margen, que lo aplica a todos los productos, tambien a los de subreceta).
+        factor_produccion = Decimal('1') + (config_costeo.rendimiento_receta_pct or Decimal('0')) / Decimal('100')
+        productos_serializados = []
+        for product in products:
+            data_producto = _serialize_product(product)
+            data_producto['tiene_receta'] = bool(_product_recipe_components(product))
+            data_producto['ingredientes_sin_costo'] = _ingredientes_sin_costo_de_producto(
+                product, ingredient_costs_vivos, components_by_preparation, nombres_ingredientes,
+            )
+            costo_receta = _compute_product_unit_cost(
+                product, ingredient_costs_vivos, preparation_cost_map, config_sin_rendimiento,
+            )
+            data_producto['costo_receta'] = str(costo_receta.quantize(Decimal('0.0001')))
+            data_producto['costo_con_margen_produccion'] = str((costo_receta * factor_produccion).quantize(Decimal('0.0001')))
+            productos_serializados.append(data_producto)
         ingredients = list(
             VGIngrediente.objects.exclude(id__in=HIDDEN_INGREDIENT_IDS).order_by('nombre').values('id', 'nombre', 'unidad_medida', 'stock_actual', 'costo_unitario')
         )
@@ -4574,7 +4915,7 @@ def admin_products_view(request):
         ]
         return _auth_response({
             'ok': True,
-            'products': [_serialize_product(product) for product in products],
+            'products': productos_serializados,
             'categories': [_serialize_product_category(category) for category in categories],
             'recetas': recetas,
             'subrecetas': subrecetas,
@@ -5814,6 +6155,8 @@ def mesas_atendidas_view(request):
                 {
                     'id': p.id,
                     'cliente': p.cliente.nombre if p.cliente else '',
+                    'cliente_cedula': p.cliente.numero_documento if p.cliente else '',
+                    'cliente_telefono': p.cliente.telefono if p.cliente else '',
                     'estado': p.estado,
                     'total': str(p.total),
                     'notas': p.notas,
@@ -5921,6 +6264,8 @@ def pedidos_delivery_view(request):
                     'tipo_pedido': p.tipo_pedido,
                     'estado': p.estado,
                     'total': str(p.total),
+                    'cargo_delivery': str(p.cargo_delivery),
+                    'zona_delivery_nombre': p.zona_delivery_nombre,
                     'notas': p.notas,
                     'creado_en': p.fecha_creacion.isoformat(),
                     'mesero': p.usuario.get_full_name() or p.usuario.username,
@@ -6193,6 +6538,8 @@ def pedidos_cobro_view(request):
         )
         return _auth_response({
             'ok': True,
+            # Pre-facturas cuya tasa sigue valida (ver tasa_cuenta.py): la pantalla de cobro muestra los Bs con esa tasa.
+            'prefacturas_tasa_vigente': prefacturas_con_tasa_vigente(),
             'pedidos': [
                 {
                     'id': pedido.id,
@@ -6203,12 +6550,17 @@ def pedidos_cobro_view(request):
                     'grupo_id': pedido.grupo_pedido_id or pedido.id,
                     'cliente_id': pedido.cliente_id,
                     'cliente': pedido.cliente.nombre if pedido.cliente else '',
+                    'cliente_apellido': pedido.cliente.apellido if pedido.cliente else '',
+                    'cliente_cedula': pedido.cliente.numero_documento if pedido.cliente else '',
                     'mesero': pedido.usuario.username,
                     'notas': pedido.notas,
                     'subtotal': str(pedido.subtotal),
                     'impuesto': str(pedido.impuesto),
                     'descuento': str(pedido.descuento),
                     'propina': str(pedido.propina),
+                    'cargo_delivery': str(pedido.cargo_delivery),
+                    'zona_delivery_id': pedido.zona_delivery_id,
+                    'zona_delivery_nombre': pedido.zona_delivery_nombre,
                     'total': str(pedido.total),
                     'creado_en': pedido.fecha_creacion.isoformat(),
                     'items': [
@@ -6328,7 +6680,10 @@ def pedidos_cobro_view(request):
         preparation_cost_map = _compute_preparation_cost_map(components_by_preparation, ingredient_costs, yields_by_preparation)
         unit_cost_cache = {}
 
-        tasa_cambio_pago = tasa_cambio_para_registro()
+        # La tasa que se le dijo al cliente en su pre-factura (si sigue vigente y cubre estos pedidos) manda sobre la
+        # tasa BCV de este instante; 'usar_tasa_actual' es la salida explicita de la cajera (ver tasa_cuenta.py).
+        tasa_resuelta = resolver_tasa_cuenta(pedido_ids, usar_tasa_actual=bool(data.get('usar_tasa_actual')))
+        tasa_cambio_pago = tasa_resuelta['tasa']
         total_cobrado = Decimal('0')
         for pedido in pedidos:
             # El dinero de la nota de entrega se cobra aparte, en uno o varios
@@ -6384,12 +6739,24 @@ def pedidos_cobro_view(request):
         # quedan guardados aparte para que quede constancia de cuánto se
         # descontó y por qué (auditoría) sin perder el total original de los
         # pedidos, que sigue viviendo en cada VGPedido.total.
-        cliente = VGCliente.objects.filter(tipo_documento='V', numero_documento=cedula).first()
-        if cliente is None:
-            cliente = VGCliente.objects.create(
-                tipo_documento='V', numero_documento=cedula,
-                nombre=cliente_nombre, apellido=cliente_apellido,
-            )
+        cliente, cliente_creado = VGCliente.objects.get_or_create(
+            tipo_documento='V',
+            numero_documento=cedula,
+            defaults={'nombre': cliente_nombre, 'apellido': cliente_apellido},
+        )
+        if not cliente_creado:
+            # Cedula ya registrada: se reutiliza y, si la cajera corrigio el
+            # nombre/apellido, se actualiza el mismo registro (nunca se crea
+            # otro). Un campo vacio no borra uno ya guardado.
+            cambios = []
+            if cliente_nombre and cliente.nombre != cliente_nombre:
+                cliente.nombre = cliente_nombre
+                cambios.append('nombre')
+            if cliente_apellido and cliente.apellido != cliente_apellido:
+                cliente.apellido = cliente_apellido
+                cambios.append('apellido')
+            if cambios:
+                cliente.save(update_fields=cambios)
         nota_entrega = VGNotaEntrega.objects.create(
             cliente=cliente,
             metodo_pago=metodo_pago,
@@ -6427,6 +6794,10 @@ def pedidos_cobro_view(request):
             'descuento_monto': str(descuento_monto),
             'descuento_motivo': descuento_motivo,
             'pedidos': [pedido.id for pedido in pedidos],
+            'tasa_cambio_referencia': str(tasa_cambio_pago) if tasa_cambio_pago is not None else None,
+            'tasa_origen': tasa_resuelta['origen'],
+            'tasa_prefactura': (f"PF-{tasa_resuelta['prefactura'].numero:06d}" if tasa_resuelta['prefactura'] else None),
+            'tasa_prefactura_vencida': tasa_resuelta['vencio'],
         },
     }, status=201)
 

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import BotonDescargarPdf from './BotonDescargarPdf';
 import Pagination from './Pagination';
 import Toast from './Toast';
 import useToast from '../hooks/useToast';
@@ -128,6 +129,7 @@ function AnalystIngredientsReportPage({ isMobile, onBack, onEdit, onImport, onCa
           <h2 style={titleStyle(isMobile)}>Reporte de ingredientes</h2>
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <BotonDescargarPdf url="/api/admin/reportes/inventario-pdf/" onError={showError} />
           {onCargaPorLote ? (
             <button type="button" onClick={onCargaPorLote} style={secondaryButtonStyle}>
               Cargar por lote (manual)
