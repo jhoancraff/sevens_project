@@ -2161,7 +2161,7 @@ class ReporteMargenGananciaDetalleTests(TestCase):
     """
     El reporte de margen de ganancia detallado debe mostrar el ingreso y el
     costo CONGELADOS de cada venta, nunca recalculados con los precios o
-    costos de HOY — ver reporte_margen_ganancia_detalle_view (api_views.py).
+    costos de HOY — ver reporte_margen_ganancia_view (api_views.py).
     Cobra a traves del endpoint real /api/pedidos/cobro/ (que es quien
     congela VGDetallePedido.costo_unitario_venta al cobrar, ver
     _snapshot_costo_venta_detalles) para probar contra el mecanismo real,
@@ -2205,14 +2205,14 @@ class ReporteMargenGananciaDetalleTests(TestCase):
 
     def _reporte(self):
         response = self.client.get(
-            '/api/admin/reportes/margen-ganancia-detalle/',
+            '/api/admin/reportes/margen-ganancia/',
             data={'desde': self.hoy.isoformat(), 'hasta': self.hoy.isoformat()},
         )
         self.assertEqual(response.status_code, 200, response.content)
         return response.json()
 
     def _fila(self, payload, pedido_id):
-        grupo = next(p for p in payload['productos'] if p['producto_id'] == self.bistec.id)
+        grupo = next(p for p in payload['secciones'] if p['producto_id'] == self.bistec.id)
         return next(f for f in grupo['filas'] if f['pedido_id'] == pedido_id)
 
     def test_ingreso_y_costo_quedan_congelados_aunque_cambien_despues(self):
@@ -2247,8 +2247,8 @@ class ReporteMargenGananciaDetalleTests(TestCase):
         self.assertTrue(fila['costo_estimado'])
         self.assertEqual(fila['costo'], '3.00')
 
-        grupo = next(p for p in payload['productos'] if p['producto_id'] == self.bistec.id)
-        self.assertTrue(grupo['tiene_estimado'])
+        grupo = next(p for p in payload['secciones'] if p['producto_id'] == self.bistec.id)
+        self.assertTrue(grupo['tiene_costo_estimado'])
 
     def test_seccion_marca_estimado_solo_en_la_fila_que_corresponde(self):
         pedido_real = self._crear_pedido_pagado(self.bistec, '10.00')
@@ -2261,23 +2261,23 @@ class ReporteMargenGananciaDetalleTests(TestCase):
         self.assertFalse(fila_real['costo_estimado'])
         self.assertTrue(fila_estimada['costo_estimado'])
 
-        grupo = next(p for p in payload['productos'] if p['producto_id'] == self.bistec.id)
-        self.assertTrue(grupo['tiene_estimado'])
+        grupo = next(p for p in payload['secciones'] if p['producto_id'] == self.bistec.id)
+        self.assertTrue(grupo['tiene_costo_estimado'])
         self.assertEqual(len(grupo['filas']), 2)
         # Los totales de la seccion siguen sumando bien aunque mezcle fuentes.
-        self.assertEqual(grupo['ingreso_total'], '20.00')
-        self.assertEqual(grupo['costo_total'], '6.00')
+        self.assertEqual(grupo['total_ingreso'], '20.00')
+        self.assertEqual(grupo['total_costo'], '6.00')
 
     def test_rango_por_defecto_es_solo_hoy(self):
         pedido = self._crear_pedido_pagado(self.bistec, '10.00')
         VGPedido.objects.filter(pk=pedido.pk).update(fecha_creacion=timezone.now() - timedelta(days=1))
 
-        response = self.client.get('/api/admin/reportes/margen-ganancia-detalle/')
+        response = self.client.get('/api/admin/reportes/margen-ganancia/')
         self.assertEqual(response.status_code, 200, response.content)
         payload = response.json()
         self.assertEqual(payload['desde'], self.hoy.isoformat())
         self.assertEqual(payload['hasta'], self.hoy.isoformat())
-        self.assertEqual(payload['productos'], [])
+        self.assertEqual(payload['secciones'], [])
 
 
 class ReporteFlujoBancoTests(TestCase):
@@ -3852,18 +3852,19 @@ class MargenDetalladoReporteTests(TestCase):
 
     def reporte(self, desde=None, hasta=None):
         hoy = timezone.localdate().isoformat()
-        r = self.client.get(f'/api/admin/reportes/margen-ganancia-detalle/?desde={desde or hoy}&hasta={hasta or hoy}')
+        r = self.client.get(f'/api/admin/reportes/margen-ganancia/?desde={desde or hoy}&hasta={hasta or hoy}')
         self.assertEqual(r.status_code, 200, r.content)
         return r.json()
 
     def fila(self, data, producto):
-        seccion = next(s for s in data['productos'] if s['producto_id'] == producto.id)
+        seccion = next(s for s in data['secciones'] if s['producto_id'] == producto.id)
         return seccion['filas'][0]
 
     def test_venta_de_receta_con_margen_congelado_separa_el_costo_puro(self):
         # El costo guardado (1.47) ya trae el 50% sumado: el costo puro es 0.98.
         self.venta(self.receta_producto, cantidad=2, costo='1.47', margen='50')
         f = self.fila(self.reporte(), self.receta_producto)
+        self.assertEqual(Decimal(f['costo_unitario']), Decimal('0.98'))
         self.assertEqual(Decimal(f['costo']), Decimal('1.96'))
         self.assertEqual(Decimal(f['costo_con_margen']), Decimal('2.94'))
         self.assertEqual(Decimal(f['ganancia_monto']), Decimal('5.06'))      # 8.00 - 2.94
@@ -3873,7 +3874,7 @@ class MargenDetalladoReporteTests(TestCase):
     def test_venta_de_subreceta_no_trae_margen_dentro_y_se_le_suma(self):
         self.venta(self.sub_producto, costo='0.98', margen='50')
         f = self.fila(self.reporte(), self.sub_producto)
-        self.assertEqual(Decimal(f['costo']), Decimal('0.98'))
+        self.assertEqual(Decimal(f['costo_unitario']), Decimal('0.98'))
         self.assertEqual(Decimal(f['costo_con_margen']), Decimal('1.47'))
         self.assertEqual(Decimal(f['ganancia_monto']), Decimal('2.53'))
 
@@ -3890,7 +3891,7 @@ class MargenDetalladoReporteTests(TestCase):
     def test_venta_vieja_sin_margen_guardado_usa_el_de_hoy_y_se_marca(self):
         self.venta(self.receta_producto, costo='1.00', margen=None)
         f = self.fila(self.reporte(), self.receta_producto)
-        self.assertEqual(Decimal(f['costo']), Decimal('1.00'))
+        self.assertEqual(Decimal(f['costo_unitario']), Decimal('1.00'))
         self.assertEqual(Decimal(f['costo_con_margen']), Decimal('1.50'))
         self.assertTrue(f['margen_estimado'])
         self.assertFalse(f['costo_estimado'])
@@ -3898,7 +3899,7 @@ class MargenDetalladoReporteTests(TestCase):
     def test_venta_sin_costo_congelado_se_estima_con_el_costo_puro_de_hoy(self):
         self.venta(self.receta_producto, costo=None, margen=None)
         f = self.fila(self.reporte(), self.receta_producto)
-        self.assertEqual(Decimal(f['costo']), Decimal('0.98'))
+        self.assertEqual(Decimal(f['costo_unitario']), Decimal('0.98'))
         self.assertEqual(Decimal(f['costo_con_margen']), Decimal('1.47'))
         self.assertTrue(f['costo_estimado'])
         self.assertTrue(f['margen_estimado'])
@@ -3914,9 +3915,9 @@ class MargenDetalladoReporteTests(TestCase):
         self.assertEqual(Decimal(t['costo_total']), Decimal('3.92'))               # 0.98 x 4 unidades
         self.assertEqual(Decimal(t['costo_con_margen_total']), Decimal('5.88'))    # 1.47 x 4 unidades
         self.assertEqual(Decimal(t['ganancia_monto']), Decimal('10.12'))           # 16 - 5.88
-        seccion = next(s for s in data['productos'] if s['producto_id'] == self.receta_producto.id)
-        self.assertEqual(seccion['num_ventas'], 2)
-        self.assertEqual(Decimal(seccion['costo_con_margen_total']), Decimal('4.41'))   # 3 platos x 1.47
+        seccion = next(s for s in data['secciones'] if s['producto_id'] == self.receta_producto.id)
+        self.assertEqual(seccion['total_lineas'], 2)
+        self.assertEqual(Decimal(seccion['total_costo_con_margen']), Decimal('4.41'))   # 3 platos x 1.47
 
     def test_respeta_las_fechas_elegidas(self):
         detalle = self.venta(self.receta_producto, costo='1.47', margen='50')
@@ -3938,7 +3939,7 @@ class MargenDetalladoReporteTests(TestCase):
         self.assertEqual(detalle.margen_produccion_pct_venta, Decimal('50.00'))
         # Y al volver a leer el reporte, el costo puro se recupera sin contar el margen dos veces.
         f = self.fila(self.reporte(), self.receta_producto)
-        self.assertEqual(Decimal(f['costo']), Decimal('0.98'))
+        self.assertEqual(Decimal(f['costo_unitario']), Decimal('0.98'))
         self.assertEqual(Decimal(f['costo_con_margen']), Decimal('1.47'))
         self.assertFalse(f['margen_estimado'])
 
@@ -5244,7 +5245,7 @@ class EstadoResultadosCostoDeVentasTests(TestCase):
         self.venta(cantidad=3, precio='10.00', costo='4.00', margen='10.00')
         self.venta(cantidad=1, precio='25.00', costo='9.90')
         estado = self.reporte()
-        r = self.client.get(f'/api/admin/reportes/margen-ganancia-detalle/?desde={self.hoy.isoformat()}&hasta={self.hoy.isoformat()}')
+        r = self.client.get(f'/api/admin/reportes/margen-ganancia/?desde={self.hoy.isoformat()}&hasta={self.hoy.isoformat()}')
         self.assertEqual(r.status_code, 200, r.content)
         self.assertEqual(estado['costo_ventas'], r.json()['totales']['costo_con_margen_total'])
 
@@ -5298,7 +5299,7 @@ class ReporteMargenPorPlatoPdfTests(TestCase):
     """PDF del margen de ganancia por plato (el detallado): mismos numeros que la pantalla, agrupado por plato."""
 
     URL = '/api/admin/reportes/margen-por-plato-pdf/'
-    URL_PANTALLA = '/api/admin/reportes/margen-ganancia-detalle/'
+    URL_PANTALLA = '/api/admin/reportes/margen-ganancia/'
 
     def setUp(self):
         admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
@@ -5365,8 +5366,7 @@ class ReporteMargenPorPlatoPdfTests(TestCase):
         r, generar = self.pedir()
         self.assertEqual(r.status_code, 200)
         secciones, totales, total_lineas, desde, hasta = generar.call_args.args
-        self.assertEqual([s['nombre'] for s in secciones], [p['nombre'] for p in pantalla['productos']])
-        self.assertEqual([s['total_ingreso'] for s in secciones], [p['ingreso_total'] for p in pantalla['productos']])
+        self.assertEqual(secciones, pantalla['secciones'])
         self.assertEqual(totales, pantalla['totales'])
         self.assertEqual(total_lineas, pantalla['total_lineas'])
         self.assertEqual(totales['ingreso_total'], '60.00')

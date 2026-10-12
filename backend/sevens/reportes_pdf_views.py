@@ -6,7 +6,6 @@ Un reporte nuevo solo agrega una vista como reporte_inventario_pdf_view: usa
 entrega el resultado con responder_pdf().
 """
 from datetime import date
-from decimal import Decimal
 from functools import wraps
 
 from django.db.models import Q
@@ -139,42 +138,6 @@ def reporte_facturado_pdf_view(request):
     return responder_pdf(pdf, f'facturado-{desde:%Y-%m-%d}-al-{hasta:%Y-%m-%d}', con_fecha=False)
 
 
-def _secciones_margen_para_pdf(productos):
-    """
-    Pasa los grupos de armar_margen_ganancia_detallado() (uno por plato) a la forma que arma el PDF:
-    con el total de unidades o kilos de cada plato y la unidad de cada venta (por peso o por unidad).
-    """
-    secciones = []
-    for producto in productos:
-        filas = []
-        total_unidades = Decimal('0')
-        total_kg = Decimal('0')
-        for fila in producto['filas']:
-            por_peso = fila['peso_gramos'] is not None
-            if por_peso:
-                total_kg += Decimal(fila['peso_gramos']) * Decimal(fila['cantidad']) / Decimal('1000')
-            else:
-                total_unidades += Decimal(fila['cantidad'])
-            filas.append({**fila, 'unidad': 'kg' if por_peso else 'unidad'})
-        secciones.append({
-            'producto_id': producto['producto_id'],
-            'nombre': producto['nombre'],
-            'categoria': producto['categoria'],
-            'filas': filas,
-            'total_unidades': str(total_unidades.quantize(Decimal('0.01'))),
-            'total_kg': str(total_kg.quantize(Decimal('0.01'))),
-            'total_ingreso': producto['ingreso_total'],
-            'total_costo': producto['costo_total'],
-            'total_costo_con_margen': producto['costo_con_margen_total'],
-            'total_ganancia_monto': producto['ganancia_monto'],
-            'total_ganancia_pct': producto['ganancia_pct'],
-            'total_lineas': producto['num_ventas'],
-            'tiene_costo_estimado': producto['tiene_estimado'],
-            'tiene_margen_estimado': producto['tiene_margen_estimado'],
-        })
-    return secciones
-
-
 @pdf_solo_admin
 def reporte_margen_por_plato_pdf_view(request):
     """
@@ -198,8 +161,7 @@ def reporte_margen_por_plato_pdf_view(request):
         return _auth_response({'ok': False, 'message': 'El plato indicado no es valido.'}, status=400)
 
     datos = armar_margen_ganancia_detallado(desde, hasta)
-    secciones = _secciones_margen_para_pdf(datos['productos'])
-    totales, total_lineas = datos['totales'], datos['total_lineas']
+    secciones, totales, total_lineas = datos['secciones'], datos['totales'], datos['total_lineas']
     if producto_id:
         secciones = [s for s in secciones if s['producto_id'] == int(producto_id)]
         if not secciones:

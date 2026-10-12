@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import BotonDescargarPdf from './BotonDescargarPdf';
+import BsAmount from './BsAmount';
 import { RangoFechas } from './FiltroFechas';
+import useExchangeRate from '../hooks/useExchangeRate';
 
 function toIso(date) {
   const offset = date.getTimezoneOffset();
@@ -17,25 +19,34 @@ function formatMonto(value) {
   return number.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function formatFechaHora(iso) {
-  const fecha = new Date(iso);
-  const fechaTexto = fecha.toLocaleDateString('es-VE', { day: 'numeric', month: 'numeric' });
-  const horaTexto = fecha.toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit' });
-  return `${fechaTexto}, ${horaTexto}`;
+function formatHora(isoString) {
+  if (!isoString) return '';
+  const fecha = new Date(isoString);
+  return fecha.toLocaleString('es-VE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function formatCantidadFila(fila) {
+  if (fila.unidad === 'kg' && fila.peso_gramos != null) {
+    return `${formatMonto(fila.peso_gramos)} g`;
+  }
+  return `${fila.cantidad} u.`;
 }
 
 // Detalle de margen de ganancia POR PLATO, venta por venta (con el costo congelado al cobrar), segun el
 // rango de fechas elegido. Se abre desde el boton "Ver detalles de margen de ganancia por plato" de
 // AnalystMargenGananciaPage (ruta 'margen-ganancia-detallado' en WelcomeScreen).
 function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
+  const tasaCambio = useExchangeRate();
+  // Por defecto se ve solo el día de hoy — el analista elige el rango si
+  // quiere ver más.
   const [desde, setDesde] = useState(todayIso());
   const [hasta, setHasta] = useState(todayIso());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busqueda, setBusqueda] = useState('');
-  const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [productoSeleccionadoId, setProductoSeleccionadoId] = useState(null);
+  const [isBusquedaFocused, setIsBusquedaFocused] = useState(false);
+  const [productoSeleccionado, setProductoSeleccionado] = useState(null);
   const [pdfError, setPdfError] = useState('');
 
   const loadReport = useCallback(async (desdeConsultado, hastaConsultado) => {
@@ -43,7 +54,7 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
     setError('');
     try {
       const response = await fetch(
-        `/api/admin/reportes/margen-ganancia-detalle/?desde=${desdeConsultado}&hasta=${hastaConsultado}`,
+        `/api/admin/reportes/margen-ganancia/?desde=${desdeConsultado}&hasta=${hastaConsultado}`,
         { credentials: 'include', cache: 'no-store' },
       );
       const json = await response.json();
@@ -65,56 +76,60 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
 
   useEffect(() => {
     setBusqueda('');
-    setProductoSeleccionadoId(null);
+    setProductoSeleccionado(null);
     setPdfError('');
   }, [desde, hasta]);
 
-  const productos = useMemo(() => data?.productos || [], [data]);
+  const secciones = data?.secciones || [];
 
-  const busquedaQuery = busqueda.trim().toLowerCase();
+  const query = busqueda.trim().toLowerCase();
+
+  // Hasta 5 coincidencias para el desplegable, mientras se escribe y todavía
+  // no se ha seleccionado un plato puntual.
   const coincidencias = useMemo(() => {
-    if (!busquedaQuery) return [];
-    return productos.filter((producto) => producto.nombre.toLowerCase().includes(busquedaQuery)).slice(0, 5);
-  }, [productos, busquedaQuery]);
+    if (!query) return [];
+    return secciones.filter((seccion) => seccion.nombre.toLowerCase().includes(query)).slice(0, 5);
+  }, [secciones, query]);
 
   const handleBusquedaChange = (value) => {
-    // Escribir SIEMPRE invalida una seleccion anterior — el filtro solo se
-    // vuelve a aplicar cuando el usuario elige otra coincidencia de la lista.
+    // Escribir invalida la selección anterior — el filtro solo aplica cuando
+    // se elige un plato puntual del desplegable, no con el texto libre.
     setBusqueda(value);
-    setProductoSeleccionadoId(null);
+    setProductoSeleccionado(null);
   };
 
-  const handleSeleccionarProducto = (producto) => {
-    setBusqueda(producto.nombre);
-    setProductoSeleccionadoId(producto.producto_id);
-    setIsSearchFocused(false);
+  const handleSelectProducto = (seccion) => {
+    setProductoSeleccionado({ producto_id: seccion.producto_id, nombre: seccion.nombre });
+    setBusqueda(seccion.nombre);
+    setIsBusquedaFocused(false);
   };
 
   const handleQuitarFiltro = () => {
+    setProductoSeleccionado(null);
     setBusqueda('');
-    setProductoSeleccionadoId(null);
   };
 
-  const productosVisibles = productoSeleccionadoId
-    ? productos.filter((producto) => producto.producto_id === productoSeleccionadoId)
-    : productos;
+  // Una sección = un producto (con todas sus ventas individuales) — si hay un
+  // plato seleccionado del desplegable, solo se muestra esa sección; si no,
+  // se muestran todas.
+  const seccionesFiltradas = useMemo(() => {
+    if (!productoSeleccionado) return secciones;
+    return secciones.filter((seccion) => seccion.producto_id === productoSeleccionado.producto_id);
+  }, [secciones, productoSeleccionado]);
 
   // Totales de lo que se ve (todas las ventas del rango, o las del plato elegido): se suman linea por
   // linea, asi que un plato que se repite cuenta cada vez que se vendio.
   const totalesVisibles = useMemo(() => {
     const acumulado = { lineas: 0, ingreso: 0, costo: 0, costoConMargen: 0 };
-    productosVisibles.forEach((producto) => {
-      acumulado.lineas += Number(producto.num_ventas || 0);
-      acumulado.ingreso += Number(producto.ingreso_total || 0);
-      acumulado.costo += Number(producto.costo_total || 0);
-      acumulado.costoConMargen += Number(producto.costo_con_margen_total || 0);
+    seccionesFiltradas.forEach((seccion) => {
+      acumulado.lineas += Number(seccion.total_lineas || 0);
+      acumulado.ingreso += Number(seccion.total_ingreso || 0);
+      acumulado.costo += Number(seccion.total_costo || 0);
+      acumulado.costoConMargen += Number(seccion.total_costo_con_margen || 0);
     });
     const ganancia = acumulado.ingreso - acumulado.costoConMargen;
     return { ...acumulado, ganancia, gananciaPct: acumulado.ingreso > 0 ? (ganancia / acumulado.ingreso) * 100 : 0 };
-  }, [productosVisibles]);
-  const productoElegido = productoSeleccionadoId
-    ? productos.find((producto) => producto.producto_id === productoSeleccionadoId)
-    : null;
+  }, [seccionesFiltradas]);
 
   return (
     <section style={containerStyle(isMobile)}>
@@ -125,10 +140,10 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
         {/* PDF del rango elegido, agrupado por plato; con un plato elegido en el buscador, solo ese plato. */}
         <BotonDescargarPdf
           url="/api/admin/reportes/margen-por-plato-pdf/"
-          params={{ desde, hasta, producto_id: productoSeleccionadoId }}
+          params={{ desde, hasta, producto_id: productoSeleccionado?.producto_id }}
           onError={setPdfError}
         >
-          {productoElegido ? `Descargar PDF de ${productoElegido.nombre}` : 'Descargar PDF'}
+          {productoSeleccionado ? `Descargar PDF de ${productoSeleccionado.nombre}` : 'Descargar PDF'}
         </BotonDescargarPdf>
       </div>
 
@@ -158,7 +173,7 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
 
           <div style={totalesWrapStyle}>
             <div style={totalesTituloStyle}>
-              {productoElegido ? `Totales de ${productoElegido.nombre}` : 'Totales del período (todos los platos)'}
+              {productoSeleccionado ? `Totales de ${productoSeleccionado.nombre}` : 'Totales del período (todos los platos)'}
             </div>
             <div style={totalesGridStyle(isMobile)}>
               <div style={totalCardStyle}>
@@ -187,56 +202,62 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
             </div>
           </div>
 
-          <div className="no-print" style={{ ...fieldStyle, position: 'relative', maxWidth: 420 }}>
+          <div className="no-print" style={{ ...searchWrapStyle, position: 'relative' }}>
             <input
               type="text"
               value={busqueda}
               onChange={(event) => handleBusquedaChange(event.target.value)}
-              onFocus={() => setIsSearchFocused(true)}
-              onBlur={() => setTimeout(() => setIsSearchFocused(false), 150)}
-              placeholder="Buscar producto por nombre..."
+              onFocus={() => setIsBusquedaFocused(true)}
+              onBlur={() => setTimeout(() => setIsBusquedaFocused(false), 150)}
+              placeholder="Buscar plato por nombre..."
               style={searchInputStyle}
               autoComplete="off"
             />
-            {isSearchFocused && busquedaQuery && coincidencias.length > 0 ? (
+            {isBusquedaFocused && query && coincidencias.length > 0 ? (
               <div style={suggestionsPanelStyle}>
-                {coincidencias.map((producto) => (
+                {coincidencias.map((seccion) => (
                   <button
-                    key={producto.producto_id}
+                    key={seccion.producto_id}
                     type="button"
                     onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => handleSeleccionarProducto(producto)}
+                    onClick={() => handleSelectProducto(seccion)}
                     style={suggestionRowStyle}
                   >
-                    <span style={{ color: '#fff', fontWeight: 600 }}>{producto.nombre}</span>
-                    <span style={{ color: '#e8bcbc', fontSize: 12 }}>{producto.categoria}</span>
+                    <span style={{ color: '#fff', fontWeight: 600 }}>{seccion.nombre}</span>
+                    <span style={{ color: '#e8bcbc', fontSize: 12 }}>{seccion.categoria}</span>
                   </button>
                 ))}
               </div>
             ) : null}
-            {productoSeleccionadoId ? (
-              <button type="button" onClick={handleQuitarFiltro} style={quitarFiltroButtonStyle}>
-                ✕ Quitar filtro
+            {productoSeleccionado ? (
+              <button type="button" onClick={handleQuitarFiltro} style={quitarFiltroButtonStyle} className="no-print">
+                Quitar filtro ×
               </button>
             ) : null}
           </div>
 
-          {productosVisibles.length === 0 ? (
-            <div style={emptyStyle}>No hay platos vendidos en este rango de fechas.</div>
+          {seccionesFiltradas.length === 0 ? (
+            <div style={emptyStyle}>No hay ventas para este filtro.</div>
           ) : (
-            <div style={seccionesWrapStyle}>
-              {productosVisibles.map((producto) => (
-                <article key={producto.producto_id} style={seccionCardStyle}>
-                  <div style={seccionHeaderStyle}>
-                    <span style={seccionNombreStyle}>{producto.nombre}</span>
-                    <span style={seccionCategoriaStyle}>— {producto.categoria}</span>
-                    {producto.tiene_estimado ? (
-                      <span style={estimadoBadgeStyle} title="Al menos una venta de este plato no tiene costo histórico guardado; se usó el costo actual de la receta como estimación para esa venta puntual.">
-                        tiene costo estimado
+            <div style={{ display: 'grid', gap: 22 }}>
+              {seccionesFiltradas.map((seccion) => (
+                <div key={seccion.producto_id} style={seccionBlockStyle}>
+                  <div style={seccionTituloStyle}>
+                    {seccion.nombre}
+                    <span style={seccionCategoriaStyle}>{seccion.categoria}</span>
+                    {seccion.tiene_costo_estimado ? (
+                      <span
+                        style={estimadoBadgeStyle}
+                        title="Alguna venta de este plato es de antes de que se empezara a guardar el costo histórico; se usó el costo actual de la receta para esa fila puntual."
+                      >
+                        costo estimado en alguna fila
                       </span>
                     ) : null}
-                    {producto.tiene_margen_estimado ? (
-                      <span style={estimadoBadgeStyle} title="Alguna venta de este plato es de antes de que se guardara el margen de producción; para esa fila se usó el margen de hoy.">
+                    {seccion.tiene_margen_estimado ? (
+                      <span
+                        style={estimadoBadgeStyle}
+                        title="Alguna venta de este plato es de antes de que se guardara el margen de producción; para esa fila se usó el margen de hoy."
+                      >
                         margen estimado en alguna fila
                       </span>
                     ) : null}
@@ -244,29 +265,55 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
                   <div style={tableWrapStyle}>
                     <div style={tableStyle}>
                       <div style={headStyle}>Cantidad</div>
-                      <div style={headStyle}>Fecha/hora</div>
+                      <div style={headStyle}>Fecha / hora</div>
                       <div style={headStyle}>Pedido</div>
                       <div style={headStyle}>Nota de entrega</div>
                       <div style={headStyle}>Ingreso</div>
                       <div style={headStyle} title="Costo de la receta, subreceta o ingrediente anclado, sin margen de producción">Costo</div>
                       <div style={headStyle} title="Costo + margen de producción vigente cuando se cobró la venta">Costo + margen de producción</div>
                       <div style={headStyle} title="Ingreso menos costo + margen de producción">Ganancia</div>
-                      <div style={headStyle}>%</div>
-                      {producto.filas.map((fila) => (
-                        <FilaVenta key={fila.detalle_id} fila={fila} />
+                      {seccion.filas.map((fila) => (
+                        <div key={fila.detalle_id} style={rowFragmentStyle}>
+                          <div style={{ ...cellStyle, fontWeight: 700, color: '#8fffb0' }}>{formatCantidadFila(fila)}</div>
+                          <div style={cellStyle}>{formatHora(fila.fecha_hora)}</div>
+                          <div style={cellStyle}>#{fila.pedido_id}</div>
+                          <div style={cellStyle}>{fila.nota_entrega_codigo || '—'}</div>
+                          <div style={cellStyle}>
+                            ${formatMonto(fila.ingreso)}
+                            <BsAmount amountUsd={fila.ingreso} tasa={tasaCambio} />
+                          </div>
+                          <div style={cellStyle}>
+                            ${formatMonto(fila.costo)}
+                            <BsAmount amountUsd={fila.costo} tasa={tasaCambio} />
+                            {fila.costo_estimado ? <span style={estimadoBadgeInlineStyle}>estimado</span> : null}
+                          </div>
+                          <div style={cellStyle}>
+                            ${formatMonto(fila.costo_con_margen)}
+                            <BsAmount amountUsd={fila.costo_con_margen} tasa={tasaCambio} />
+                            {fila.margen_estimado ? <span style={estimadoBadgeInlineStyle}>margen estimado</span> : null}
+                          </div>
+                          <div style={{ ...cellStyle, color: Number(fila.ganancia_monto) >= 0 ? '#8fffb0' : '#ff9d9d', fontWeight: 700 }}>
+                            ${formatMonto(fila.ganancia_monto)} ({formatMonto(fila.ganancia_pct)}%)
+                          </div>
+                        </div>
                       ))}
-                      <div style={totalCellStyle}>Total: {producto.num_ventas} línea{producto.num_ventas === 1 ? '' : 's'}</div>
-                      <div style={totalCellStyle} />
-                      <div style={totalCellStyle} />
-                      <div style={totalCellStyle} />
-                      <div style={totalCellStyle}>${formatMonto(producto.ingreso_total)}</div>
-                      <div style={totalCellStyle}>${formatMonto(producto.costo_total)}</div>
-                      <div style={totalCellStyle}>${formatMonto(producto.costo_con_margen_total)}</div>
-                      <div style={totalCellStyle}>${formatMonto(producto.ganancia_monto)}</div>
-                      <div style={totalCellStyle}>{formatMonto(producto.ganancia_pct)}%</div>
+                      <div style={{ ...cellStyle, ...totalCellStyle, fontWeight: 800, color: '#8fffb0' }}>
+                        {Number(seccion.total_unidades) > 0 ? `${formatMonto(seccion.total_unidades)} u.` : ''}
+                        {Number(seccion.total_unidades) > 0 && Number(seccion.total_kg) > 0 ? ' + ' : ''}
+                        {Number(seccion.total_kg) > 0 ? `${formatMonto(seccion.total_kg)} kg` : ''}
+                      </div>
+                      <div style={{ ...cellStyle, ...totalCellStyle, fontWeight: 800 }}>Total: {seccion.total_lineas} línea(s)</div>
+                      <div style={{ ...cellStyle, ...totalCellStyle }} />
+                      <div style={{ ...cellStyle, ...totalCellStyle }} />
+                      <div style={{ ...cellStyle, ...totalCellStyle, fontWeight: 800 }}>${formatMonto(seccion.total_ingreso)}</div>
+                      <div style={{ ...cellStyle, ...totalCellStyle, fontWeight: 800 }}>${formatMonto(seccion.total_costo)}</div>
+                      <div style={{ ...cellStyle, ...totalCellStyle, fontWeight: 800 }}>${formatMonto(seccion.total_costo_con_margen)}</div>
+                      <div style={{ ...cellStyle, ...totalCellStyle, fontWeight: 800, color: '#8fffb0' }}>
+                        ${formatMonto(seccion.total_ganancia_monto)} ({formatMonto(seccion.total_ganancia_pct)}%)
+                      </div>
                     </div>
                   </div>
-                </article>
+                </div>
               ))}
             </div>
           )}
@@ -277,66 +324,20 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
   );
 }
 
-function FilaVenta({ fila }) {
-  const cantidadTexto = fila.peso_gramos !== null
-    ? `${formatMonto(fila.peso_gramos)} g`
-    : `${fila.cantidad} u.`;
-  const gananciaColor = Number(fila.ganancia_monto) >= 0 ? '#8fffb0' : '#ff9d9d';
-
-  return (
-    <>
-      <div style={cellStyle}>{cantidadTexto}</div>
-      <div style={cellStyle}>{formatFechaHora(fila.fecha_hora)}</div>
-      <div style={cellStyle}>#{fila.pedido_id}</div>
-      <div style={cellStyle}>{fila.nota_entrega_codigo || '—'}</div>
-      <div style={cellStyle}>${formatMonto(fila.ingreso)}</div>
-      <div style={cellStyle}>
-        ${formatMonto(fila.costo)}
-        {fila.costo_estimado ? (
-          <span style={estimadoBadgeInlineStyle} title="Esta venta no tiene costo histórico guardado; se muestra el costo actual de la receta como estimación.">
-            estimado
-          </span>
-        ) : null}
-      </div>
-      <div style={cellStyle}>
-        ${formatMonto(fila.costo_con_margen)}
-        {fila.margen_estimado ? (
-          <span style={estimadoBadgeInlineStyle} title="Esta venta es de antes de que se guardara el margen de producción; se usó el margen de hoy.">
-            margen estimado
-          </span>
-        ) : null}
-      </div>
-      <div style={{ ...cellStyle, color: gananciaColor, fontWeight: 700 }}>${formatMonto(fila.ganancia_monto)}</div>
-      <div style={{ ...cellStyle, color: gananciaColor, fontWeight: 700 }}>{formatMonto(fila.ganancia_pct)}%</div>
-    </>
-  );
-}
-
 const containerStyle = (isMobile) => ({ display: 'grid', gap: 16, padding: isMobile ? 6 : 10 });
 const titleStyle = (isMobile) => ({ margin: 0, color: '#fff', fontSize: isMobile ? 28 : 34 });
+const subtitleStyle = { margin: '8px 0 0', color: '#d2c3c3', maxWidth: 640, lineHeight: 1.6 };
 const panelStyle = { display: 'grid', gap: 14, padding: 18, borderRadius: 20, border: '1px solid rgba(255,255,255,0.1)', background: 'linear-gradient(180deg, rgba(20,10,10,0.95) 0%, rgba(8,8,8,0.98) 100%)' };
 const sectionTitleStyle = { color: '#fff', fontSize: 19, fontWeight: 700 };
+const seccionBlockStyle = { display: 'grid', gap: 8 };
+const seccionTituloStyle = { display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', color: '#ff9d9d', fontSize: 15, fontWeight: 800 };
+const seccionCategoriaStyle = { color: '#c8bbbb', fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' };
 const emptyStyle = { minHeight: 80, display: 'grid', placeItems: 'center', borderRadius: 14, border: '1px dashed rgba(255,255,255,0.12)', color: '#c8bbbb' };
-const noticeStyle = { padding: '12px 14px', borderRadius: 12, border: '1px solid rgba(255,145,145,0.22)', background: 'rgba(255,98,98,0.12)', color: '#ffd8d8' };
-const backButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', border: 'none', borderRadius: 999, padding: '11px 18px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(37, 99, 235, 0.35)' };
-const totalesWrapStyle = { display: 'grid', gap: 10 };
-const totalesTituloStyle = { color: '#ffb0b0', fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em' };
-const totalesGridStyle = (isMobile) => ({ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(5, minmax(0, 1fr))', gap: 10 });
-const totalCardStyle = { display: 'grid', gap: 4, padding: '12px 14px', borderRadius: 14, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.04)', alignContent: 'start' };
-const totalLabelStyle = { color: '#c8bbbb', fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' };
-const totalValueStyle = { color: '#fff', fontSize: 22, fontWeight: 800 };
-
-const fieldStyle = { display: 'grid', gap: 6 };
-const searchInputStyle = { width: '100%', boxSizing: 'border-box', borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: '#161010', padding: '10px 12px', color: '#fff', fontSize: 14 };
-const suggestionsPanelStyle = { position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 6, zIndex: 5, borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(10, 8, 8, 0.98)', boxShadow: '0 12px 30px rgba(0,0,0,0.4)', padding: 8, display: 'grid', gap: 4, maxHeight: 260, overflowY: 'auto' };
-const suggestionRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '8px 10px', background: 'rgba(255,255,255,0.04)', cursor: 'pointer', textAlign: 'left' };
-const quitarFiltroButtonStyle = { marginTop: 8, border: '1px solid rgba(255,126,126,0.4)', borderRadius: 999, padding: '6px 14px', background: 'rgba(145,33,33,0.25)', color: '#ffd3d3', fontWeight: 700, cursor: 'pointer', fontSize: 12.5, width: 'fit-content' };
-
-const seccionesWrapStyle = { display: 'grid', gap: 18 };
-const seccionCardStyle = { display: 'grid', gap: 10, padding: 14, borderRadius: 16, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)' };
-const seccionHeaderStyle = { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' };
-const seccionNombreStyle = { color: '#ffb0b0', fontSize: 16, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.03em' };
-const seccionCategoriaStyle = { color: '#c8bbbb', fontSize: 13 };
+const tableWrapStyle = { overflowX: 'auto' };
+const tableStyle = { display: 'grid', gridTemplateColumns: 'minmax(90px,0.6fr) minmax(140px,0.9fr) minmax(80px,0.5fr) minmax(130px,0.8fr) minmax(120px,0.8fr) minmax(120px,0.9fr) minmax(150px,1fr) minmax(140px,1fr)', minWidth: 1150, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, overflow: 'hidden' };
+const headStyle = { padding: '12px 14px', background: 'rgba(255,255,255,0.06)', color: '#ffb0b0', fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 800 };
+const cellStyle = { padding: '14px', borderTop: '1px solid rgba(255,255,255,0.08)', color: '#f2e6e6', display: 'grid', alignContent: 'center' };
+const totalCellStyle = { background: 'rgba(255,255,255,0.04)' };
 const estimadoBadgeStyle = {
   padding: '2px 8px',
   borderRadius: 999,
@@ -347,12 +348,20 @@ const estimadoBadgeStyle = {
   textTransform: 'uppercase',
   letterSpacing: '0.04em',
 };
-const estimadoBadgeInlineStyle = { ...estimadoBadgeStyle, marginLeft: 6, fontSize: 9.5, padding: '1px 6px' };
-
-const tableWrapStyle = { overflowX: 'auto' };
-const tableStyle = { display: 'grid', gridTemplateColumns: 'minmax(90px,0.7fr) minmax(130px,0.9fr) minmax(70px,0.5fr) minmax(120px,0.9fr) minmax(90px,0.7fr) minmax(120px,0.9fr) minmax(130px,0.9fr) minmax(90px,0.7fr) minmax(70px,0.5fr)', gap: '4px 10px', alignItems: 'center', minWidth: 1050 };
-const headStyle = { color: '#f0b4b4', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', padding: '4px 2px', borderBottom: '1px solid rgba(255,255,255,0.1)' };
-const cellStyle = { color: '#f2e6e6', fontSize: 13, padding: '5px 2px', borderBottom: '1px solid rgba(255,255,255,0.05)' };
-const totalCellStyle = { color: '#8fffb0', fontSize: 13, fontWeight: 800, padding: '8px 2px', borderTop: '2px solid rgba(143,255,176,0.35)', background: 'rgba(70,200,120,0.06)' };
+const estimadoBadgeInlineStyle = { ...estimadoBadgeStyle, marginLeft: 6, display: 'inline-block' };
+const rowFragmentStyle = { display: 'contents' };
+const noticeStyle = { padding: '12px 14px', borderRadius: 12, border: '1px solid rgba(255,145,145,0.22)', background: 'rgba(255,98,98,0.12)', color: '#ffd8d8' };
+const backButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', border: 'none', borderRadius: 999, padding: '11px 18px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(37, 99, 235, 0.35)' };
+const searchInputStyle = { width: '100%', boxSizing: 'border-box', borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: '#161010', padding: '10px 12px', color: '#fff', fontSize: 14 };
+const searchWrapStyle = { maxWidth: 420 };
+const totalesWrapStyle = { display: 'grid', gap: 10 };
+const totalesTituloStyle = { color: '#ffb0b0', fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em' };
+const totalesGridStyle = (isMobile) => ({ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, minmax(0, 1fr))' : 'repeat(5, minmax(0, 1fr))', gap: 10 });
+const totalCardStyle = { display: 'grid', gap: 4, padding: '12px 14px', borderRadius: 14, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.04)', alignContent: 'start' };
+const totalLabelStyle = { color: '#c8bbbb', fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' };
+const totalValueStyle = { color: '#fff', fontSize: 22, fontWeight: 800 };
+const suggestionsPanelStyle = { position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 6, zIndex: 5, borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(10, 8, 8, 0.98)', boxShadow: '0 12px 30px rgba(0,0,0,0.4)', padding: 8, display: 'grid', gap: 4, maxHeight: 260, overflowY: 'auto' };
+const suggestionRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '8px 10px', background: 'rgba(255,255,255,0.04)', cursor: 'pointer', textAlign: 'left' };
+const quitarFiltroButtonStyle = { marginTop: 8, border: '1px solid rgba(255,157,157,0.35)', borderRadius: 999, padding: '6px 12px', background: 'rgba(145,33,33,0.2)', color: '#ff9d9d', fontWeight: 700, fontSize: 12, cursor: 'pointer' };
 
 export default AnalystMargenGananciaDetalladoPage;

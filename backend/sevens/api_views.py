@@ -927,84 +927,49 @@ def _costo_con_margen_detalle(
 
 def reporte_margen_ganancia_view(request):
     """
-    Margen de ganancia por plato vendido en un rango de fechas: cuánto entró
-    (precio de venta x cantidad), cuánto costó y la ganancia resultante,
-    agrupado por producto. Usa el costo histórico congelado al momento del
-    cobro (VGDetallePedido.costo_unitario_venta, ver _snapshot_costo_venta_detalles)
-    cuando existe; para ventas de antes de que ese campo existiera (o cualquier
-    fila vieja sin snapshot), cae al costo_unitario ACTUAL de los ingredientes
-    como estimación — mismo criterio "último costo" que el reporte de
-    referencia (Profit Plus) — y esa fila queda marcada con 'costo_estimado':
-    true para que quede claro que no es un costo histórico real.
-    """
-    if request.method != 'GET':
-        return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
+    Margen de ganancia DETALLADO, fila por fila (una por cada VGDetallePedido,
+    sin sumar entre pedidos distintos) agrupado por seccion = PRODUCTO — mismo
+    patron que reporte_movimiento_productos_view (contabilidad_views.py), pero
+    con ingreso/costo/ganancia por fila en vez de solo cantidad. Cada seccion
+    lleva un total al final (suma de todas sus filas).
 
-    if not _is_admin_user(request.user):
-        return _auth_response({'ok': False, 'message': 'Debes iniciar sesion como administrador.'}, status=401)
+    ESTRICTAMENTE historico, a proposito — este reporte NUNCA recalcula con
+    valores de HOY una venta que ya paso:
+      - `ingreso` de cada fila sale de VGDetallePedido.precio_unitario/subtotal,
+        que se congela en la LINEA del pedido al crearla (ver pedido_create_view)
+        y nunca se vuelve a sincronizar contra producto.precio_venta despues —
+        si el precio del plato cambia hoy, las ventas de ayer (o del año
+        pasado) siguen mostrando el precio al que se vendieron en su momento.
+      - `costo` de cada fila sale de VGDetallePedido.costo_unitario_venta,
+        congelado en el momento del COBRO (ver _snapshot_costo_venta_detalles)
+        con los costos de ingredientes vigentes ESE dia — si el costo de un
+        ingrediente de la receta cambia hoy, las ventas ya cobradas no se
+        recalculan con el costo nuevo.
+      - El costo actual de la receta (_compute_product_unit_cost) SOLO se usa
+        como ultimo recurso, fila por fila, para ventas de antes de que
+        costo_unitario_venta existiera (o cualquier fila vieja sin snapshot) —
+        y esa fila puntual (no toda la seccion) queda marcada con
+        'costo_estimado': true para que quede clarisimo que esa fila en
+        particular no es costo historico real. Nunca extiendas esa estimacion
+        a filas que SI tienen su propio costo_unitario_venta congelado.
+      - `costo` es el costo PURO de la receta/sub-receta anclada al producto
+        (ingredientes), sin margen de produccion ni de ganancia. El margen de
+        produccion vigente el dia del cobro se congela en
+        VGDetallePedido.margen_produccion_pct_venta; con el se separa el costo
+        puro (el costo congelado ya trae ese margen sumado para las recetas, no
+        para un producto ligado a una subreceta) y se calcula `costo_con_margen`
+        = costo puro x (1 + margen). La ganancia se calcula contra
+        `costo_con_margen`, igual que el reporte por producto
+        (reporte_margen_productos_view). Una fila vieja sin margen congelado usa
+        el margen de HOY y queda marcada con 'margen_estimado': true.
 
-    desde_raw = request.GET.get('desde')
-    hasta_raw = request.GET.get('hasta')
-    try:
-        desde = date.fromisoformat(desde_raw) if desde_raw else timezone.localdate()
-        hasta = date.fromisoformat(hasta_raw) if hasta_raw else timezone.localdate()
-    except ValueError:
-        return _auth_response({'ok': False, 'message': 'Las fechas no son validas.'}, status=400)
-    if desde > hasta:
-        return _auth_response({'ok': False, 'message': '"Desde" no puede ser posterior a "Hasta".'}, status=400)
+    Cada fila trae ademas pedido_id y, si existe, la nota de entrega asociada
+    a ese pedido (nota_entrega_id/nota_entrega_codigo), igual que en
+    reporte_movimiento_productos_view, para poder rastrear cualquier fila
+    hasta el documento de venta real.
 
-    filas, total_ingreso, total_costo, _total_ingreso_bs = _calcular_margen_periodo(desde, hasta)
-
-    total_ganancia = total_ingreso - total_costo
-    total_ganancia_pct = (total_ganancia / total_ingreso * Decimal('100')) if total_ingreso > 0 else Decimal('0')
-
-    return _auth_response({
-        'ok': True,
-        'desde': desde.isoformat(),
-        'hasta': hasta.isoformat(),
-        'platos': filas,
-        'totales': {
-            'ingreso_total': str(total_ingreso.quantize(Decimal('0.01'))),
-            'costo_total': str(total_costo.quantize(Decimal('0.01'))),
-            'ganancia_monto': str(total_ganancia.quantize(Decimal('0.01'))),
-            'ganancia_pct': str(total_ganancia_pct.quantize(Decimal('0.01'))),
-        },
-    })
-
-
-def reporte_margen_ganancia_detalle_view(request):
-    """
-    Detalle de margen de ganancia VENTA POR VENTA (nunca agregado), agrupado
-    por producto — mismo patron de fila-por-fila que
-    reporte_movimiento_productos_view (contabilidad_views.py), pero con
-    ingreso/costo/ganancia por linea.
-
-    A proposito NO reutiliza _calcular_margen_periodo (la agregacion que ya
-    usa reporte_estado_resultados_view): itera linea por linea de forma
-    independiente para no arriesgar romper ese reporte agregado si esta
-    vista cambia. Sí reutiliza la MISMA funcion de costeo de ultimo recurso
-    (_compute_product_unit_cost) para no duplicar esa logica.
-
-    Historial estricto, sin excepciones salvo la marcada:
-    - Ingreso: siempre detalle.subtotal — usa el precio_unitario que quedo
-      congelado en la linea al CREAR el pedido, nunca el precio de venta
-      actual del producto.
-    - Costo: detalle.costo_unitario_venta si existe — congelado en el
-      momento del COBRO con los costos de ingredientes vigentes ese
-      instante (ver _snapshot_costo_venta_detalles), nunca recalculado
-      despues aunque cambie el costo de un ingrediente. Solo si esa venta es
-      tan vieja que no tiene ese snapshot (costo_unitario_venta es None), se
-      cae al costo ACTUAL de la receta como ultimo recurso, y ESA fila (no
-      el producto completo) queda marcada 'costo_estimado': true.
-
-    Costo y margen de produccion:
-    - `costo` es el costo PURO de la receta (sin margen de produccion). El margen vigente el dia del
-      cobro se congela en VGDetallePedido.margen_produccion_pct_venta; con el se separa el costo puro
-      (el costo congelado ya trae ese margen sumado para las recetas, no para un producto ligado a una
-      subreceta) y se calcula `costo_con_margen` = costo puro x (1 + margen).
-    - La ganancia se calcula contra `costo_con_margen`, igual que el reporte por producto
-      (reporte_margen_productos_view). Una fila vieja sin margen congelado usa el margen de HOY y queda
-      marcada con 'margen_estimado': true.
+    Solo incluye pedidos pagados (mismo criterio de "venta real" que el resto
+    de los reportes de contabilidad).
     """
     if request.method != 'GET':
         return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
@@ -1032,15 +997,11 @@ def reporte_margen_ganancia_detalle_view(request):
 
 def armar_margen_ganancia_detallado(desde, hasta):
     """
-    Los datos de reporte_margen_ganancia_detalle_view para el rango [desde, hasta] (fechas): un grupo
-    por producto con sus ventas linea por linea y los totales del periodo. Lo usan la pantalla (JSON) y
-    el PDF del reporte, para que los dos muestren exactamente los mismos numeros.
+    Los datos de reporte_margen_ganancia_view para el rango [desde, hasta] (fechas): una seccion por
+    producto con sus ventas linea por linea y los totales del periodo. Lo usan la pantalla (JSON) y el
+    PDF del reporte, para que los dos muestren exactamente los mismos numeros. Ver el docstring de la
+    vista para el criterio de costo (historico, congelado al cobrar).
     """
-    # select_related trae producto/categoria/pedido en el mismo JOIN;
-    # prefetch_related trae TODAS las notas de entrega de TODOS los pedidos
-    # involucrados en una sola consulta aparte — sin esto, pedir
-    # detalle.pedido.notas_entrega.all() por cada fila dispararia una
-    # consulta nueva por fila (N+1).
     detalles = (
         VGDetallePedido.objects
         .filter(
@@ -1050,38 +1011,43 @@ def armar_margen_ganancia_detallado(desde, hasta):
         )
         .select_related('producto__categoria', 'pedido')
         .prefetch_related('pedido__notas_entrega')
-        .order_by('pedido__fecha_creacion')
     )
 
+    # Costos de ingredientes/preparaciones ACTUALES — solo se usan como ultimo
+    # recurso para filas viejas sin costo_unitario_venta congelado (ver
+    # docstring). Cargarlos una sola vez, no por fila.
     ingredient_costs = {
         row['id']: _costo_unitario_efectivo(row['costo_unitario'], row['precio_compra'], row['peso_real'])
         for row in VGIngrediente.objects.values('id', 'costo_unitario', 'precio_compra', 'peso_real')
     }
     preparation_cost_map = _load_preparation_cost_map()
-    config_costeo = VGConfiguracionCosteo.obtener_config()
     # Solo para filas sin costo congelado: costo puro actual (sin margen de produccion).
     costo_puro_cache = {}
     config_sin_rendimiento = SimpleNamespace(rendimiento_receta_pct=Decimal('0'))
-    margen_produccion_actual = config_costeo.rendimiento_receta_pct or Decimal('0')
+    margen_produccion_actual = VGConfiguracionCosteo.obtener_config().rendimiento_receta_pct or Decimal('0')
     cien = Decimal('100')
 
-    grupos_por_producto = {}
+    secciones_por_producto = {}
     for detalle in detalles:
         producto = detalle.producto
-        grupo = grupos_por_producto.setdefault(producto.id, {
+        seccion = secciones_por_producto.setdefault(producto.id, {
             'producto_id': producto.id,
             'nombre': producto.nombre,
+            'categoria_id': producto.categoria_id,
             'categoria': producto.categoria.nombre if producto.categoria_id else 'Sin categoría',
             'filas': [],
-            'ingreso_total': Decimal('0'),
-            'costo_total': Decimal('0'),
-            'costo_con_margen_total': Decimal('0'),
-            'tiene_estimado': False,
-            'tiene_margen_estimado': False,
+            'total_unidades': Decimal('0'),
+            'total_kg': Decimal('0'),
+            'total_ingreso': Decimal('0'),
+            'total_costo': Decimal('0'),
+            'total_costo_con_margen': Decimal('0'),
         })
 
+        peso_factor = (detalle.peso_gramos / Decimal('1000')) if detalle.peso_gramos else Decimal('1')
+        cantidad_equivalente = Decimal(detalle.cantidad) * peso_factor
+
         if detalle.costo_unitario_venta is not None:
-            es_estimado = False
+            costo_estimado = False
             if detalle.margen_produccion_pct_venta is not None:
                 # Venta con foto completa: el costo congelado ya trae el margen de ESE dia sumado
                 # para las recetas (no para un producto ligado a una subreceta). Se separa para
@@ -1105,97 +1071,97 @@ def armar_margen_ganancia_detallado(desde, hasta):
                 )
             costo_unitario = costo_puro_cache[producto.id]
             margen_pct = margen_produccion_actual
-            es_estimado = True
+            costo_estimado = True
             margen_estimado = True
 
         costo_con_margen_unitario = costo_unitario * (Decimal('1') + margen_pct / cien)
-
-        peso_factor = (detalle.peso_gramos / Decimal('1000')) if detalle.peso_gramos else Decimal('1')
-        cantidad_equivalente = Decimal(detalle.cantidad) * peso_factor
 
         ingreso_linea = detalle.subtotal
         costo_linea = costo_unitario * cantidad_equivalente
         costo_con_margen_linea = costo_con_margen_unitario * cantidad_equivalente
         ganancia_linea = ingreso_linea - costo_con_margen_linea
-        ganancia_pct_linea = (ganancia_linea / ingreso_linea * Decimal('100')) if ingreso_linea > 0 else Decimal('0')
+        ganancia_linea_pct = (ganancia_linea / ingreso_linea * Decimal('100')) if ingreso_linea > 0 else Decimal('0')
 
-        nota = next(
-            (n for n in sorted(detalle.pedido.notas_entrega.all(), key=lambda n: n.fecha_emision, reverse=True)
-             if n.estado != 'anulada'),
-            None,
-        )
+        if producto.venta_por_peso:
+            seccion['total_kg'] += cantidad_equivalente
+        else:
+            seccion['total_unidades'] += cantidad_equivalente
+        seccion['total_ingreso'] += ingreso_linea
+        seccion['total_costo'] += costo_linea
+        seccion['total_costo_con_margen'] += costo_con_margen_linea
 
-        grupo['filas'].append({
+        notas_entrega_pedido = list(detalle.pedido.notas_entrega.all())
+        nota_entrega = notas_entrega_pedido[0] if notas_entrega_pedido else None
+
+        seccion['filas'].append({
             'detalle_id': detalle.id,
             'pedido_id': detalle.pedido_id,
-            'fecha_hora': detalle.pedido.fecha_creacion.isoformat(),
+            'nota_entrega_id': nota_entrega.id if nota_entrega else None,
+            'nota_entrega_codigo': nota_entrega.codigo if nota_entrega else None,
+            'fecha_hora': timezone.localtime(detalle.pedido.fecha_creacion).isoformat(),
             'cantidad': str(detalle.cantidad),
             'peso_gramos': str(detalle.peso_gramos) if detalle.peso_gramos is not None else None,
-            'nota_entrega_codigo': nota.codigo if nota else None,
+            'unidad': 'kg' if producto.venta_por_peso else 'unidad',
+            'costo_unitario': str(costo_unitario.quantize(Decimal('0.0001'))),
             'ingreso': str(ingreso_linea.quantize(Decimal('0.01'))),
             'costo': str(costo_linea.quantize(Decimal('0.01'))),
             'margen_produccion_pct': str(margen_pct),
             'costo_con_margen': str(costo_con_margen_linea.quantize(Decimal('0.01'))),
             'margen_estimado': margen_estimado,
             'ganancia_monto': str(ganancia_linea.quantize(Decimal('0.01'))),
-            'ganancia_pct': str(ganancia_pct_linea.quantize(Decimal('0.01'))),
-            'costo_estimado': es_estimado,
-        })
-        grupo['ingreso_total'] += ingreso_linea
-        grupo['costo_total'] += costo_linea
-        grupo['costo_con_margen_total'] += costo_con_margen_linea
-        if es_estimado:
-            grupo['tiene_estimado'] = True
-        if margen_estimado:
-            grupo['tiene_margen_estimado'] = True
-
-    productos = []
-    total_lineas = 0
-    total_ingreso = Decimal('0')
-    total_costo = Decimal('0')
-    total_costo_con_margen = Decimal('0')
-    for grupo in grupos_por_producto.values():
-        total_lineas += len(grupo['filas'])
-        total_ingreso += grupo['ingreso_total']
-        total_costo += grupo['costo_total']
-        total_costo_con_margen += grupo['costo_con_margen_total']
-        ganancia_grupo = grupo['ingreso_total'] - grupo['costo_con_margen_total']
-        ganancia_pct_grupo = (
-            (ganancia_grupo / grupo['ingreso_total'] * Decimal('100')) if grupo['ingreso_total'] > 0 else Decimal('0')
-        )
-        productos.append({
-            'producto_id': grupo['producto_id'],
-            'nombre': grupo['nombre'],
-            'categoria': grupo['categoria'],
-            'filas': grupo['filas'],
-            'num_ventas': len(grupo['filas']),
-            'ingreso_total': str(grupo['ingreso_total'].quantize(Decimal('0.01'))),
-            'costo_total': str(grupo['costo_total'].quantize(Decimal('0.01'))),
-            'costo_con_margen_total': str(grupo['costo_con_margen_total'].quantize(Decimal('0.01'))),
-            'ganancia_monto': str(ganancia_grupo.quantize(Decimal('0.01'))),
-            'ganancia_pct': str(ganancia_pct_grupo.quantize(Decimal('0.01'))),
-            'tiene_estimado': grupo['tiene_estimado'],
-            'tiene_margen_estimado': grupo['tiene_margen_estimado'],
+            'ganancia_pct': str(ganancia_linea_pct.quantize(Decimal('0.01'))),
+            'costo_estimado': costo_estimado,
         })
 
-    # De mayor a menor ingreso.
-    productos.sort(key=lambda item: Decimal(item['ingreso_total']), reverse=True)
+    total_ingreso_general = Decimal('0')
+    total_costo_general = Decimal('0')
+    total_costo_con_margen_general = Decimal('0')
+    total_lineas_general = 0
+    secciones = []
+    for seccion in secciones_por_producto.values():
+        filas_ordenadas = sorted(seccion['filas'], key=lambda fila: fila['fecha_hora'])
+        total_ganancia = seccion['total_ingreso'] - seccion['total_costo_con_margen']
+        total_ganancia_pct = (total_ganancia / seccion['total_ingreso'] * Decimal('100')) if seccion['total_ingreso'] > 0 else Decimal('0')
+        secciones.append({
+            'producto_id': seccion['producto_id'],
+            'nombre': seccion['nombre'],
+            'categoria_id': seccion['categoria_id'],
+            'categoria': seccion['categoria'],
+            'filas': filas_ordenadas,
+            'total_unidades': str(seccion['total_unidades'].quantize(Decimal('0.01'))),
+            'total_kg': str(seccion['total_kg'].quantize(Decimal('0.01'))),
+            'total_ingreso': str(seccion['total_ingreso'].quantize(Decimal('0.01'))),
+            'total_costo': str(seccion['total_costo'].quantize(Decimal('0.01'))),
+            'total_costo_con_margen': str(seccion['total_costo_con_margen'].quantize(Decimal('0.01'))),
+            'total_ganancia_monto': str(total_ganancia.quantize(Decimal('0.01'))),
+            'total_ganancia_pct': str(total_ganancia_pct.quantize(Decimal('0.01'))),
+            'total_lineas': len(filas_ordenadas),
+            'tiene_costo_estimado': any(fila['costo_estimado'] for fila in filas_ordenadas),
+            'tiene_margen_estimado': any(fila['margen_estimado'] for fila in filas_ordenadas),
+        })
+        total_ingreso_general += seccion['total_ingreso']
+        total_costo_general += seccion['total_costo']
+        total_costo_con_margen_general += seccion['total_costo_con_margen']
+        total_lineas_general += len(filas_ordenadas)
 
-    # Totales de TODAS las ventas del periodo, sumadas linea por linea: un plato que se repite cuenta
-    # cada vez que se vendio, no una sola.
-    ganancia_total = total_ingreso - total_costo_con_margen
-    ganancia_pct_total = (ganancia_total / total_ingreso * Decimal('100')) if total_ingreso > 0 else Decimal('0')
+    secciones.sort(key=lambda item: Decimal(item['total_ingreso']), reverse=True)
+
+    # Totales de TODAS las ventas del periodo, sumadas linea por linea: un plato que se repite
+    # (varias ventas del mismo producto) cuenta cada vez, no una sola.
+    total_ganancia_general = total_ingreso_general - total_costo_con_margen_general
+    total_ganancia_general_pct = (
+        (total_ganancia_general / total_ingreso_general * Decimal('100')) if total_ingreso_general > 0 else Decimal('0')
+    )
 
     return {
-        'productos': productos,
-        'total_productos_distintos': len(productos),
-        'total_lineas': total_lineas,
+        'secciones': secciones,
+        'total_lineas': total_lineas_general,
         'totales': {
-            'ingreso_total': str(total_ingreso.quantize(Decimal('0.01'))),
-            'costo_total': str(total_costo.quantize(Decimal('0.01'))),
-            'costo_con_margen_total': str(total_costo_con_margen.quantize(Decimal('0.01'))),
-            'ganancia_monto': str(ganancia_total.quantize(Decimal('0.01'))),
-            'ganancia_pct': str(ganancia_pct_total.quantize(Decimal('0.01'))),
+            'ingreso_total': str(total_ingreso_general.quantize(Decimal('0.01'))),
+            'costo_total': str(total_costo_general.quantize(Decimal('0.01'))),
+            'costo_con_margen_total': str(total_costo_con_margen_general.quantize(Decimal('0.01'))),
+            'ganancia_monto': str(total_ganancia_general.quantize(Decimal('0.01'))),
+            'ganancia_pct': str(total_ganancia_general_pct.quantize(Decimal('0.01'))),
         },
     }
 
