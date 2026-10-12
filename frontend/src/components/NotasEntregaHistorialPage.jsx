@@ -697,6 +697,12 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                 </div>
 
                 <div style={detailTotalsStyle}>
+                  {Number(notaDetalle.cargo_delivery) > 0 ? (
+                    <span>
+                      Incluye delivery{notaDetalle.zona_delivery ? ` (${notaDetalle.zona_delivery})` : ''}:{' '}
+                      {montoNota(notaDetalle.cargo_delivery, notaDetalle)}
+                    </span>
+                  ) : null}
                   <span style={{ fontWeight: 800, color: '#fff' }}>
                     Total: {montoNota(notaDetalle.total, notaDetalle)}
                   </span>
