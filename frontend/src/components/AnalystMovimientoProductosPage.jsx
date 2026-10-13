@@ -147,8 +147,8 @@ function AnalystMovimientoProductosPage({ isMobile, onBack }) {
                     onClick={() => handleSeleccionarProducto(producto)}
                     style={suggestionRowStyle}
                   >
-                    <span style={{ color: '#fff', fontWeight: 600 }}>{producto.nombre}</span>
-                    <span style={{ color: '#e8bcbc', fontSize: 12 }}>{producto.categoria}</span>
+                    <span style={{ color: 'var(--vg-text-strong)', fontWeight: 600 }}>{producto.nombre}</span>
+                    <span style={{ color: 'var(--vg-f-e8bcbc)', fontSize: 12 }}>{producto.categoria}</span>
                   </button>
                 ))}
               </div>
@@ -219,32 +219,32 @@ function FilaVenta({ fila, unidad }) {
 }
 
 const containerStyle = (isMobile) => ({ display: 'grid', gap: 16, padding: isMobile ? 6 : 10 });
-const titleStyle = (isMobile) => ({ margin: 0, color: '#fff', fontSize: isMobile ? 28 : 34 });
-const panelStyle = { display: 'grid', gap: 14, padding: 18, borderRadius: 20, border: '1px solid rgba(255,255,255,0.1)', background: 'linear-gradient(180deg, rgba(20,10,10,0.95) 0%, rgba(8,8,8,0.98) 100%)' };
-const sectionTitleStyle = { color: '#fff', fontSize: 19, fontWeight: 700 };
-const emptyStyle = { minHeight: 80, display: 'grid', placeItems: 'center', borderRadius: 14, border: '1px dashed rgba(255,255,255,0.12)', color: '#c8bbbb' };
-const noticeStyle = { padding: '12px 14px', borderRadius: 12, border: '1px solid rgba(255,145,145,0.22)', background: 'rgba(255,98,98,0.12)', color: '#ffd8d8' };
-const printButtonStyle = { border: '1px solid rgba(255,255,255,0.14)', borderRadius: 999, padding: '10px 16px', background: 'rgba(255,255,255,0.04)', color: '#fff', fontWeight: 700, cursor: 'pointer' };
+const titleStyle = (isMobile) => ({ margin: 0, color: 'var(--vg-text-strong)', fontSize: isMobile ? 28 : 34 });
+const panelStyle = { display: 'grid', gap: 14, padding: 18, borderRadius: 20, border: '1px solid rgba(var(--vg-ink), 0.1)', background: 'linear-gradient(180deg, var(--vg-bg-card) 0%, var(--vg-s-080808-a980) 100%)' };
+const sectionTitleStyle = { color: 'var(--vg-text-strong)', fontSize: 19, fontWeight: 700 };
+const emptyStyle = { minHeight: 80, display: 'grid', placeItems: 'center', borderRadius: 14, border: '1px dashed rgba(var(--vg-ink), 0.12)', color: 'var(--vg-f-c8bbbb)' };
+const noticeStyle = { padding: '12px 14px', borderRadius: 12, border: '1px solid var(--vg-f-ff9191-a220)', background: 'rgba(255,98,98,0.12)', color: 'var(--vg-f-ffd8d8)' };
+const printButtonStyle = { border: '1px solid rgba(var(--vg-ink), 0.14)', borderRadius: 999, padding: '10px 16px', background: 'rgba(var(--vg-ink), 0.04)', color: 'var(--vg-text-strong)', fontWeight: 700, cursor: 'pointer' };
 const backButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', border: 'none', borderRadius: 999, padding: '11px 18px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(37, 99, 235, 0.35)' };
-const summaryStyle = { color: '#c8bbbb', fontSize: 13 };
+const summaryStyle = { color: 'var(--vg-f-c8bbbb)', fontSize: 13 };
 
 const fieldStyle = { display: 'grid', gap: 6 };
-const searchInputStyle = { width: '100%', boxSizing: 'border-box', borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: '#161010', padding: '10px 12px', color: '#fff', fontSize: 14 };
-const suggestionsPanelStyle = { position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 6, zIndex: 5, borderRadius: 12, border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(10, 8, 8, 0.98)', boxShadow: '0 12px 30px rgba(0,0,0,0.4)', padding: 8, display: 'grid', gap: 4, maxHeight: 260, overflowY: 'auto' };
-const suggestionRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '8px 10px', background: 'rgba(255,255,255,0.04)', cursor: 'pointer', textAlign: 'left' };
-const quitarFiltroButtonStyle = { marginTop: 8, border: '1px solid rgba(255,126,126,0.4)', borderRadius: 999, padding: '6px 14px', background: 'rgba(145,33,33,0.25)', color: '#ffd3d3', fontWeight: 700, cursor: 'pointer', fontSize: 12.5, width: 'fit-content' };
+const searchInputStyle = { width: '100%', boxSizing: 'border-box', borderRadius: 12, border: '1px solid rgba(var(--vg-ink), 0.14)', background: 'var(--vg-s-161010)', padding: '10px 12px', color: 'var(--vg-text-strong)', fontSize: 14 };
+const suggestionsPanelStyle = { position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 6, zIndex: 5, borderRadius: 12, border: '1px solid rgba(var(--vg-ink), 0.14)', background: 'var(--vg-s-0a0808-a980)', boxShadow: '0 12px 30px rgba(0, 0, 0, calc(0.4 * var(--vg-shadow-k)))', padding: 8, display: 'grid', gap: 4, maxHeight: 260, overflowY: 'auto' };
+const suggestionRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 10, padding: '8px 10px', background: 'rgba(var(--vg-ink), 0.04)', cursor: 'pointer', textAlign: 'left' };
+const quitarFiltroButtonStyle = { marginTop: 8, border: '1px solid var(--vg-f-ff7e7e-a400)', borderRadius: 999, padding: '6px 14px', background: 'rgba(145,33,33,0.25)', color: 'var(--vg-f-ffd3d3)', fontWeight: 700, cursor: 'pointer', fontSize: 12.5, width: 'fit-content' };
 
 const seccionesWrapStyle = { display: 'grid', gap: 18 };
-const seccionCardStyle = { display: 'grid', gap: 10, padding: 14, borderRadius: 16, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)' };
+const seccionCardStyle = { display: 'grid', gap: 10, padding: 14, borderRadius: 16, border: '1px solid rgba(var(--vg-ink), 0.08)', background: 'rgba(var(--vg-ink), 0.02)' };
 const seccionHeaderStyle = { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' };
-const seccionNombreStyle = { color: '#ffb0b0', fontSize: 16, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.03em' };
-const seccionCategoriaStyle = { color: '#c8bbbb', fontSize: 13 };
+const seccionNombreStyle = { color: 'var(--vg-f-ffb0b0)', fontSize: 16, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.03em' };
+const seccionCategoriaStyle = { color: 'var(--vg-f-c8bbbb)', fontSize: 13 };
 
 const tableWrapStyle = { overflowX: 'auto' };
 const tableStyle = { display: 'grid', gridTemplateColumns: 'minmax(100px,0.8fr) minmax(140px,1fr) minmax(80px,0.6fr) minmax(140px,1fr)', gap: '4px 12px', alignItems: 'center', minWidth: 560 };
-const headStyle = { color: '#f0b4b4', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', padding: '4px 2px', borderBottom: '1px solid rgba(255,255,255,0.1)' };
-const cellStyle = { color: '#f2e6e6', fontSize: 13, padding: '5px 2px', borderBottom: '1px solid rgba(255,255,255,0.05)' };
-const totalCellStyle = { color: '#8fffb0', fontSize: 13, fontWeight: 800, padding: '8px 2px', borderTop: '2px solid rgba(143,255,176,0.35)', background: 'rgba(70,200,120,0.06)' };
+const headStyle = { color: 'var(--vg-f-f0b4b4)', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', padding: '4px 2px', borderBottom: '1px solid rgba(var(--vg-ink), 0.1)' };
+const cellStyle = { color: 'var(--vg-f-f2e6e6)', fontSize: 13, padding: '5px 2px', borderBottom: '1px solid rgba(var(--vg-ink), 0.05)' };
+const totalCellStyle = { color: 'var(--vg-f-8fffb0)', fontSize: 13, fontWeight: 800, padding: '8px 2px', borderTop: '2px solid var(--vg-f-8fffb0-a350)', background: 'rgba(70,200,120,0.06)' };
 const totalCellPrimaryStyle = { ...totalCellStyle };
 
 export default AnalystMovimientoProductosPage;

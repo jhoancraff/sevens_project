@@ -5450,3 +5450,241 @@ class ReporteMargenPorPlatoPdfTests(TestCase):
         self.assertEqual([b.titulo for b in bloques], ['Plato largo', 'Plato largo (continúa)', 'Plato largo (continúa)'])
         self.assertEqual(sum(len(b.filas) for b in bloques), cantidad)
         self.assertEqual([b.fila_total is not None for b in bloques], [False, False, True])
+
+
+class CasheaFlujoTests(TestCase):
+    """
+    Cashea: la nota se cobra en dos partes (inicial real + financiado con la
+    cuenta Cashea), el financiado no cuenta como disponible y la liquidación
+    semanal (depósito en Bs a la tasa del día) lo mueve al banco con la
+    comisión como gasto aparte.
+    """
+
+    def setUp(self):
+        self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='cashea_admin', password='claveAdmin123', cedula='90000077',
+            email='cashea_admin@sevens.test', id_role=self.admin_role,
+        )
+        self.client.force_login(self.admin)
+        self.efectivo, _ = VGMetodoPago.objects.get_or_create(
+            nombre='Efectivo USD', defaults={'es_efectivo': True, 'moneda': 'USD'},
+        )
+        self.cashea = VGMetodoPago.objects.create(nombre='Cashea', moneda='USD', es_cashea=True)
+        self.banesco = VGMetodoPago.objects.create(nombre='Banesco Bs', moneda='VES', cuenta_bancaria='Banesco')
+        categoria = VGCategoriaProducto.objects.create(nombre='Cat cashea')
+        self.producto = VGProducto.objects.create(
+            nombre='Plato cashea', categoria=categoria, precio_venta='20.00', disponible=True,
+        )
+        _set_tasa_actual(250)
+
+    def _post(self, url, cuerpo):
+        return self.client.post(url, data=json.dumps(cuerpo), content_type='application/json')
+
+    def _nota(self, precio='20.00', cedula='12345678'):
+        pedido = VGPedido.objects.create(
+            usuario=self.admin, tipo_pedido='local', estado='entregado', subtotal='0', total='0',
+        )
+        VGDetallePedido.objects.create(
+            pedido=pedido, producto=self.producto, cantidad=1, precio_unitario=precio, estado='entregado',
+        )
+        VGPedido.objects.filter(pk=pedido.pk).update(subtotal=precio, total=precio)
+        r = self._post('/api/pedidos/cobro/', {
+            'pedido_ids': [pedido.id], 'cliente_cedula': cedula, 'cliente_nombre': 'Ana',
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+        return VGNotaEntrega.objects.order_by('-id').first()
+
+    def _abonar(self, nota, metodo, monto, referencia=''):
+        return self._post(f'/api/notas-entrega/{nota.id}/abonos/', {
+            'monto': str(monto), 'metodo_pago_id': metodo.id, 'referencia': referencia,
+        })
+
+    def _cobrar_con_cashea(self, nota, inicial, financiado, orden):
+        r = self._abonar(nota, self.efectivo, inicial)
+        self.assertEqual(r.status_code, 201, r.content)
+        r = self._abonar(nota, self.cashea, financiado, orden)
+        self.assertEqual(r.status_code, 201, r.content)
+        return r
+
+    def test_cobro_en_dos_partes_deja_nota_pagada_y_cashea_no_es_disponible(self):
+        from sevens.reportes import disponibilidad_por_cuenta
+        nota = self._nota('20.00')
+        r = self._abonar(nota, self.efectivo, '8')
+        self.assertEqual(r.status_code, 201, r.content)
+
+        # Orden de Cashea obligatoria y numérica.
+        self.assertEqual(self._abonar(nota, self.cashea, '12').status_code, 400)
+        self.assertEqual(self._abonar(nota, self.cashea, '12', 'abc').status_code, 400)
+        # Mezclar efectivo con Cashea NO es un cambio de cuenta: no pide confirmación.
+        r = self._abonar(nota, self.cashea, '12', '209485647')
+        self.assertEqual(r.status_code, 201, r.content)
+        data = r.json()
+        self.assertEqual(data['nota_entrega']['estado'], 'pagada')
+        self.assertEqual(Decimal(data['nota_entrega']['saldo_pendiente']), Decimal('0'))
+        self.assertEqual(data['nota_entrega']['cashea_pendiente_usd'], '12.00')
+        self.assertTrue(data['pago']['es_cashea'])
+        self.assertIsNone(data['pago']['liquidacion_cashea'])
+
+        # La misma orden no puede cobrarse dos veces.
+        otra = self._nota('20.00', cedula='999')
+        self._abonar(otra, self.efectivo, '8')
+        r = self._abonar(otra, self.cashea, '12', '209485647')
+        self.assertEqual(r.status_code, 400)
+
+        cuentas, _bancos = disponibilidad_por_cuenta(timezone.localdate())
+        por_id = {cuenta['id']: cuenta for cuenta in cuentas}
+        self.assertEqual(por_id[self.efectivo.id]['saldo_disponible'], Decimal('16.000000'))
+        self.assertTrue(por_id[self.cashea.id]['es_cashea'])
+        self.assertEqual(por_id[self.cashea.id]['saldo_disponible'], Decimal('12.000000'))
+
+        reporte = self.client.get('/api/admin/reportes/disponibilidad-cuentas/').json()
+        self.assertEqual(Decimal(reporte['total_disponible']), Decimal('16'))
+        self.assertEqual(Decimal(reporte['por_cobrar_cashea']), Decimal('12'))
+
+    def test_liquidacion_semanal_mueve_a_banco_y_comision_es_gasto(self):
+        from sevens.models import VGLiquidacionCashea
+        from sevens.reportes import disponibilidad_por_cuenta
+        n1 = self._nota('20.00', cedula='111')
+        n2 = self._nota('30.00', cedula='222')
+        self._cobrar_con_cashea(n1, '8', '12', '209000001')
+        self._cobrar_con_cashea(n2, '12', '18', '209000002')
+
+        pendientes = self.client.get('/api/admin/cashea/pendientes/').json()
+        self.assertEqual(pendientes['cantidad'], 2)
+        self.assertEqual(pendientes['por_cobrar_usd'], '30.00')
+        ids = [item['pago_id'] for item in pendientes['pendientes']]
+
+        # Cashea paga 30 - comisión 2.40 = 27.60 USD, depositados en Bs a 260.
+        deposito = Decimal('27.60') * Decimal('260')
+        cuerpo = {
+            'pago_ids': ids, 'cuenta_destino_id': self.banesco.id,
+            'deposito_bs': str(deposito), 'tasa_cambio': '260', 'referencia': 'DEP-1',
+        }
+        r = self._post('/api/admin/cashea/liquidaciones/', cuerpo)
+        self.assertEqual(r.status_code, 201, r.content)
+        liq = r.json()['liquidacion']
+        self.assertEqual(liq['codigo'], 'CAS-000001')
+        self.assertEqual(liq['neto_usd'], '27.60')
+        self.assertEqual(liq['comision_usd'], '2.40')
+
+        cuentas, _ = disponibilidad_por_cuenta(timezone.localdate())
+        por_id = {cuenta['id']: cuenta for cuenta in cuentas}
+        # Por cobrar a Cashea queda en cero y el banco recibe EXACTAMENTE los Bs depositados.
+        self.assertEqual(por_id[self.cashea.id]['saldo_disponible'], Decimal('0'))
+        self.assertEqual(por_id[self.banesco.id]['saldo_disponible_bs'], deposito.quantize(Decimal('0.01')))
+        self.assertEqual(por_id[self.banesco.id]['saldo_disponible'], Decimal('27.60'))
+
+        # La comisión es un gasto aparte, pagado con la cuenta Cashea.
+        gasto = VGLiquidacionCashea.objects.get().gasto
+        self.assertEqual(gasto.categoria.nombre, 'Comisión Cashea')
+        self.assertEqual(gasto.monto, Decimal('2.400000'))
+        self.assertEqual(gasto.estado_pago, 'pagado')
+
+        # Ya liquidados: no vuelven a salir como pendientes ni se pueden liquidar de nuevo.
+        self.assertEqual(self.client.get('/api/admin/cashea/pendientes/').json()['cantidad'], 0)
+        r = self._post('/api/admin/cashea/liquidaciones/', cuerpo)
+        self.assertEqual(r.status_code, 409)
+
+    def test_liquidacion_rechaza_deposito_mayor_y_se_puede_anular(self):
+        from sevens.models import VGGasto, VGTransferenciaCuenta
+        from sevens.reportes import disponibilidad_por_cuenta
+        nota = self._nota('20.00')
+        self._cobrar_con_cashea(nota, '8', '12', '209000009')
+        pago_id = self.client.get('/api/admin/cashea/pendientes/').json()['pendientes'][0]['pago_id']
+        url = '/api/admin/cashea/liquidaciones/'
+
+        # Depósito de $13 (mayor a lo financiado): se rechaza.
+        r = self._post(url, {
+            'pago_ids': [pago_id], 'cuenta_destino_id': self.banesco.id, 'deposito_bs': '3250', 'tasa_cambio': '250',
+        })
+        self.assertEqual(r.status_code, 400)
+        # La cuenta destino debe ser en Bs.
+        r = self._post(url, {
+            'pago_ids': [pago_id], 'cuenta_destino_id': self.efectivo.id, 'deposito_bs': '2750', 'tasa_cambio': '250',
+        })
+        self.assertEqual(r.status_code, 400)
+
+        r = self._post(url, {
+            'pago_ids': [pago_id], 'cuenta_destino_id': self.banesco.id, 'deposito_bs': '2750', 'tasa_cambio': '250',
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+        liq_id = r.json()['liquidacion']['id']
+
+        r = self._post(url, {'action': 'anular', 'id': liq_id})
+        self.assertEqual(r.status_code, 400)  # el motivo es obligatorio
+        r = self._post(url, {'action': 'anular', 'id': liq_id, 'motivo': 'Bs mal digitados'})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(VGTransferenciaCuenta.objects.count(), 0)
+        self.assertEqual(VGGasto.objects.count(), 0)
+        cuentas, _ = disponibilidad_por_cuenta(timezone.localdate())
+        por_id = {cuenta['id']: cuenta for cuenta in cuentas}
+        self.assertEqual(por_id[self.cashea.id]['saldo_disponible'], Decimal('12.000000'))
+        self.assertEqual(por_id[self.banesco.id]['saldo_disponible'], Decimal('0'))
+        self.assertEqual(self.client.get('/api/admin/cashea/pendientes/').json()['cantidad'], 1)
+
+    def test_marcar_cuenta_cashea_y_bloqueo_de_transferencias_manuales(self):
+        # Solo una cuenta Cashea, en USD, que no sea efectivo.
+        otro = VGMetodoPago.objects.create(nombre='Otra USD', moneda='USD')
+        r = self._post('/api/admin/metodos-pago/', {'action': 'marcar_cashea', 'id': otro.id, 'es_cashea': True})
+        self.assertEqual(r.status_code, 400)
+        r = self._post('/api/admin/metodos-pago/', {'action': 'marcar_cashea', 'id': self.banesco.id, 'es_cashea': True})
+        self.assertEqual(r.status_code, 400)
+
+        r = self._post('/api/admin/transferencias-cuentas/', {
+            'cuenta_origen_id': self.cashea.id, 'cuenta_destino_id': self.banesco.id,
+            'monto_origen': '10', 'monto_destino': '2500', 'tasa_cambio': '250', 'concepto': 'x',
+        })
+        self.assertEqual(r.status_code, 400)
+
+
+class TicketGraficoCajaTests(TestCase):
+    """Los tickets de caja salen como imagen (logo + tipografía) con respaldo en texto."""
+
+    def _ticket(self):
+        from sevens.ticket_grafico import Ticket
+        ticket = Ticket()
+        ticket.logo()
+        ticket.centro('SEVENS', negrita=True, grande=True)
+        ticket.centro('NOTA DE ENTREGA', negrita=True)
+        ticket.separador()
+        ticket.campo('Cliente:', 'María Fernanda Rodríguez')
+        ticket.item('1x Hamburguesa Sevens Doble Carne con papas', '$9.50')
+        ticket.detalle('  - sin cebolla')
+        ticket.fila('Subtotal:', '$9.50')
+        ticket.total_dual('$9.50', 'Bs. 8.329,58')
+        return ticket
+
+    def test_el_ticket_grafico_es_un_raster_escpos_del_ancho_configurado(self):
+        from sevens.ticket_grafico import ancho_ticket
+        datos = self._ticket().to_raster_bytes()
+        self.assertTrue(datos.startswith(b'\x1b@'))
+        self.assertIn(b'\x1dv0\x00', datos)
+        self.assertTrue(datos.endswith(b'\x1dV\x00'))
+        ancho = ancho_ticket()
+        self.assertEqual(ancho % 8, 0)
+        # cada franja GS v 0 declara el ancho en bytes (xL xH) justo tras el encabezado
+        posicion = datos.index(b'\x1dv0\x00') + 4
+        self.assertEqual(int.from_bytes(datos[posicion:posicion + 2], 'little'), ancho // 8)
+        # el raster pesa mucho más que el mismo ticket en texto
+        self.assertGreater(len(datos), len(self._ticket().to_text_bytes()) * 10)
+
+    def test_la_imagen_tiene_tinta_y_el_texto_plano_conserva_el_contenido(self):
+        imagen = self._ticket().to_image()
+        self.assertEqual(imagen.size[0] % 8, 0)
+        self.assertLess(min(imagen.getdata()), 50)  # hay pixeles negros (logo y letras)
+        lineas = self._ticket().texto_plano()
+        self.assertIn('Cliente: María Fernanda', ' '.join(lineas))
+        self.assertIn('TOTAL: $9.50', lineas)
+
+    def test_si_falla_el_dibujo_se_imprime_en_texto(self):
+        from sevens.ticket_grafico import Ticket
+        with patch.object(Ticket, 'to_raster_bytes', side_effect=OSError('sin fuentes')):
+            datos = self._ticket().to_bytes()
+        self.assertEqual(datos, self._ticket().to_text_bytes())
+        self.assertNotIn(b'\x1dv0', datos)
+
+    def test_se_puede_apagar_el_ticket_grafico_por_configuracion(self):
+        with self.settings(TICKET_CAJA_GRAFICO=False):
+            datos = self._ticket().to_bytes()
+        self.assertNotIn(b'\x1dv0', datos)

@@ -44,7 +44,7 @@ const selectStyle = (accentColor) => ({
   padding: '10px 34px 10px 16px',
   background: `${accentColor}24 url("${CHEVRON_SVG}") no-repeat right 12px center`,
   backgroundSize: '14px',
-  color: '#fff',
+  color: 'var(--vg-text-strong)',
   fontWeight: 700,
   fontSize: 13.5,
   cursor: 'pointer',

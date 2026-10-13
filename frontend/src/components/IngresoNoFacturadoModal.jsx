@@ -162,36 +162,36 @@ const cardStyle = {
   maxHeight: '90vh',
   overflowY: 'auto',
   borderRadius: 20,
-  border: '1px solid rgba(45, 212, 191, 0.3)',
-  background: 'linear-gradient(180deg, rgba(10, 22, 20, 0.98) 0%, rgba(8, 10, 10, 0.99) 100%)',
+  border: '1px solid var(--vg-f-2dd4bf-a300)',
+  background: 'linear-gradient(180deg, var(--vg-s-0a1614-a980) 0%, var(--vg-s-080a0a-a990) 100%)',
   padding: '22px 22px 18px',
-  boxShadow: '0 20px 50px rgba(0, 0, 0, 0.45)',
+  boxShadow: '0 20px 50px rgba(0, 0, 0, calc(0.45 * var(--vg-shadow-k)))',
 };
 
-const titleStyle = { color: '#fff', fontSize: 19, fontWeight: 800, marginBottom: 6 };
-const hintStyle = { color: '#a9d9d0', fontSize: 12.5, lineHeight: 1.5, margin: '0 0 14px' };
+const titleStyle = { color: 'var(--vg-text-strong)', fontSize: 19, fontWeight: 800, marginBottom: 6 };
+const hintStyle = { color: 'var(--vg-f-a9d9d0)', fontSize: 12.5, lineHeight: 1.5, margin: '0 0 14px' };
 
 const formStyle = { display: 'grid', gap: 14 };
 const fieldStyle = { display: 'grid', gap: 6 };
-const labelStyle = { color: '#7fe6d3', fontSize: 12.5, fontWeight: 700 };
+const labelStyle = { color: 'var(--vg-f-7fe6d3)', fontSize: 12.5, fontWeight: 700 };
 const inputStyle = {
   width: '100%',
   boxSizing: 'border-box',
   padding: '10px 12px',
   borderRadius: 12,
-  border: '1px solid rgba(255, 255, 255, 0.16)',
-  background: 'rgba(255, 255, 255, 0.05)',
-  color: '#fff',
+  border: '1px solid rgba(var(--vg-ink), 0.16)',
+  background: 'rgba(var(--vg-ink), 0.05)',
+  color: 'var(--vg-text-strong)',
   fontSize: 14,
 };
 
 const footerStyle = { display: 'flex', justifyContent: 'space-between', gap: 10, marginTop: 6, flexWrap: 'wrap' };
 const cancelButtonStyle = {
-  border: '1px solid rgba(255, 255, 255, 0.16)',
+  border: '1px solid rgba(var(--vg-ink), 0.16)',
   borderRadius: 999,
   padding: '10px 16px',
-  background: 'rgba(255, 255, 255, 0.05)',
-  color: '#fff',
+  background: 'rgba(var(--vg-ink), 0.05)',
+  color: 'var(--vg-text-strong)',
   fontWeight: 700,
   cursor: 'pointer',
 };

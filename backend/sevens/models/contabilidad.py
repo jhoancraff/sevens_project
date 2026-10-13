@@ -61,6 +61,16 @@ class VGMetodoPago(VGAuditoria):
         help_text="Cobros por punto de venta: se agrupan en lotes y suman al saldo cuando el lote se acredita.",
     )
 
+    # Un metodo marcado es_cashea es la cuenta "Por cobrar a Cashea": lo que
+    # Cashea financia a un cliente se cobra con este metodo (nota queda pagada
+    # por la parte del cliente + la de Cashea), pero NO es dinero disponible
+    # hasta que Cashea liquida la semana (ver VGLiquidacionCashea). Su saldo es
+    # lo que Cashea nos debe, y se excluye de los totales de disponibilidad.
+    es_cashea = models.BooleanField(
+        default=False,
+        help_text="Cuenta 'Por cobrar a Cashea': su saldo es lo que Cashea debe y no cuenta como disponible.",
+    )
+
     class Meta:
         db_table = "vg_metodos_pago"
         verbose_name = "Metodo de pago"
@@ -388,6 +398,71 @@ class VGLotePOS(VGAuditoria):
 
     def __str__(self):
         return f"Lote POS #{self.numero} — {self.metodo_pago} ({self.get_estado_display()})"
+
+
+# ---------------------------------------------------------------------------
+# Liquidacion semanal de Cashea
+# ---------------------------------------------------------------------------
+class VGLiquidacionCashea(VGAuditoria):
+    """
+    Pago semanal de Cashea al restaurante: Cashea "compra" lo financiado de las
+    ordenes de la semana y deposita el neto, EN BOLIVARES a la tasa del dia, en
+    una cuenta registrada en el sistema.
+
+    Cada cobro con un metodo es_cashea (VGPago, referencia = numero de orden de
+    Cashea) queda "por cobrar" hasta que se incluye en una liquidacion. Al
+    registrarla (ver cashea_views.liquidaciones_cashea_view) se crean, en una
+    sola transaccion:
+      - una VGTransferenciaCuenta desde la cuenta Cashea (USD) hacia la cuenta
+        destino (VES) por el neto depositado: baja "Por cobrar" y sube el banco,
+      - un VGGasto 'Comisión Cashea' (categoria propia) pagado con la cuenta
+        Cashea por la diferencia: servicios tecnologicos + IVA - retencion +
+        descuento por adelanto - lo devuelto por cancelaciones.
+    Asi la cuenta Cashea queda en cero para lo liquidado y la comision aparece
+    como gasto aparte, nunca como una venta menor.
+
+    monto_financiado_usd es la suma de los cobros incluidos; ajuste_cancelaciones_usd
+    es lo financiado de ordenes de semanas anteriores que se cancelaron (el
+    reporte de Cashea lo descuenta de este pago). neto_usd = deposito_bs / tasa.
+    """
+    ESTADOS = [
+        ("registrada", "Registrada"),
+        ("anulada", "Anulada"),
+    ]
+    numero = models.PositiveIntegerField(unique=True, help_text="Correlativo de la serie 'CASHEA_LIQ'.")
+    fecha_deposito = models.DateField(help_text="Dia en que Cashea deposito.")
+    periodo_desde = models.DateField(null=True, blank=True)
+    periodo_hasta = models.DateField(null=True, blank=True)
+    cuenta_cashea = models.ForeignKey(VGMetodoPago, on_delete=models.PROTECT, related_name="liquidaciones_cashea_origen")
+    cuenta_destino = models.ForeignKey(VGMetodoPago, on_delete=models.PROTECT, related_name="liquidaciones_cashea_destino")
+    tasa_cambio = models.DecimalField(max_digits=12, decimal_places=4)
+    deposito_bs = models.DecimalField(max_digits=18, decimal_places=2)
+    monto_financiado_usd = models.DecimalField(max_digits=14, decimal_places=6)
+    ajuste_cancelaciones_usd = models.DecimalField(max_digits=14, decimal_places=6, default=0)
+    neto_usd = models.DecimalField(max_digits=14, decimal_places=6)
+    comision_usd = models.DecimalField(max_digits=14, decimal_places=6)
+    referencia = models.CharField(max_length=100, blank=True)
+    notas = models.TextField(blank=True)
+    estado = models.CharField(max_length=12, choices=ESTADOS, default="registrada")
+    transferencia = models.ForeignKey(
+        VGTransferenciaCuenta, on_delete=models.PROTECT, null=True, blank=True, related_name="liquidaciones_cashea",
+    )
+    gasto = models.ForeignKey(
+        "sevens.VGGasto", on_delete=models.PROTECT, null=True, blank=True, related_name="liquidaciones_cashea",
+    )
+
+    class Meta:
+        db_table = "vg_liquidaciones_cashea"
+        verbose_name = "Liquidación de Cashea"
+        verbose_name_plural = "Liquidaciones de Cashea"
+        ordering = ["-fecha_deposito", "-numero"]
+
+    @property
+    def codigo(self):
+        return f"CAS-{self.numero:06d}"
+
+    def __str__(self):
+        return f"Liquidación Cashea {self.codigo}"
 
 
 # ---------------------------------------------------------------------------
