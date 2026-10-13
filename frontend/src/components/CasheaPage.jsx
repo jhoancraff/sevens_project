@@ -2,13 +2,36 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Toast from './Toast';
 import MoneyInput from './MoneyInput';
 import useToast from '../hooks/useToast';
-import useExchangeRate from '../hooks/useExchangeRate';
 import { formatFecha, formatMonto } from '../utils/lotesPos';
 
-function todayIso() {
-  const now = new Date();
-  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+function isoLocal(fecha) {
+  const local = new Date(fecha.getTime() - fecha.getTimezoneOffset() * 60000);
   return local.toISOString().slice(0, 10);
+}
+
+// Semanas de Cashea: de lunes a domingo. La actual y las ocho anteriores.
+function semanasRecientes() {
+  const hoy = new Date();
+  hoy.setHours(12, 0, 0, 0);
+  const diasDesdeLunes = (hoy.getDay() + 6) % 7;
+  const lunesActual = new Date(hoy);
+  lunesActual.setDate(hoy.getDate() - diasDesdeLunes);
+  const semanas = [];
+  for (let i = 0; i <= 8; i += 1) {
+    const lunes = new Date(lunesActual);
+    lunes.setDate(lunesActual.getDate() - 7 * i);
+    const domingo = new Date(lunes);
+    domingo.setDate(lunes.getDate() + 6);
+    const desde = isoLocal(lunes);
+    const hasta = isoLocal(domingo);
+    semanas.push({
+      clave: desde,
+      desde,
+      hasta,
+      etiqueta: `Lun ${formatFecha(desde).slice(0, 5)} – Dom ${formatFecha(hasta)}${i === 0 ? ' (en curso)' : ''}`,
+    });
+  }
+  return semanas;
 }
 
 async function pedir(url, opciones) {
@@ -21,23 +44,30 @@ async function pedir(url, opciones) {
 }
 
 // Cashea: lo que Cashea nos debe (cobros con la cuenta Cashea todavía sin
-// liquidar) y el registro de su pago semanal en bolívares a la tasa del día.
+// liquidar) y el registro de su pago semanal. Cashea entrega un reporte por
+// semana (lunes a domingo) y paga cualquier día de la semana siguiente: se
+// elige la semana, se teclean los dos totales del reporte y Sevens exige que su
+// suma de esa semana coincida con el «Monto financiado» antes de registrar.
 function CasheaPage({ isMobile, onBack }) {
-  const tasaBcv = useExchangeRate();
+  const semanas = useMemo(() => semanasRecientes(), []);
   const { toast, showSuccess, showError, hideToast } = useToast();
   const [loading, setLoading] = useState(true);
   const [pendientes, setPendientes] = useState(null);
   const [liquidaciones, setLiquidaciones] = useState({ liquidaciones: [], totales: null });
   const [cuentasBs, setCuentasBs] = useState([]);
-  const [seleccion, setSeleccion] = useState(() => new Set());
+  const [semanaClave, setSemanaClave] = useState(semanas[1].clave);
+  const [excluidos, setExcluidos] = useState(() => new Set());
   const [saving, setSaving] = useState(false);
 
   const [cuentaDestinoId, setCuentaDestinoId] = useState('');
+  const [fechaDeposito, setFechaDeposito] = useState(isoLocal(new Date()));
   const [depositoBs, setDepositoBs] = useState('');
-  const [tasa, setTasa] = useState('');
+  const [financiadoReporte, setFinanciadoReporte] = useState('');
+  const [totalPagar, setTotalPagar] = useState('');
   const [ajuste, setAjuste] = useState('');
-  const [fechaDeposito, setFechaDeposito] = useState(todayIso());
   const [referencia, setReferencia] = useState('');
+
+  const semana = semanas.find((item) => item.clave === semanaClave) || semanas[1];
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -50,7 +80,7 @@ function CasheaPage({ isMobile, onBack }) {
       setPendientes(p);
       setLiquidaciones(l);
       setCuentasBs((m.metodos_pago || []).filter((metodo) => metodo.moneda === 'VES' && !metodo.es_cashea));
-      setSeleccion(new Set());
+      setExcluidos(new Set());
     } catch (error) {
       showError(error.message);
     } finally {
@@ -63,22 +93,25 @@ function CasheaPage({ isMobile, onBack }) {
     cargar();
   }, [cargar]);
 
-  useEffect(() => {
-    if (!tasa && tasaBcv) {
-      setTasa(String(tasaBcv));
-    }
-  }, [tasaBcv, tasa]);
-
-  const lista = pendientes?.pendientes || [];
-  const financiado = useMemo(
-    () => lista.filter((item) => seleccion.has(item.pago_id)).reduce((acc, item) => acc + Number(item.monto_usd), 0),
-    [lista, seleccion],
+  const todos = pendientes?.pendientes || [];
+  const deLaSemana = useMemo(
+    () => todos.filter((item) => item.fecha >= semana.desde && item.fecha <= semana.hasta),
+    [todos, semana],
   );
-  const neto = Number(tasa) > 0 && Number(depositoBs) > 0 ? Number(depositoBs) / Number(tasa) : null;
-  const comision = neto !== null ? financiado - Number(ajuste || 0) - neto : null;
+  const fueraDeLaSemana = todos.length - deLaSemana.length;
+  const incluidos = deLaSemana.filter((item) => !excluidos.has(item.pago_id));
+  const sumaSevens = incluidos.reduce((acc, item) => acc + Number(item.monto_usd), 0);
+
+  const reporteNum = Number(financiadoReporte) || 0;
+  const diferencia = reporteNum - sumaSevens;
+  const cuadra = reporteNum > 0 && Math.abs(diferencia) <= 0.01;
+  const totalNum = Number(totalPagar) || 0;
+  const depositoNum = Number(depositoBs) || 0;
+  const tasaImplicita = totalNum > 0 && depositoNum > 0 ? depositoNum / totalNum : null;
+  const comision = totalNum > 0 ? sumaSevens - Number(ajuste || 0) - totalNum : null;
 
   const alternar = (pagoId) => {
-    setSeleccion((actual) => {
+    setExcluidos((actual) => {
       const copia = new Set(actual);
       if (copia.has(pagoId)) {
         copia.delete(pagoId);
@@ -89,30 +122,26 @@ function CasheaPage({ isMobile, onBack }) {
     });
   };
 
-  const alternarTodos = () => {
-    setSeleccion((actual) => (actual.size === lista.length ? new Set() : new Set(lista.map((item) => item.pago_id))));
-  };
-
   const registrar = async (event) => {
     event.preventDefault();
-    if (seleccion.size === 0) {
-      showError('Selecciona los cobros de Cashea que incluye este pago.');
+    if (incluidos.length === 0) {
+      showError('No hay cobros de Cashea en esa semana para liquidar.');
       return;
     }
     if (!cuentaDestinoId) {
       showError('Elige la cuenta en bolívares donde cayó el depósito.');
       return;
     }
-    if (!(Number(depositoBs) > 0)) {
-      showError('Indica los bolívares que depositó Cashea.');
+    if (!(depositoNum > 0) || !(totalNum > 0) || !(reporteNum > 0)) {
+      showError('Completa los bolívares depositados y los dos totales del reporte de Cashea.');
       return;
     }
-    if (!(Number(tasa) > 0)) {
-      showError('Indica la tasa del día con la que Cashea convirtió.');
+    if (!cuadra) {
+      showError(`No cuadra con el reporte: Sevens suma $${formatMonto(sumaSevens)} y el reporte indica $${formatMonto(reporteNum)}.`);
       return;
     }
     if (comision !== null && comision < 0) {
-      showError('El depósito en dólares es mayor a lo financiado. Revisa los bolívares, la tasa y los cobros.');
+      showError('El «Total a pagar» es mayor a lo financiado. Revisa los totales del reporte.');
       return;
     }
     setSaving(true);
@@ -122,10 +151,13 @@ function CasheaPage({ isMobile, onBack }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'registrar',
-          pago_ids: Array.from(seleccion),
+          periodo_desde: semana.desde,
+          periodo_hasta: semana.hasta,
+          pago_ids: incluidos.map((item) => item.pago_id),
           cuenta_destino_id: Number(cuentaDestinoId),
           deposito_bs: depositoBs,
-          tasa_cambio: tasa,
+          monto_financiado_reporte: financiadoReporte,
+          total_pagar_usd: totalPagar,
           ajuste_cancelaciones_usd: ajuste || '0',
           fecha_deposito: fechaDeposito,
           referencia: referencia.trim(),
@@ -133,6 +165,8 @@ function CasheaPage({ isMobile, onBack }) {
       });
       showSuccess(json.message);
       setDepositoBs('');
+      setFinanciadoReporte('');
+      setTotalPagar('');
       setAjuste('');
       setReferencia('');
       await cargar();
@@ -170,9 +204,9 @@ function CasheaPage({ isMobile, onBack }) {
       <div>
         <h2 style={titleStyle(isMobile)}>Cashea</h2>
         <p style={subtitleStyle}>
-          Lo que financia Cashea no es dinero disponible hasta que Cashea paga la semana. Aquí ves lo que
-          Cashea nos debe y registras su depósito en bolívares: el banco sube por lo depositado y la
-          comisión queda como gasto aparte.
+          Lo que financia Cashea no es dinero disponible hasta que Cashea paga la semana. Elige la semana del
+          reporte (lunes a domingo), teclea sus totales y la fecha en que depositó: el total de Sevens tiene
+          que coincidir con el del reporte. El banco sube por lo depositado y la comisión queda como gasto aparte.
         </p>
       </div>
 
@@ -210,30 +244,39 @@ function CasheaPage({ isMobile, onBack }) {
           </section>
 
           <section style={panelStyle}>
-            <div style={sectionTitleStyle}>Cobros pendientes de liquidar</div>
-            {lista.length === 0 ? (
-              <div style={emptyStyle}>Cashea no nos debe nada ahora mismo.</div>
+            <div style={sectionTitleStyle}>Semana a liquidar</div>
+            <label style={{ ...fieldStyle, maxWidth: 420 }}>
+              <span>Semana del reporte de Cashea</span>
+              <select
+                value={semanaClave}
+                onChange={(event) => { setSemanaClave(event.target.value); setExcluidos(new Set()); }}
+                style={inputStyle}
+                className="admin-dark-select"
+              >
+                {semanas.map((item) => (
+                  <option key={item.clave} value={item.clave}>{item.etiqueta}</option>
+                ))}
+              </select>
+            </label>
+
+            {deLaSemana.length === 0 ? (
+              <div style={emptyStyle}>No hay cobros de Cashea sin liquidar en esa semana.</div>
             ) : (
               <div style={tableWrapStyle}>
                 <div style={pendientesTableStyle}>
-                  <div style={headStyle}>
-                    <input type="checkbox" checked={seleccion.size === lista.length} onChange={alternarTodos} aria-label="Seleccionar todos" />
-                  </div>
+                  <div style={headStyle}>Incluir</div>
                   <div style={headStyle}>Orden Cashea</div>
                   <div style={headStyle}>Fecha</div>
                   <div style={headStyle}>Nota</div>
                   <div style={headStyle}>Cliente</div>
                   <div style={{ ...headStyle, textAlign: 'right' }}>Monto</div>
-                  {lista.map((item) => (
+                  {deLaSemana.map((item) => (
                     <div key={item.pago_id} style={{ display: 'contents' }}>
                       <div style={cellStyle}>
-                        <input type="checkbox" checked={seleccion.has(item.pago_id)} onChange={() => alternar(item.pago_id)} />
+                        <input type="checkbox" checked={!excluidos.has(item.pago_id)} onChange={() => alternar(item.pago_id)} />
                       </div>
                       <div style={{ ...cellStyle, fontWeight: 700 }}>{item.orden_cashea}</div>
-                      <div style={cellStyle}>
-                        {formatFecha(item.fecha)}
-                        <span style={mutedStyle}>{item.dias === 0 ? 'hoy' : `hace ${item.dias} d`}</span>
-                      </div>
+                      <div style={cellStyle}>{formatFecha(item.fecha)}</div>
                       <div style={cellStyle}>
                         {item.nota_codigo}
                         {item.nota_estado === 'anulada' ? <span style={{ ...mutedStyle, color: 'var(--vg-f-ffb0b0)' }}>Nota anulada</span> : null}
@@ -245,19 +288,24 @@ function CasheaPage({ isMobile, onBack }) {
                 </div>
               </div>
             )}
+            {fueraDeLaSemana > 0 ? (
+              <div style={mutedStyle}>
+                Hay {fueraDeLaSemana} cobro(s) de otras semanas sin liquidar; no entran en este pago.
+              </div>
+            ) : null}
           </section>
 
-          {lista.length > 0 ? (
+          {deLaSemana.length > 0 ? (
             <form onSubmit={registrar} style={panelStyle}>
-              <div style={sectionTitleStyle}>Registrar depósito de Cashea</div>
-              <div style={mutedStyle}>
-                Selecciona arriba los cobros que incluye el pago del reporte semanal. Seleccionados:{' '}
-                {seleccion.size} · ${formatMonto(financiado)} financiado.
-              </div>
+              <div style={sectionTitleStyle}>Pago de Cashea de la semana {semana.etiqueta}</div>
 
               <div style={formGridStyle(isMobile)}>
                 <label style={fieldStyle}>
-                  <span>Cuenta donde cayó el depósito (Bs)</span>
+                  <span>Fecha en que depositó Cashea</span>
+                  <input type="date" value={fechaDeposito} onChange={(event) => setFechaDeposito(event.target.value)} style={inputStyle} />
+                </label>
+                <label style={fieldStyle}>
+                  <span>Cuenta donde cayó (Bs)</span>
                   <select
                     value={cuentaDestinoId}
                     onChange={(event) => setCuentaDestinoId(event.target.value)}
@@ -275,16 +323,16 @@ function CasheaPage({ isMobile, onBack }) {
                   <MoneyInput value={depositoBs} onChange={setDepositoBs} placeholder="Bs depositados" style={inputStyle} />
                 </label>
                 <label style={fieldStyle}>
-                  <span>Tasa del día (Bs por $)</span>
-                  <MoneyInput value={tasa} onChange={setTasa} maxDecimales={4} placeholder="Tasa" style={inputStyle} />
+                  <span>«Monto financiado» del reporte ($)</span>
+                  <MoneyInput value={financiadoReporte} onChange={setFinanciadoReporte} placeholder="0.00" style={inputStyle} />
                 </label>
                 <label style={fieldStyle}>
-                  <span>Ajuste por cancelaciones ($, opcional)</span>
+                  <span>«Total a pagar» del reporte ($)</span>
+                  <MoneyInput value={totalPagar} onChange={setTotalPagar} placeholder="0.00" style={inputStyle} />
+                </label>
+                <label style={fieldStyle}>
+                  <span>Financiado de órdenes canceladas ($, opcional)</span>
                   <MoneyInput value={ajuste} onChange={setAjuste} placeholder="0.00" style={inputStyle} />
-                </label>
-                <label style={fieldStyle}>
-                  <span>Fecha del depósito</span>
-                  <input type="date" value={fechaDeposito} onChange={(event) => setFechaDeposito(event.target.value)} style={inputStyle} />
                 </label>
                 <label style={fieldStyle}>
                   <span>Referencia del depósito</span>
@@ -293,24 +341,41 @@ function CasheaPage({ isMobile, onBack }) {
               </div>
 
               <div style={calculoBoxStyle}>
-                <div style={calculoFilaStyle}><span>Financiado seleccionado</span><strong>${formatMonto(financiado)}</strong></div>
                 <div style={calculoFilaStyle}>
-                  <span>(−) Ajuste por cancelaciones</span><strong>${formatMonto(ajuste || 0)}</strong>
+                  <span>Sevens suma ({incluidos.length} cobro(s))</span>
+                  <strong>${formatMonto(sumaSevens)}</strong>
                 </div>
                 <div style={calculoFilaStyle}>
-                  <span>Depositado en dólares (Bs ÷ tasa)</span>
-                  <strong>{neto !== null ? `$${formatMonto(neto)}` : '—'}</strong>
+                  <span>Reporte de Cashea</span>
+                  <strong>{reporteNum > 0 ? `$${formatMonto(reporteNum)}` : '—'}</strong>
+                </div>
+                <div
+                  style={{
+                    ...calculoFilaStyle,
+                    color: reporteNum <= 0 ? 'var(--vg-f-c8bbbb)' : (cuadra ? 'var(--vg-f-8fffb0)' : 'var(--vg-f-ff9d9d)'),
+                  }}
+                >
+                  <span>Estado</span>
+                  <strong>
+                    {reporteNum <= 0
+                      ? 'Falta el monto financiado del reporte'
+                      : (cuadra ? 'Coincide con el reporte ✓' : `No cuadra: diferencia $${formatMonto(diferencia)}`)}
+                  </strong>
+                </div>
+                <div style={calculoFilaStyle}>
+                  <span>Tasa que usó Cashea (Bs ÷ total a pagar)</span>
+                  <strong>{tasaImplicita !== null ? `Bs ${formatMonto(tasaImplicita)}` : '—'}</strong>
                 </div>
                 <div style={{ ...calculoFilaStyle, color: comision !== null && comision < 0 ? 'var(--vg-f-ff9d9d)' : 'var(--vg-f-ffcf7d)' }}>
                   <span>Comisión de Cashea (gasto)</span>
                   <strong>
                     {comision !== null ? `$${formatMonto(comision)}` : '—'}
-                    {comision !== null && financiado > 0 ? ` · ${((comision / financiado) * 100).toFixed(2)}%` : ''}
+                    {comision !== null && sumaSevens > 0 ? ` · ${((comision / sumaSevens) * 100).toFixed(2)}%` : ''}
                   </strong>
                 </div>
               </div>
 
-              <button type="submit" style={primaryButtonStyle} disabled={saving || seleccion.size === 0}>
+              <button type="submit" style={primaryButtonStyle} disabled={saving || !cuadra}>
                 {saving ? 'Registrando...' : 'Registrar liquidación'}
               </button>
             </form>
@@ -324,7 +389,7 @@ function CasheaPage({ isMobile, onBack }) {
               <div style={tableWrapStyle}>
                 <div style={historialTableStyle}>
                   <div style={headStyle}>Código</div>
-                  <div style={headStyle}>Depósito</div>
+                  <div style={headStyle}>Semana / depósito</div>
                   <div style={headStyle}>Cuenta</div>
                   <div style={{ ...headStyle, textAlign: 'right' }}>Financiado</div>
                   <div style={{ ...headStyle, textAlign: 'right' }}>Comisión</div>
@@ -336,8 +401,12 @@ function CasheaPage({ isMobile, onBack }) {
                         <span style={mutedStyle}>{item.referencia || 'Sin referencia'}</span>
                       </div>
                       <div style={cellStyle}>
-                        {formatFecha(item.fecha_deposito)}
-                        <span style={mutedStyle}>Bs {formatMonto(item.deposito_bs)} a {formatMonto(item.tasa_cambio)}</span>
+                        {item.periodo_desde && item.periodo_hasta
+                          ? `Semana ${formatFecha(item.periodo_desde).slice(0, 5)} – ${formatFecha(item.periodo_hasta)}`
+                          : 'Semana sin indicar'}
+                        <span style={mutedStyle}>
+                          Pagó {formatFecha(item.fecha_deposito)} · Bs {formatMonto(item.deposito_bs)} a {formatMonto(item.tasa_cambio)}
+                        </span>
                       </div>
                       <div style={cellStyle}>{item.cuenta_destino}</div>
                       <div style={{ ...cellStyle, textAlign: 'right' }}>${formatMonto(item.monto_financiado_usd)}</div>
@@ -380,8 +449,8 @@ const resumenGridStyle = (isMobile) => ({ display: 'grid', gridTemplateColumns: 
 const resumenCardStyle = { display: 'grid', gap: 6, padding: 16, borderRadius: 16, border: '1px solid rgba(var(--vg-ink), 0.1)', background: 'rgba(var(--vg-ink), 0.03)' };
 const resumenValorStyle = { color: 'var(--vg-text-strong)', fontSize: 26, fontWeight: 800 };
 const tableWrapStyle = { overflowX: 'auto' };
-const pendientesTableStyle = { display: 'grid', gridTemplateColumns: '48px minmax(130px,1fr) minmax(110px,0.8fr) minmax(110px,0.8fr) minmax(150px,1.2fr) minmax(100px,0.7fr)', minWidth: 720, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
-const historialTableStyle = { display: 'grid', gridTemplateColumns: 'minmax(130px,1fr) minmax(180px,1.2fr) minmax(130px,1fr) minmax(110px,0.8fr) minmax(110px,0.8fr) minmax(150px,1fr)', minWidth: 820, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
+const pendientesTableStyle = { display: 'grid', gridTemplateColumns: '64px minmax(130px,1fr) minmax(100px,0.8fr) minmax(110px,0.8fr) minmax(150px,1.2fr) minmax(100px,0.7fr)', minWidth: 720, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
+const historialTableStyle = { display: 'grid', gridTemplateColumns: 'minmax(130px,1fr) minmax(220px,1.4fr) minmax(130px,1fr) minmax(110px,0.8fr) minmax(110px,0.8fr) minmax(150px,1fr)', minWidth: 880, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
 const headStyle = { padding: '12px 14px', background: 'rgba(var(--vg-ink), 0.06)', color: 'var(--vg-f-ffb0b0)', fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 800 };
 const cellStyle = { padding: '12px 14px', borderTop: '1px solid rgba(var(--vg-ink), 0.08)', color: 'var(--vg-f-f2e6e6)', display: 'grid', alignContent: 'center', gap: 2 };
 const formGridStyle = (isMobile) => ({ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, minmax(0, 1fr))', gap: 12 });

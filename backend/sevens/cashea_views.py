@@ -39,7 +39,6 @@ from .models import (
     VGPago,
     VGTransferenciaCuenta,
 )
-from .tasa_cambio import obtener_tasa_actual
 
 SERIE_LIQUIDACION = 'CASHEA_LIQ'
 CATEGORIA_COMISION = 'Comisión Cashea'
@@ -191,12 +190,25 @@ def _registrar_liquidacion(request, data):
             'message': 'No hay una cuenta de Cashea configurada. Márcala en Métodos de pago.',
         }, status=400)
 
-    try:
-        pago_ids = {int(valor) for valor in (data.get('pago_ids') or [])}
-    except (TypeError, ValueError):
-        return _auth_response({'ok': False, 'message': 'La lista de cobros no es valida.'}, status=400)
-    if not pago_ids:
-        return _auth_response({'ok': False, 'message': 'Selecciona al menos un cobro de Cashea.'}, status=400)
+    # La liquidacion cubre UNA semana de ventas (el reporte de Cashea es
+    # semanal, de lunes a domingo): se paga cualquier dia de la semana siguiente,
+    # por eso el periodo y la fecha del deposito son datos distintos.
+    desde = _fecha(data.get('periodo_desde'))
+    hasta = _fecha(data.get('periodo_hasta'))
+    if desde is None or hasta is None:
+        return _auth_response({
+            'ok': False,
+            'message': 'Indica la semana (desde y hasta) que cubre el reporte de Cashea.',
+        }, status=400)
+    if desde > hasta:
+        return _auth_response({'ok': False, 'message': '"Desde" no puede ser posterior a "Hasta".'}, status=400)
+
+    pago_ids = None
+    if data.get('pago_ids'):
+        try:
+            pago_ids = {int(valor) for valor in data.get('pago_ids')}
+        except (TypeError, ValueError):
+            return _auth_response({'ok': False, 'message': 'La lista de cobros no es valida.'}, status=400)
 
     try:
         cuenta_destino = VGMetodoPago.objects.get(pk=int(data.get('cuenta_destino_id')), activo=True)
@@ -213,16 +225,24 @@ def _registrar_liquidacion(request, data):
         return _auth_response({'ok': False, 'message': 'Indica los bolívares que depositó Cashea.'}, status=400)
     deposito_bs = deposito_bs.quantize(CENTIMOS)
 
-    # La tasa es la del dia en que Cashea convirtio: la que escribe la
-    # administradora y, si la deja vacia, la BCV vigente.
-    tasa = _decimal(data.get('tasa_cambio'), Decimal('0'))
-    if tasa is None or tasa < 0:
-        return _auth_response({'ok': False, 'message': 'La tasa no es valida.'}, status=400)
-    if tasa == 0:
-        actual = obtener_tasa_actual()
-        tasa = actual.tasa if actual else None
-        if not tasa:
-            return _auth_response({'ok': False, 'message': 'No hay tasa de cambio disponible: indícala a mano.'}, status=400)
+    # Los dos totales del reporte de Cashea: lo que financio en la semana y lo
+    # que paga (ya sin comisiones). Con ellos la comision sale del reporte, no
+    # de una tasa, y la tasa que uso Cashea queda implicita: Bs / total en USD.
+    financiado_reporte = _decimal(data.get('monto_financiado_reporte'))
+    if financiado_reporte is None or financiado_reporte <= 0:
+        return _auth_response({
+            'ok': False,
+            'message': 'Indica el «Monto financiado» que dice el reporte de Cashea.',
+        }, status=400)
+    financiado_reporte = financiado_reporte.quantize(CENTIMOS)
+    total_pagar = _decimal(data.get('total_pagar_usd'))
+    if total_pagar is None or total_pagar <= 0:
+        return _auth_response({
+            'ok': False,
+            'message': 'Indica el «Total a pagar» en dólares que dice el reporte de Cashea.',
+        }, status=400)
+    total_pagar = total_pagar.quantize(CENTIMOS)
+    tasa = (deposito_bs / total_pagar).quantize(Decimal('0.0001'))
 
     ajuste = _decimal(data.get('ajuste_cancelaciones_usd'), Decimal('0'))
     if ajuste is None or ajuste < 0:
@@ -231,40 +251,61 @@ def _registrar_liquidacion(request, data):
 
     hoy = timezone.localdate()
     fecha_deposito = _fecha(data.get('fecha_deposito'), hoy)
-    desde = _fecha(data.get('periodo_desde'))
-    hasta = _fecha(data.get('periodo_hasta'))
-    if fecha_deposito is None or (data.get('periodo_desde') and desde is None) or (data.get('periodo_hasta') and hasta is None):
-        return _auth_response({'ok': False, 'message': 'Alguna fecha no es valida.'}, status=400)
-    if desde and hasta and desde > hasta:
-        return _auth_response({'ok': False, 'message': '"Desde" no puede ser posterior a "Hasta".'}, status=400)
+    if fecha_deposito is None:
+        return _auth_response({'ok': False, 'message': 'La fecha del depósito no es valida.'}, status=400)
 
     referencia = str(data.get('referencia', '') or '').strip()[:100]
     notas = str(data.get('notas', '') or '').strip()
 
     with transaction.atomic():
-        pagos = list(
+        candidatos = (
             VGPago.objects.select_for_update()
-            .filter(pk__in=pago_ids, metodo_pago=cuenta_cashea, estado='completado', liquidacion_cashea__isnull=True)
+            .filter(metodo_pago=cuenta_cashea, estado='completado', liquidacion_cashea__isnull=True,
+                    fecha_pago__date__range=(desde, hasta))
         )
-        if len(pagos) != len(pago_ids):
+        if pago_ids is not None:
+            pagos = list(candidatos.filter(pk__in=pago_ids))
+            if len(pagos) != len(pago_ids):
+                return _auth_response({
+                    'ok': False,
+                    'message': (
+                        'Alguno de los cobros ya fue liquidado, fue anulado, no es de Cashea '
+                        'o no cae dentro de la semana indicada. Recarga la lista.'
+                    ),
+                }, status=409)
+        else:
+            pagos = list(candidatos)
+        if not pagos:
             return _auth_response({
                 'ok': False,
-                'message': 'Alguno de los cobros ya fue liquidado, fue anulado o no es de Cashea. Recarga la lista.',
-            }, status=409)
+                'message': f'No hay cobros de Cashea pendientes entre {desde:%d/%m/%Y} y {hasta:%d/%m/%Y}.',
+            }, status=400)
 
         financiado = sum((pago.monto for pago in pagos), Decimal('0')).quantize(SEIS_DECIMALES)
-        # Cashea convierte a la tasa del dia: neto en USD = bolivares / tasa. Se
-        # redondea a centavos porque VGTransferenciaCuenta.monto_usd va en 2
-        # decimales; la comision absorbe esa diferencia para que la cuenta
-        # Cashea quede exactamente en cero.
-        neto_usd = (deposito_bs / tasa).quantize(CENTIMOS)
+        # El total de Sevens debe coincidir con el del reporte de Cashea: si no,
+        # falta o sobra una orden y hay que revisarla ANTES de mover dinero.
+        diferencia = (financiado_reporte - financiado.quantize(CENTIMOS)).quantize(CENTIMOS)
+        if abs(diferencia) > CENTIMOS:
+            return _auth_response({
+                'ok': False,
+                'message': (
+                    f'No cuadra con el reporte de Cashea: Sevens suma ${financiado.quantize(CENTIMOS)} en '
+                    f'{len(pagos)} cobro(s) de la semana y el reporte indica ${financiado_reporte} '
+                    f'(diferencia ${diferencia}). Revisa las órdenes antes de registrar el pago.'
+                ),
+                'diferencia_usd': str(diferencia),
+            }, status=400)
+        # El neto es el «Total a pagar» del reporte; VGTransferenciaCuenta.monto_usd
+        # va en 2 decimales y la comision absorbe cualquier resto para que la
+        # cuenta Cashea quede exactamente en cero.
+        neto_usd = total_pagar
         comision = (financiado - ajuste - neto_usd).quantize(SEIS_DECIMALES)
         if comision < 0:
             return _auth_response({
                 'ok': False,
                 'message': (
                     f'El depósito (${neto_usd}) es mayor a lo que se financió (${financiado.quantize(CENTIMOS)}). '
-                    'Revisa los bolívares, la tasa y los cobros seleccionados.'
+                    'Revisa el «Total a pagar» del reporte y los cobros incluidos.'
                 ),
             }, status=400)
         if neto_usd < CENTIMOS:
