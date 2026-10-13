@@ -5611,7 +5611,7 @@ class TicketGraficoCajaTests(TestCase):
         from sevens.ticket_grafico import Ticket
         ticket = Ticket()
         ticket.logo()
-        ticket.centro('SEVENS', negrita=True, grande=True)
+        ticket.centro('SEVEN', negrita=True, grande=True)
         ticket.centro('NOTA DE ENTREGA', negrita=True)
         ticket.separador()
         ticket.campo('Cliente:', 'María Fernanda Rodríguez')
