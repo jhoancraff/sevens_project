@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import BotonDescargarPdf from './BotonDescargarPdf';
 import Toast from './Toast';
 import MoneyInput from './MoneyInput';
 import useToast from '../hooks/useToast';
@@ -269,7 +270,17 @@ function CasheaPage({ isMobile, onBack }) {
             </div>
             {!rangoValido ? (
               <div style={noticeStyle}>Indica las dos fechas; «Desde» no puede ser posterior a «Hasta».</div>
-            ) : null}
+            ) : (
+              <div>
+                <BotonDescargarPdf
+                  url="/api/admin/reportes/cashea-por-cobrar-pdf/"
+                  params={{ desde: rango.desde, hasta: rango.hasta }}
+                  onError={showError}
+                >
+                  Descargar PDF de lo que nos debe Cashea
+                </BotonDescargarPdf>
+              </div>
+            )}
 
             {deLaSemana.length === 0 ? (
               <div style={emptyStyle}>No hay cobros de Cashea sin liquidar en ese rango.</div>

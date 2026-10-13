@@ -61,6 +61,7 @@ from .api_views import (
 )
 from .delivery_views import pedido_cargo_delivery_view, zonas_delivery_view
 from .reportes_pdf_views import (
+    reporte_cashea_por_cobrar_pdf_view,
     reporte_cuentas_por_cobrar_pdf_view,
     reporte_cuentas_por_pagar_pdf_view,
     reporte_facturado_pdf_view,
@@ -240,6 +241,7 @@ urlpatterns = [
     ),
     path('admin/reportes/cuentas-por-pagar-pdf/', reporte_cuentas_por_pagar_pdf_view, name='reporte_cuentas_por_pagar_pdf'),
     path('admin/reportes/cuentas-por-cobrar-pdf/', reporte_cuentas_por_cobrar_pdf_view, name='reporte_cuentas_por_cobrar_pdf'),
+    path('admin/reportes/cashea-por-cobrar-pdf/', reporte_cashea_por_cobrar_pdf_view, name='reporte_cashea_por_cobrar_pdf'),
     path('admin/reportes/cuadre-caja/', reporte_cuadre_caja_view, name='reporte_cuadre_caja'),
     path('admin/reportes/cuadre-caja-rango/', reporte_cuadre_caja_rango_view, name='reporte_cuadre_caja_rango'),
     path('admin/reportes/ventas-dia/', reporte_ventas_dia_view, name='reporte_ventas_dia'),

@@ -5651,6 +5651,51 @@ class CasheaFlujoTests(TestCase):
         self.assertEqual(Decimal(r['por_cobrar_bs_actual']), Decimal('3600.00'))
         self.assertEqual(r['por_cobrar_usd'], '12.00')
 
+    def test_pdf_de_lo_que_nos_debe_cashea(self):
+        from sevens.pdf_reportes import armar_filas_cashea
+        url = '/api/admin/reportes/cashea-por-cobrar-pdf/'
+        nota = self._nota('20.00')
+        self._cobrar_con_cashea(nota, '8', '12', '209000011')
+        _set_tasa_actual(300)
+
+        # Las filas del PDF son las mismas de la pantalla: tasa de registro, Bs a esa tasa,
+        # tasa actual y lo que deberia pagar a la tasa actual, con sus totales.
+        filas = self.client.get('/api/admin/cashea/pendientes/').json()['pendientes']
+        textos, totales = armar_filas_cashea(filas)
+        self.assertEqual(len(textos), 1)
+        self.assertEqual(textos[0][0], '209000011')
+        self.assertEqual(textos[0][4:], ['12,00', '250,0000', '3.000,00', '300,0000', '3.600,00'])
+        self.assertEqual(totales['usd'], Decimal('12.00'))
+        self.assertEqual(totales['bs_registro'], Decimal('3000.00'))
+        self.assertEqual(totales['bs_actual'], Decimal('3600.00'))
+
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r['Content-Type'], 'application/pdf')
+        self.assertTrue(r.content.startswith(b'%PDF'))
+        self.assertIn('cashea-por-cobrar-', r['Content-Disposition'])
+
+        hoy = timezone.localdate()
+        r = self.client.get(f'{url}?desde={hoy.isoformat()}&hasta={hoy.isoformat()}')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(f'{hoy:%Y-%m-%d}-al-{hoy:%Y-%m-%d}', r['Content-Disposition'])
+        # Un rango sin cobros igual genera el PDF (con el mensaje de vacio).
+        r = self.client.get(f'{url}?desde=2020-01-01&hasta=2020-01-07')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.content.startswith(b'%PDF'))
+
+        self.assertEqual(self.client.get(f'{url}?desde=2026-10-10&hasta=2026-10-01').status_code, 400)
+        self.assertEqual(self.client.get(f'{url}?desde=no-es-fecha').status_code, 400)
+
+    def test_el_pdf_de_cashea_es_solo_para_administradores(self):
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        cajera = VGUsuario.objects.create_user(
+            username='cashea_cajera', password='claveCajera123', cedula='90000079',
+            email='cashea_cajera@sevens.test', id_role=cajera_role,
+        )
+        self.client.force_login(cajera)
+        self.assertEqual(self.client.get('/api/admin/reportes/cashea-por-cobrar-pdf/').status_code, 401)
+
     def test_marcar_cuenta_cashea_y_bloqueo_de_transferencias_manuales(self):
         # Solo una cuenta Cashea, en USD, que no sea efectivo.
         otro = VGMetodoPago.objects.create(nombre='Otra USD', moneda='USD')

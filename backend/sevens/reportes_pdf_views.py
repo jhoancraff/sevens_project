@@ -20,9 +20,10 @@ from .auth_helpers import _auth_response, _is_admin_user, _is_cajera_user
 from .contabilidad_views import MAX_DIAS_RANGO_CUADRE_CAJA, _parse_rango_o_fecha_reporte
 from .facturacion_views import _serialize_nota_entrega
 from .gastos_views import _parse_fecha, _serialize_gasto
-from .models import VGCompra, VGGasto, VGIngrediente, VGNotaEntrega
+from .models import VGCompra, VGGasto, VGIngrediente, VGNotaEntrega, VGPago
+from .cashea_views import _cuenta_cashea, _serialize_pendiente
 from .pdf_reportes import (
-    generar_pdf_cuentas_por_cobrar, generar_pdf_cuentas_por_pagar, generar_pdf_facturado, generar_pdf_gastos,
+    generar_pdf_cashea_por_cobrar, generar_pdf_cuentas_por_cobrar, generar_pdf_cuentas_por_pagar, generar_pdf_facturado, generar_pdf_gastos,
     generar_pdf_inventario, generar_pdf_margen_por_plato,
 )
 from .reportes import detalle_ventas_rango
@@ -373,6 +374,51 @@ def reporte_cuentas_por_cobrar_pdf_view(request):
     pdf = generar_pdf_cuentas_por_cobrar(filas, estado, desde, hasta, cliente=texto_cliente, generado_en=ahora)
 
     nombre = ['cuentas-por-cobrar', estado]
+    if desde and hasta:
+        nombre.append(f'{desde:%Y-%m-%d}-al-{hasta:%Y-%m-%d}')
+    elif desde:
+        nombre.append(f'desde-{desde:%Y-%m-%d}')
+    elif hasta:
+        nombre.append(f'hasta-{hasta:%Y-%m-%d}')
+    else:
+        nombre.append(f'{ahora:%Y-%m-%d}')
+    return responder_pdf(pdf, '-'.join(nombre), con_fecha=False)
+
+
+@pdf_solo_admin
+def reporte_cashea_por_cobrar_pdf_view(request):
+    """
+    PDF de lo que Cashea nos debe: los cobros con la cuenta Cashea que todavia no estan en una
+    liquidacion, con las mismas columnas que la pantalla de Cashea (tasa de registro, Bs a esa tasa,
+    tasa actual y cuanto deberia pagar en Bs a la tasa actual).
+
+      desde / hasta   opcionales, cada uno por separado; por la fecha del cobro (hora de Caracas)
+    """
+    try:
+        desde = date.fromisoformat(request.GET['desde']) if request.GET.get('desde') else None
+        hasta = date.fromisoformat(request.GET['hasta']) if request.GET.get('hasta') else None
+    except ValueError:
+        return _auth_response({'ok': False, 'message': 'Las fechas no son validas.'}, status=400)
+    if desde and hasta and desde > hasta:
+        return _auth_response({'ok': False, 'message': '"Desde" no puede ser posterior a "Hasta".'}, status=400)
+
+    cuenta = _cuenta_cashea()
+    pagos = VGPago.objects.none()
+    if cuenta is not None:
+        pagos = (
+            VGPago.objects.filter(metodo_pago=cuenta, estado='completado', liquidacion_cashea__isnull=True)
+            .select_related('nota_entrega__cliente', 'creado_por')
+            .order_by('fecha_pago', 'id')
+        )
+        pagos = _en_rango(pagos, 'fecha_pago__date', desde, hasta)
+
+    ahora = timezone.localtime()
+    tasa_obj = obtener_tasa_actual()
+    tasa_actual = tasa_obj.tasa if tasa_obj else None
+    filas = [_serialize_pendiente(pago, ahora.date(), tasa_actual) for pago in pagos]
+
+    pdf = generar_pdf_cashea_por_cobrar(filas, desde, hasta, tasa_actual=tasa_actual, generado_en=ahora)
+    nombre = ['cashea-por-cobrar']
     if desde and hasta:
         nombre.append(f'{desde:%Y-%m-%d}-al-{hasta:%Y-%m-%d}')
     elif desde:
