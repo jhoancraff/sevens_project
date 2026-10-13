@@ -5544,6 +5544,14 @@ class CasheaFlujoTests(TestCase):
         self.assertEqual(Decimal(reporte['total_disponible']), Decimal('16'))
         self.assertEqual(Decimal(reporte['por_cobrar_cashea']), Decimal('12'))
 
+    def _semana(self):
+        """Una 'semana' que incluye hoy: los cobros del test se hacen hoy."""
+        hoy = timezone.localdate()
+        return {
+            'periodo_desde': (hoy - timedelta(days=6)).isoformat(),
+            'periodo_hasta': hoy.isoformat(),
+        }
+
     def test_liquidacion_semanal_mueve_a_banco_y_comision_es_gasto(self):
         from sevens.models import VGLiquidacionCashea
         from sevens.reportes import disponibilidad_por_cuenta
@@ -5555,13 +5563,14 @@ class CasheaFlujoTests(TestCase):
         pendientes = self.client.get('/api/admin/cashea/pendientes/').json()
         self.assertEqual(pendientes['cantidad'], 2)
         self.assertEqual(pendientes['por_cobrar_usd'], '30.00')
-        ids = [item['pago_id'] for item in pendientes['pendientes']]
 
-        # Cashea paga 30 - comisión 2.40 = 27.60 USD, depositados en Bs a 260.
+        # Reporte de Cashea de la semana: financio 30, paga 27.60 (comision 2.40),
+        # depositado en Bs a la tasa del dia que uso Cashea (260).
         deposito = Decimal('27.60') * Decimal('260')
         cuerpo = {
-            'pago_ids': ids, 'cuenta_destino_id': self.banesco.id,
-            'deposito_bs': str(deposito), 'tasa_cambio': '260', 'referencia': 'DEP-1',
+            **self._semana(),
+            'cuenta_destino_id': self.banesco.id, 'deposito_bs': str(deposito),
+            'monto_financiado_reporte': '30.00', 'total_pagar_usd': '27.60', 'referencia': 'DEP-1',
         }
         r = self._post('/api/admin/cashea/liquidaciones/', cuerpo)
         self.assertEqual(r.status_code, 201, r.content)
@@ -5569,6 +5578,9 @@ class CasheaFlujoTests(TestCase):
         self.assertEqual(liq['codigo'], 'CAS-000001')
         self.assertEqual(liq['neto_usd'], '27.60')
         self.assertEqual(liq['comision_usd'], '2.40')
+        # La tasa que uso Cashea queda implicita: Bs depositados / total en USD.
+        self.assertEqual(Decimal(liq['tasa_cambio']), Decimal('260.0000'))
+        self.assertEqual(liq['periodo_desde'], cuerpo['periodo_desde'])
 
         cuentas, _ = disponibilidad_por_cuenta(timezone.localdate())
         por_id = {cuenta['id']: cuenta for cuenta in cuentas}
@@ -5586,30 +5598,63 @@ class CasheaFlujoTests(TestCase):
         # Ya liquidados: no vuelven a salir como pendientes ni se pueden liquidar de nuevo.
         self.assertEqual(self.client.get('/api/admin/cashea/pendientes/').json()['cantidad'], 0)
         r = self._post('/api/admin/cashea/liquidaciones/', cuerpo)
-        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.status_code, 400)
 
-    def test_liquidacion_rechaza_deposito_mayor_y_se_puede_anular(self):
+    def test_el_total_de_sevens_debe_coincidir_con_el_reporte_de_cashea(self):
+        from sevens.models import VGLiquidacionCashea
+        n1 = self._nota('20.00', cedula='111')
+        n2 = self._nota('30.00', cedula='222')
+        self._cobrar_con_cashea(n1, '8', '12', '209000001')
+        self._cobrar_con_cashea(n2, '12', '18', '209000002')
+        url = '/api/admin/cashea/liquidaciones/'
+        base = {
+            **self._semana(), 'cuenta_destino_id': self.banesco.id,
+            'deposito_bs': '7176.00', 'total_pagar_usd': '27.60',
+        }
+        # El reporte dice 31 y Sevens suma 30: falta una orden, no se registra nada.
+        r = self._post(url, {**base, 'monto_financiado_reporte': '31.00'})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('No cuadra', r.json()['message'])
+        self.assertEqual(r.json()['diferencia_usd'], '1.00')
+        self.assertEqual(VGLiquidacionCashea.objects.count(), 0)
+        self.assertEqual(self.client.get('/api/admin/cashea/pendientes/').json()['cantidad'], 2)
+
+        # Una semana distinta (sin cobros) no encuentra nada que liquidar.
+        r = self._post(url, {
+            **base, 'monto_financiado_reporte': '30.00',
+            'periodo_desde': '2020-01-06', 'periodo_hasta': '2020-01-12',
+        })
+        self.assertEqual(r.status_code, 400)
+
+        # El periodo y los dos totales del reporte son obligatorios.
+        self.assertEqual(self._post(url, {**base, 'monto_financiado_reporte': '30.00', 'periodo_desde': ''}).status_code, 400)
+        self.assertEqual(self._post(url, {**base}).status_code, 400)
+        self.assertEqual(
+            self._post(url, {**base, 'monto_financiado_reporte': '30.00', 'total_pagar_usd': ''}).status_code, 400,
+        )
+
+        # Cuadra: se puede pagar un dia cualquiera de la semana siguiente.
+        manana = (timezone.localdate() + timedelta(days=3)).isoformat()
+        r = self._post(url, {**base, 'monto_financiado_reporte': '30.00', 'fecha_deposito': manana})
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()['liquidacion']['fecha_deposito'], manana)
+
+    def test_liquidacion_rechaza_pago_mayor_y_se_puede_anular(self):
         from sevens.models import VGGasto, VGTransferenciaCuenta
         from sevens.reportes import disponibilidad_por_cuenta
         nota = self._nota('20.00')
         self._cobrar_con_cashea(nota, '8', '12', '209000009')
-        pago_id = self.client.get('/api/admin/cashea/pendientes/').json()['pendientes'][0]['pago_id']
         url = '/api/admin/cashea/liquidaciones/'
+        base = {**self._semana(), 'monto_financiado_reporte': '12.00'}
 
-        # Depósito de $13 (mayor a lo financiado): se rechaza.
-        r = self._post(url, {
-            'pago_ids': [pago_id], 'cuenta_destino_id': self.banesco.id, 'deposito_bs': '3250', 'tasa_cambio': '250',
-        })
+        # Cashea no puede pagar mas de lo que financio.
+        r = self._post(url, {**base, 'cuenta_destino_id': self.banesco.id, 'deposito_bs': '3250', 'total_pagar_usd': '13.00'})
         self.assertEqual(r.status_code, 400)
         # La cuenta destino debe ser en Bs.
-        r = self._post(url, {
-            'pago_ids': [pago_id], 'cuenta_destino_id': self.efectivo.id, 'deposito_bs': '2750', 'tasa_cambio': '250',
-        })
+        r = self._post(url, {**base, 'cuenta_destino_id': self.efectivo.id, 'deposito_bs': '2750', 'total_pagar_usd': '11.00'})
         self.assertEqual(r.status_code, 400)
 
-        r = self._post(url, {
-            'pago_ids': [pago_id], 'cuenta_destino_id': self.banesco.id, 'deposito_bs': '2750', 'tasa_cambio': '250',
-        })
+        r = self._post(url, {**base, 'cuenta_destino_id': self.banesco.id, 'deposito_bs': '2750', 'total_pagar_usd': '11.00'})
         self.assertEqual(r.status_code, 201, r.content)
         liq_id = r.json()['liquidacion']['id']
 
