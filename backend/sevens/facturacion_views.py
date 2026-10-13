@@ -399,6 +399,11 @@ def _serialize_pago(pago):
         'numero_cobro': pago.numero_cobro,
         'codigo_cobro': codigo_cobro(pago.numero_cobro),
         'saldo_posterior': str(pago.saldo_posterior) if pago.saldo_posterior is not None else None,
+        'es_cashea': pago.metodo_pago.es_cashea,
+        # Solo un cobro con la cuenta Cashea: None = Cashea aún no lo ha pagado.
+        'liquidacion_cashea': (
+            pago.liquidacion_cashea.codigo if pago.liquidacion_cashea_id else None
+        ) if pago.metodo_pago.es_cashea else None,
     }
 
 
@@ -1105,9 +1110,19 @@ def _serialize_nota_entrega(nota, incluir_detalle=True, tasa_pago_actual=None):
             str((nota.total * tasa_vigente).quantize(Decimal('0.01'))) if tasa_vigente else None
         )
     if incluir_detalle:
-        data['pagos'] = [
-            _serialize_pago(pago) for pago in nota.pagos.filter(estado='completado').order_by('fecha_pago')
-        ]
+        pagos_completados = list(
+            nota.pagos.filter(estado='completado')
+            .select_related('metodo_pago', 'creado_por', 'liquidacion_cashea')
+            .order_by('fecha_pago')
+        )
+        data['pagos'] = [_serialize_pago(pago) for pago in pagos_completados]
+        # Lo que Cashea aún nos debe de esta nota: la nota ya está pagada por el
+        # cliente, pero ese dinero no llega a banco hasta la liquidación semanal.
+        data['cashea_pendiente_usd'] = str(sum(
+            (pago.monto for pago in pagos_completados
+             if pago.metodo_pago.es_cashea and pago.liquidacion_cashea_id is None),
+            Decimal('0'),
+        ).quantize(Decimal('0.01')))
         # Para poder elegir UN item puntual a cambiar sin anular toda la nota
         # (ver aplicar_canje_item en devoluciones_views.py) — cada fila trae
         # el id del VGDetallePedido, no solo del pedido, porque el canje de
@@ -1235,13 +1250,17 @@ def nota_entrega_abono_view(request, nota_id):
         # ya hay cobros completados con OTRA cuenta (el primer cobro nunca
         # pregunta): mover el resto de la plata a otra cuenta bancaria debe ser
         # una decisión explícita de la cajera.
+        # Cashea es la excepción: una venta con Cashea se cobra SIEMPRE en dos
+        # partes (inicial en caja con la cuenta real + financiado con la cuenta
+        # Cashea), así que mezclar Cashea con otra cuenta no es un cambio de
+        # cuenta y nunca pide confirmación.
         pago_otra_cuenta = (
-            nota.pagos.filter(estado='completado')
+            nota.pagos.filter(estado='completado', metodo_pago__es_cashea=False)
             .exclude(metodo_pago_id=metodo_pago.id)
             .select_related('metodo_pago')
             .order_by('-fecha_pago', '-id')
             .first()
-        )
+        ) if not metodo_pago.es_cashea else None
         if pago_otra_cuenta is not None and not confirma_cambio_metodo:
             return _auth_response({
                 'ok': False,
@@ -1253,6 +1272,23 @@ def nota_entrega_abono_view(request, nota_id):
                     f'usas «{metodo_pago.nombre}». ¿Confirmas el cambio de cuenta?'
                 ),
             }, status=409)
+
+        if metodo_pago.es_cashea:
+            # La referencia ES el número de orden de Cashea: es la llave para
+            # conciliar después contra el reporte semanal de Cashea, por eso
+            # es numérica y no puede repetirse entre cobros vigentes.
+            if not referencia_usuario.isdigit():
+                return _auth_response({
+                    'ok': False,
+                    'message': 'El número de orden de Cashea debe contener solo números.',
+                }, status=400)
+            if VGPago.objects.filter(
+                metodo_pago=metodo_pago, referencia=referencia_usuario, estado='completado',
+            ).exists():
+                return _auth_response({
+                    'ok': False,
+                    'message': f'Ya hay un cobro registrado con la orden de Cashea {referencia_usuario}.',
+                }, status=400)
 
         tasa_pago_actual = obtener_tasa_actual()
 

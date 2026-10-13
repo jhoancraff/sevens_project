@@ -153,6 +153,7 @@ function ReporteDisponibilidadCuentasPage({ isMobile, onBack, onViewHistorialTra
                       {banco.nombre}
                       {!banco.agrupado && !banco.metodos[0].activo ? <span style={inactivaBadgeStyle}>Inactiva</span> : null}
                       {banco.moneda_mixta ? <span style={inactivaBadgeStyle}>Monedas mixtas</span> : null}
+                      {banco.es_cashea ? <span style={inactivaBadgeStyle}>Por cobrar · no disponible</span> : null}
                     </div>
                   </div>
                   <div style={cuentaSaldoStyle(Number(banco.saldo_disponible) < 0)}>

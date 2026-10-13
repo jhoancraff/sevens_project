@@ -6611,7 +6611,8 @@ def pedidos_cobro_view(request):
     # se usa una cuenta USD activa (efectivo primero) como relleno interno. El
     # método real se elige al cobrar (nota_entrega_abono_view).
     metodo_pago = (
-        VGMetodoPago.objects.filter(activo=True, moneda='USD').order_by('-es_efectivo', 'id').first()
+        VGMetodoPago.objects.filter(activo=True, moneda='USD', es_cashea=False)
+        .order_by('-es_efectivo', 'id').first()
     )
     if metodo_pago is None:
         return _auth_response({'ok': False, 'message': 'No hay ninguna cuenta en dólares activa configurada.'}, status=400)
