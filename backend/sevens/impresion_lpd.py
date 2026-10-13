@@ -418,8 +418,6 @@ def _ticket_nota_cobro(pago, es_reimpresion=False):
     ticket.campo('Moneda:', moneda_texto)
     if pago.referencia and not _REFERENCIA_AUTOGENERADA.match(pago.referencia):
         ticket.campo('Referencia:', pago.referencia)
-    if es_bs:
-        ticket.campo('Tasa:', f'Bs. {_formatear_bs(tasa)}/$')
     ticket.separador()
     ticket.fila('Total nota:', monto(nota.total))
     ticket.fila('MONTO COBRADO:', monto(pago.monto), negrita=True)

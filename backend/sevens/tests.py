@@ -2642,6 +2642,8 @@ class NotaEntregaCobroFlujoTests(TestCase):
                       'Saldo pendiente: Bs. 1.250,00', 'Ana', 'V-12345678', 'Documento sin efecto fiscal'):
             self.assertIn(texto, t_bs)
         self.assertNotIn('REIMPRESION', t_bs)
+        # La nota de cobro no imprime la tasa del dia: solo el monto cobrado.
+        self.assertNotIn('Tasa', t_bs)
         t_usd = _build_nota_cobro_bytes(pagos[1], es_reimpresion=True).decode('cp1252')
         self.assertIn('$5.00', t_usd)
         self.assertIn('SALDADA', t_usd)
