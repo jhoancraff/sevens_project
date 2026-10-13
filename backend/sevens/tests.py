@@ -5636,6 +5636,21 @@ class CasheaFlujoTests(TestCase):
         self.assertEqual(por_id[self.banesco.id]['saldo_disponible'], Decimal('0'))
         self.assertEqual(self.client.get('/api/admin/cashea/pendientes/').json()['cantidad'], 1)
 
+    def test_los_pendientes_muestran_la_deuda_en_bs_a_la_tasa_de_registro_y_a_la_actual(self):
+        nota = self._nota('20.00')
+        self._cobrar_con_cashea(nota, '8', '12', '209000007')
+        # Despues del cobro sube la tasa: la deuda sigue en $12 pero vale mas Bs hoy.
+        _set_tasa_actual(300)
+        r = self.client.get('/api/admin/cashea/pendientes/').json()
+        item = r['pendientes'][0]
+        self.assertEqual(Decimal(item['tasa_registro']), Decimal('250'))
+        self.assertEqual(Decimal(item['monto_bs_registro']), Decimal('3000.00'))
+        self.assertEqual(Decimal(item['tasa_actual']), Decimal('300'))
+        self.assertEqual(Decimal(item['monto_bs_actual']), Decimal('3600.00'))
+        self.assertEqual(Decimal(r['por_cobrar_bs_registro']), Decimal('3000.00'))
+        self.assertEqual(Decimal(r['por_cobrar_bs_actual']), Decimal('3600.00'))
+        self.assertEqual(r['por_cobrar_usd'], '12.00')
+
     def test_marcar_cuenta_cashea_y_bloqueo_de_transferencias_manuales(self):
         # Solo una cuenta Cashea, en USD, que no sea efectivo.
         otro = VGMetodoPago.objects.create(nombre='Otra USD', moneda='USD')

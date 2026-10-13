@@ -39,6 +39,8 @@ from .models import (
     VGPago,
     VGTransferenciaCuenta,
 )
+from .reportes import tasa_para_fecha
+from .tasa_cambio import obtener_tasa_actual
 
 SERIE_LIQUIDACION = 'CASHEA_LIQ'
 CATEGORIA_COMISION = 'Comisión Cashea'
@@ -54,11 +56,28 @@ def _nombre_persona(usuario):
     return (usuario.get_full_name() or usuario.username) if usuario else ''
 
 
-def _serialize_pendiente(pago, hoy):
+def _tasa_de_registro(pago, fecha):
+    """Tasa con la que quedo registrado el cobro de Cashea (la del dia del cobro)."""
+    nota = pago.nota_entrega
+    return (
+        pago.tasa_cambio_referencia
+        or (nota.tasa_cambio_referencia if nota is not None else None)
+        or tasa_para_fecha(fecha)
+    )
+
+
+def _serialize_pendiente(pago, hoy, tasa_actual=None):
     nota = pago.nota_entrega
     cliente = nota.cliente if nota is not None else None
     fecha = timezone.localtime(pago.fecha_pago).date()
+    tasa_registro = _tasa_de_registro(pago, fecha)
     return {
+        # Lo que nos debe Cashea esta fijo en dolares; en bolivares cambia con la
+        # tasa: a la que se registro el cobro y a la tasa actual del sistema.
+        'tasa_registro': str(tasa_registro) if tasa_registro else None,
+        'monto_bs_registro': str((pago.monto * tasa_registro).quantize(CENTIMOS)) if tasa_registro else None,
+        'tasa_actual': str(tasa_actual) if tasa_actual else None,
+        'monto_bs_actual': str((pago.monto * tasa_actual).quantize(CENTIMOS)) if tasa_actual else None,
         'pago_id': pago.id,
         'orden_cashea': pago.referencia,
         'fecha': fecha.isoformat(),
@@ -133,12 +152,22 @@ def cashea_pendientes_view(request):
         )
     hoy = timezone.localdate()
     total = sum((pago.monto for pago in pagos), Decimal('0'))
+    tasa_obj = obtener_tasa_actual()
+    tasa_actual = tasa_obj.tasa if tasa_obj else None
+    pendientes = [_serialize_pendiente(pago, hoy, tasa_actual) for pago in pagos]
     return _auth_response({
         'ok': True,
         'cuenta_cashea': {'id': cuenta.id, 'nombre': cuenta.nombre, 'activo': cuenta.activo} if cuenta else None,
         'por_cobrar_usd': str(total.quantize(CENTIMOS)),
+        'tasa_actual': str(tasa_actual) if tasa_actual else None,
+        'por_cobrar_bs_registro': str(sum(
+            (Decimal(item['monto_bs_registro']) for item in pendientes if item['monto_bs_registro']), Decimal('0'),
+        ).quantize(CENTIMOS)),
+        'por_cobrar_bs_actual': (
+            str((total * tasa_actual).quantize(CENTIMOS)) if tasa_actual else None
+        ),
         'cantidad': len(pagos),
-        'pendientes': [_serialize_pendiente(pago, hoy) for pago in pagos],
+        'pendientes': pendientes,
     })
 
 

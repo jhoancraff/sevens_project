@@ -91,6 +91,9 @@ function CasheaPage({ isMobile, onBack }) {
   const fueraDeLaSemana = todos.length - deLaSemana.length;
   const incluidos = deLaSemana.filter((item) => !excluidos.has(item.pago_id));
   const sumaSevens = incluidos.reduce((acc, item) => acc + Number(item.monto_usd), 0);
+  const sumaBsRegistro = incluidos.reduce((acc, item) => acc + Number(item.monto_bs_registro || 0), 0);
+  const sumaBsActual = incluidos.reduce((acc, item) => acc + Number(item.monto_bs_actual || 0), 0);
+  const tasaActual = Number(pendientes?.tasa_actual) || null;
 
   const reporteNum = Number(financiadoReporte) || 0;
   const diferencia = reporteNum - sumaSevens;
@@ -220,6 +223,11 @@ function CasheaPage({ isMobile, onBack }) {
               <span style={sectionLabelStyle}>Por cobrar a Cashea</span>
               <span style={resumenValorStyle}>${formatMonto(pendientes.por_cobrar_usd)}</span>
               <span style={mutedStyle}>{pendientes.cantidad} cobro(s) sin liquidar</span>
+              {pendientes.por_cobrar_bs_actual ? (
+                <span style={mutedStyle}>
+                  Bs {formatMonto(pendientes.por_cobrar_bs_actual)} a la tasa actual (Bs {formatMonto(pendientes.tasa_actual)})
+                </span>
+              ) : null}
             </div>
             <div style={resumenCardStyle}>
               <span style={sectionLabelStyle}>Cobrado por Cashea (histórico)</span>
@@ -273,7 +281,11 @@ function CasheaPage({ isMobile, onBack }) {
                   <div style={headStyle}>Fecha</div>
                   <div style={headStyle}>Nota</div>
                   <div style={headStyle}>Cliente</div>
-                  <div style={{ ...headStyle, textAlign: 'right' }}>Monto</div>
+                  <div style={{ ...headStyle, textAlign: 'right' }}>Monto $</div>
+                  <div style={{ ...headStyle, textAlign: 'right' }}>Tasa de registro</div>
+                  <div style={{ ...headStyle, textAlign: 'right' }}>Bs a esa tasa</div>
+                  <div style={{ ...headStyle, textAlign: 'right' }}>Tasa actual</div>
+                  <div style={{ ...headStyle, textAlign: 'right' }}>Debería pagar en Bs (tasa actual)</div>
                   {deLaSemana.map((item) => (
                     <div key={item.pago_id} style={{ display: 'contents' }}>
                       <div style={cellStyle}>
@@ -287,11 +299,31 @@ function CasheaPage({ isMobile, onBack }) {
                       </div>
                       <div style={cellStyle}>{item.cliente || '—'}</div>
                       <div style={{ ...cellStyle, textAlign: 'right', fontWeight: 700 }}>${formatMonto(item.monto_usd)}</div>
+                      <div style={{ ...cellStyle, textAlign: 'right' }}>{item.tasa_registro ? formatMonto(item.tasa_registro) : '—'}</div>
+                      <div style={{ ...cellStyle, textAlign: 'right' }}>{item.monto_bs_registro ? `Bs ${formatMonto(item.monto_bs_registro)}` : '—'}</div>
+                      <div style={{ ...cellStyle, textAlign: 'right' }}>{item.tasa_actual ? formatMonto(item.tasa_actual) : '—'}</div>
+                      <div style={{ ...cellStyle, textAlign: 'right', fontWeight: 700 }}>{item.monto_bs_actual ? `Bs ${formatMonto(item.monto_bs_actual)}` : '—'}</div>
                     </div>
                   ))}
                 </div>
               </div>
             )}
+            {deLaSemana.length > 0 ? (
+              <div style={calculoBoxStyle}>
+                <div style={calculoFilaStyle}>
+                  <span>Seleccionados ({incluidos.length} cobro(s)) — deuda en dólares</span>
+                  <strong>${formatMonto(sumaSevens)}</strong>
+                </div>
+                <div style={calculoFilaStyle}>
+                  <span>Equivale a la tasa en que se registró cada cobro</span>
+                  <strong>Bs {formatMonto(sumaBsRegistro)}</strong>
+                </div>
+                <div style={{ ...calculoFilaStyle, color: 'var(--vg-f-ffcf7d)' }}>
+                  <span>Cashea debería pagar a la tasa actual{tasaActual ? ` (Bs ${formatMonto(tasaActual)})` : ''}</span>
+                  <strong>{tasaActual ? `Bs ${formatMonto(sumaBsActual)}` : '—'}</strong>
+                </div>
+              </div>
+            ) : null}
             {fueraDeLaSemana > 0 ? (
               <div style={mutedStyle}>
                 Hay {fueraDeLaSemana} cobro(s) sin liquidar fuera de este rango; no entran en este pago.
@@ -453,7 +485,7 @@ const resumenGridStyle = (isMobile) => ({ display: 'grid', gridTemplateColumns: 
 const resumenCardStyle = { display: 'grid', gap: 6, padding: 16, borderRadius: 16, border: '1px solid rgba(var(--vg-ink), 0.1)', background: 'rgba(var(--vg-ink), 0.03)' };
 const resumenValorStyle = { color: 'var(--vg-text-strong)', fontSize: 26, fontWeight: 800 };
 const tableWrapStyle = { overflowX: 'auto' };
-const pendientesTableStyle = { display: 'grid', gridTemplateColumns: '64px minmax(130px,1fr) minmax(100px,0.8fr) minmax(110px,0.8fr) minmax(150px,1.2fr) minmax(100px,0.7fr)', minWidth: 720, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
+const pendientesTableStyle = { display: 'grid', gridTemplateColumns: '64px minmax(120px,1fr) minmax(95px,0.7fr) minmax(100px,0.7fr) minmax(140px,1.1fr) minmax(90px,0.6fr) minmax(100px,0.7fr) minmax(130px,0.9fr) minmax(100px,0.7fr) minmax(150px,1fr)', minWidth: 1180, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
 const historialTableStyle = { display: 'grid', gridTemplateColumns: 'minmax(130px,1fr) minmax(220px,1.4fr) minmax(130px,1fr) minmax(110px,0.8fr) minmax(110px,0.8fr) minmax(150px,1fr)', minWidth: 880, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
 const headStyle = { padding: '12px 14px', background: 'rgba(var(--vg-ink), 0.06)', color: 'var(--vg-f-ffb0b0)', fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 800 };
 const cellStyle = { padding: '12px 14px', borderTop: '1px solid rgba(var(--vg-ink), 0.08)', color: 'var(--vg-f-f2e6e6)', display: 'grid', alignContent: 'center', gap: 2 };
