@@ -5640,6 +5640,125 @@ class CasheaFlujoTests(TestCase):
         self.assertEqual(r.status_code, 400)
 
 
+class CasheaCobroUnificadoTests(TestCase):
+    """
+    La cajera elige el método donde cayó la inicial (en Bs o en $) y teclea la
+    orden de Cashea: el resto de la nota se registra solo contra Cashea, en
+    dólares, en el mismo cobro.
+    """
+
+    def setUp(self):
+        self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='cashea_unif', password='claveAdmin123', cedula='90000078',
+            email='cashea_unif@sevens.test', id_role=self.admin_role,
+        )
+        self.client.force_login(self.admin)
+        self.efectivo, _ = VGMetodoPago.objects.get_or_create(
+            nombre='Efectivo USD', defaults={'es_efectivo': True, 'moneda': 'USD'},
+        )
+        self.cashea = VGMetodoPago.objects.create(nombre='Cashea', moneda='USD', es_cashea=True)
+        self.pagomovil = VGMetodoPago.objects.create(nombre='Pago movil Cashea', moneda='VES', cuenta_bancaria='Banesco')
+        categoria = VGCategoriaProducto.objects.create(nombre='Cat cashea unif')
+        self.producto = VGProducto.objects.create(
+            nombre='Plato cashea unif', categoria=categoria, precio_venta='20.00', disponible=True,
+        )
+        _set_tasa_actual(250)
+
+    def _post(self, url, cuerpo):
+        return self.client.post(url, data=json.dumps(cuerpo), content_type='application/json')
+
+    def _nota(self, precio='20.00'):
+        pedido = VGPedido.objects.create(
+            usuario=self.admin, tipo_pedido='local', estado='entregado', subtotal='0', total='0',
+        )
+        VGDetallePedido.objects.create(
+            pedido=pedido, producto=self.producto, cantidad=1, precio_unitario=precio, estado='entregado',
+        )
+        VGPedido.objects.filter(pk=pedido.pk).update(subtotal=precio, total=precio)
+        r = self._post('/api/pedidos/cobro/', {
+            'pedido_ids': [pedido.id], 'cliente_cedula': '12345678', 'cliente_nombre': 'Ana',
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+        return VGNotaEntrega.objects.order_by('-id').first()
+
+    def _cobrar(self, nota, **cuerpo):
+        return self._post(f'/api/notas-entrega/{nota.id}/abonos/', cuerpo)
+
+    def test_inicial_en_bolivares_y_el_resto_va_a_cashea_en_dolares(self):
+        from sevens.reportes import disponibilidad_por_cuenta
+        nota = self._nota('20.00')
+        # 1.000 Bs a 250 = $4 de inicial por pago movil; Cashea financia los $16 restantes.
+        r = self._cobrar(
+            nota, monto='1000', metodo_pago_id=self.pagomovil.id, referencia='PM-123', cashea_orden='209555001',
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        data = r.json()
+        self.assertEqual(data['nota_entrega']['estado'], 'pagada')
+        self.assertEqual(Decimal(data['nota_entrega']['saldo_pendiente']), Decimal('0'))
+        self.assertEqual(Decimal(data['pago']['monto']), Decimal('4'))
+        self.assertEqual(data['pago']['moneda'], 'VES')
+        self.assertEqual(Decimal(data['pago_cashea']['monto']), Decimal('16'))
+        self.assertEqual(data['pago_cashea']['moneda'], 'USD')
+        self.assertEqual(data['pago_cashea']['referencia'], '209555001')
+        self.assertEqual(data['nota_entrega']['cashea_pendiente_usd'], '16.00')
+
+        # Dos cobros con su propia nota de cobro, en orden.
+        pagos = list(VGPago.objects.filter(nota_entrega=nota).order_by('numero_cobro'))
+        self.assertEqual([p.metodo_pago_id for p in pagos], [self.pagomovil.id, self.cashea.id])
+        self.assertEqual(pagos[0].saldo_posterior, Decimal('16'))
+        self.assertEqual(pagos[1].saldo_posterior, Decimal('0'))
+
+        cuentas, _ = disponibilidad_por_cuenta(timezone.localdate())
+        por_id = {c['id']: c for c in cuentas}
+        self.assertEqual(por_id[self.pagomovil.id]['saldo_disponible_bs'], Decimal('1000.00'))
+        self.assertEqual(por_id[self.cashea.id]['saldo_disponible'], Decimal('16.000000'))
+
+    def test_sin_inicial_todo_el_saldo_va_a_cashea(self):
+        nota = self._nota('20.00')
+        r = self._cobrar(nota, cashea_orden='209555002')
+        self.assertEqual(r.status_code, 201, r.content)
+        data = r.json()
+        self.assertEqual(data['nota_entrega']['estado'], 'pagada')
+        self.assertEqual(Decimal(data['pago']['monto']), Decimal('20'))
+        self.assertTrue(data['pago']['es_cashea'])
+        self.assertIsNone(data['pago_cashea']['liquidacion_cashea'])
+        self.assertEqual(VGPago.objects.filter(nota_entrega=nota).count(), 1)
+
+    def test_validaciones_no_dejan_cobros_a_medias(self):
+        nota = self._nota('20.00')
+        # La inicial cubre todo: se rechaza y no se crea nada.
+        r = self._cobrar(nota, monto='20', metodo_pago_id=self.efectivo.id, cashea_orden='209555003')
+        self.assertEqual(r.status_code, 400)
+        # Orden no numérica.
+        r = self._cobrar(nota, monto='5', metodo_pago_id=self.efectivo.id, cashea_orden='AB12')
+        self.assertEqual(r.status_code, 400)
+        # La inicial no puede cobrarse con la propia cuenta Cashea.
+        r = self._cobrar(nota, monto='5', metodo_pago_id=self.cashea.id, referencia='1', cashea_orden='209555003')
+        self.assertEqual(r.status_code, 400)
+        # Inicial por un método que no es efectivo exige referencia.
+        r = self._cobrar(nota, monto='500', metodo_pago_id=self.pagomovil.id, cashea_orden='209555003')
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(VGPago.objects.filter(nota_entrega=nota).count(), 0)
+        nota.refresh_from_db()
+        self.assertEqual(nota.saldo_pendiente, Decimal('20'))
+
+        # La misma orden no se repite en otra nota.
+        r = self._cobrar(nota, monto='5', metodo_pago_id=self.efectivo.id, cashea_orden='209555003')
+        self.assertEqual(r.status_code, 201, r.content)
+        otra = self._nota('20.00')
+        r = self._cobrar(otra, monto='5', metodo_pago_id=self.efectivo.id, cashea_orden='209555003')
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(VGPago.objects.filter(nota_entrega=otra).count(), 0)
+
+    def test_sin_cuenta_cashea_activa_se_rechaza(self):
+        VGMetodoPago.objects.filter(pk=self.cashea.pk).update(activo=False)
+        nota = self._nota('20.00')
+        r = self._cobrar(nota, monto='5', metodo_pago_id=self.efectivo.id, cashea_orden='209555004')
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(VGPago.objects.filter(nota_entrega=nota).count(), 0)
+
+
 class TicketGraficoCajaTests(TestCase):
     """Los tickets de caja salen como imagen (logo + tipografía) con respaldo en texto."""
 

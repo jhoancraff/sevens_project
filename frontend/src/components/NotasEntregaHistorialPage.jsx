@@ -103,6 +103,10 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
   const [montoAbono, setMontoAbono] = useState('');
   const [metodoAbono, setMetodoAbono] = useState('');
   const [referenciaAbono, setReferenciaAbono] = useState('');
+  // Venta con Cashea: la inicial se cobra con un método real y lo que falte de
+  // la nota se registra solo contra Cashea (ver nota_entrega_abono_view).
+  const [usarCashea, setUsarCashea] = useState(false);
+  const [ordenCashea, setOrdenCashea] = useState('');
   const [filtroEstado, setFiltroEstado] = useState('todas');
   const [busquedaCodigo, setBusquedaCodigo] = useState('');
   const [paginaActual, setPaginaActual] = useState(1);
@@ -216,6 +220,8 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
     setMontoAbono('');
     setReferenciaAbono('');
     setMetodoAbono('');
+    setUsarCashea(false);
+    setOrdenCashea('');
     setSelectedNotaId(nota.id);
     fetchNotaDetalle(nota.id);
   };
@@ -278,6 +284,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
         metodo_pago_id: metodoPagoId,
         referencia: referenciaAbono.trim(),
         confirmar_cambio_metodo: confirmarCambioMetodo,
+        ...(usarCashea ? { cashea_orden: ordenCashea.trim() } : {}),
       }),
     });
     return { response, data: await response.json().catch(() => ({})) };
@@ -294,6 +301,17 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
     const impresion = data.impreso
       ? 'Nota de cobro impresa.'
       : `No se imprimió${data.motivo_no_impreso ? ` (${data.motivo_no_impreso})` : ''}. Puedes reimprimirla desde la lista de cobros.`;
+    if (data.pago_cashea) {
+      const cashea = data.pago_cashea;
+      const hayInicial = pago.id !== cashea.id;
+      const codigos = [hayInicial ? pago.codigo_cobro : null, cashea.codigo_cobro].filter(Boolean).join(' y ');
+      const partes = [];
+      if (hayInicial) {
+        partes.push(`Inicial ${enMoneda(pago.monto)} con ${pago.metodo_pago}`);
+      }
+      partes.push(`Cashea financia $${Number(cashea.monto).toFixed(2)} (orden ${cashea.referencia})`);
+      return `Cobro ${codigos} registrado: ${partes.join('. ')}. Nota de entrega saldada. ${impresion}`.replace(/\s+/g, ' ');
+    }
     return `Cobro ${pago.codigo_cobro || ''} registrado${cuentaCambiada ? ' (cuenta cambiada)' : ''}: ${enMoneda(pago.monto)} con ${pago.metodo_pago}. ${saldoTexto} ${impresion}`.replace(/\s+/g, ' ');
   };
 
@@ -304,6 +322,8 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
     setMontoAbono('');
     setReferenciaAbono('');
     setMetodoAbono('');
+    setUsarCashea(false);
+    setOrdenCashea('');
     await fetchNotas(desde, hasta);
   };
 
@@ -313,27 +333,37 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
       return;
     }
     const metodoPagoId = metodoAbono;
-    if (!metodoPagoId) {
+    // Con Cashea la inicial es opcional (0% de inicial): sin monto todo el
+    // saldo va a Cashea y no hace falta método.
+    const hayInicial = Number(montoAbono) > 0;
+    if (usarCashea && !/^\d+$/.test(ordenCashea.trim())) {
       setFeedbackType('error');
-      setFeedback('Selecciona el método de pago con el que se cobra.');
+      setFeedback('Indica el número de orden de Cashea (solo números).');
       return;
     }
+    if (!usarCashea || hayInicial) {
+      if (!metodoPagoId) {
+        setFeedbackType('error');
+        setFeedback(usarCashea
+          ? 'Selecciona el método donde cayó la inicial del cliente.'
+          : 'Selecciona el método de pago con el que se cobra.');
+        return;
+      }
+      if (!hayInicial) {
+        setFeedbackType('error');
+        setFeedback('Indica el monto a cobrar.');
+        return;
+      }
+    }
     const metodo = metodosPago.find((item) => item.id === metodoPagoId);
-    if (metodo && metodo.moneda === 'VES' && !(Number(notaDetalle?.tasa_cobro_vigente) > 0)) {
+    if (hayInicial && metodo && metodo.moneda === 'VES' && !(Number(notaDetalle?.tasa_cobro_vigente) > 0)) {
       setFeedbackType('error');
       setFeedback('No hay tasa de cambio disponible para cobrar en bolívares.');
       return;
     }
-    if (!(Number(montoAbono) > 0)) {
+    if (hayInicial && metodo && !metodo.es_efectivo && !referenciaAbono.trim()) {
       setFeedbackType('error');
-      setFeedback('Indica el monto a cobrar.');
-      return;
-    }
-    if (metodo && !metodo.es_efectivo && !referenciaAbono.trim()) {
-      setFeedbackType('error');
-      setFeedback(metodo.es_cashea
-        ? 'Indica el número de orden de Cashea (solo números).'
-        : `Indica el número de referencia del pago por ${metodo.nombre}.`);
+      setFeedback(`Indica el número de referencia del pago por ${metodo.nombre}.`);
       return;
     }
 
@@ -801,6 +831,10 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                     setMontoAbono={setMontoAbono}
                     referenciaAbono={referenciaAbono}
                     setReferenciaAbono={setReferenciaAbono}
+                    usarCashea={usarCashea}
+                    setUsarCashea={setUsarCashea}
+                    ordenCashea={ordenCashea}
+                    setOrdenCashea={setOrdenCashea}
                     saving={savingAbono}
                     onSubmit={handleRegistrarAbono}
                   />
@@ -1040,9 +1074,14 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
 
 function AbonoForm({
   isMobile, nota, metodosPago, metodoAbono, setMetodoAbono, montoAbono, setMontoAbono,
-  referenciaAbono, setReferenciaAbono, saving, onSubmit,
+  referenciaAbono, setReferenciaAbono, usarCashea, setUsarCashea, ordenCashea, setOrdenCashea,
+  saving, onSubmit,
 }) {
-  const metodo = metodosPago.find((item) => item.id === metodoAbono);
+  // La cuenta Cashea no se elige como método: se activa con «Pago con Cashea»
+  // y registra sola lo que la inicial no cubre.
+  const hayCashea = metodosPago.some((item) => item.es_cashea);
+  const metodosElegibles = metodosPago.filter((item) => !item.es_cashea);
+  const metodo = metodosElegibles.find((item) => item.id === metodoAbono);
   const esBs = metodo ? metodo.moneda === 'VES' : false;
   const tasaVigente = Number(nota.tasa_cobro_vigente) > 0 ? Number(nota.tasa_cobro_vigente) : null;
   const sinTasa = esBs && !tasaVigente;
@@ -1052,12 +1091,50 @@ function AbonoForm({
     : `$${saldoUsd.toFixed(2)}`;
   const saldoCompleto = esBs ? (nota.saldo_pendiente_bs_vigente || '') : saldoUsd.toFixed(2);
 
+  // Lo que financia Cashea = saldo - inicial, siempre en dólares.
+  const inicialNum = Number(montoAbono) > 0 ? Number(montoAbono) : 0;
+  const inicialUsd = esBs ? (tasaVigente ? inicialNum / tasaVigente : null) : inicialNum;
+  const financiaCashea = inicialUsd === null ? null : saldoUsd - inicialUsd;
+  const inicialCubreTodo = usarCashea && financiaCashea !== null && financiaCashea <= 0.01;
+
   return (
     <form onSubmit={onSubmit} style={abonoFormStyle}>
-      <div style={abonoTitleStyle}>Registrar cobro</div>
+      <div style={abonoTitleStyle}>{usarCashea ? 'Registrar cobro con Cashea' : 'Registrar cobro'}</div>
+
+      {hayCashea ? (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontWeight: 700, color: 'var(--vg-text-strong)' }}>
+          <input
+            type="checkbox"
+            checked={usarCashea}
+            onChange={(event) => {
+              setUsarCashea(event.target.checked);
+              setMontoAbono('');
+              setMetodoAbono('');
+              setReferenciaAbono('');
+            }}
+          />
+          Pago con Cashea
+        </label>
+      ) : null}
+
+      {usarCashea ? (
+        <label style={dateFieldStyle}>
+          <span style={dateLabelStyle}>Número de orden de Cashea</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            placeholder="Número de orden que muestra Cashea"
+            value={ordenCashea}
+            onChange={(event) => setOrdenCashea(event.target.value.replace(/\D/g, ''))}
+            style={inputStyle}
+          />
+        </label>
+      ) : null}
 
       <label style={dateFieldStyle}>
-        <span style={dateLabelStyle}>Método de pago</span>
+        <span style={dateLabelStyle}>
+          {usarCashea ? 'Método donde cayó la inicial del cliente' : 'Método de pago'}
+        </span>
         <select
           value={metodoAbono}
           onChange={(event) => {
@@ -1068,7 +1145,7 @@ function AbonoForm({
           className="admin-dark-select"
         >
           <option value="">Selecciona un método...</option>
-          {metodosPago.map((item) => (
+          {metodosElegibles.map((item) => (
             <option key={item.id} value={item.id}>{etiquetaMetodo(item)}</option>
           ))}
         </select>
@@ -1076,7 +1153,7 @@ function AbonoForm({
 
       <div style={saldoBoxStyle}>
         <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--vg-f-ffd8a3)' }}>
-          Saldo a cobrar en {esBs ? 'bolívares' : 'dólares'}
+          {usarCashea ? 'Saldo de la nota' : 'Saldo a cobrar'} en {esBs ? 'bolívares' : 'dólares'}
         </span>
         <span style={{ fontSize: 22, fontWeight: 800, color: 'var(--vg-text-strong)' }}>{saldoMostrado || '—'}</span>
       </div>
@@ -1088,7 +1165,10 @@ function AbonoForm({
       ) : null}
 
       <label style={dateFieldStyle}>
-        <span style={dateLabelStyle}>Monto a cobrar ({esBs ? 'Bs' : '$'})</span>
+        <span style={dateLabelStyle}>
+          {usarCashea ? 'Inicial que paga el cliente' : 'Monto a cobrar'} ({esBs ? 'Bs' : '$'})
+          {usarCashea ? ' — déjalo vacío si no hay inicial' : ''}
+        </span>
         <div style={{ display: 'flex', gap: 8 }}>
           <MoneyInput
             placeholder={esBs ? 'Monto en Bs' : 'Monto en $'}
@@ -1096,44 +1176,57 @@ function AbonoForm({
             onChange={setMontoAbono}
             style={{ ...inputStyle, flex: 1 }}
           />
-          <button
-            type="button"
-            onClick={() => setMontoAbono(saldoCompleto)}
-            style={{ ...secondaryButtonStyle, whiteSpace: 'nowrap' }}
-            disabled={!metodo || sinTasa || !saldoCompleto}
-          >
-            Saldo completo
-          </button>
+          {!usarCashea ? (
+            <button
+              type="button"
+              onClick={() => setMontoAbono(saldoCompleto)}
+              style={{ ...secondaryButtonStyle, whiteSpace: 'nowrap' }}
+              disabled={!metodo || sinTasa || !saldoCompleto}
+            >
+              Saldo completo
+            </button>
+          ) : null}
         </div>
       </label>
 
-      {/* Sin `required` nativo: handleRegistrarAbono valida la referencia con un
-          mensaje propio (el required nativo bloquea el aviso). */}
-      {metodo && metodo.es_cashea ? (
-        <div style={feedbackStyle('warning')}>
-          Cobra primero la inicial que paga el cliente en caja (con su método real) y registra aquí SOLO lo
-          que financia Cashea. Ese monto no entra a la caja: queda por cobrar a Cashea hasta su liquidación semanal.
+      {usarCashea ? (
+        <div style={saldoBoxStyle}>
+          <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--vg-f-ffd8a3)' }}>
+            Cashea financia (queda por cobrar en dólares)
+          </span>
+          <span style={{ fontSize: 22, fontWeight: 800, color: inicialCubreTodo ? 'var(--vg-f-ff9d9d)' : 'var(--vg-text-strong)' }}>
+            {financiaCashea === null ? '—' : `$${Math.max(financiaCashea, 0).toFixed(2)}`}
+          </span>
         </div>
       ) : null}
 
+      {inicialCubreTodo ? (
+        <div style={feedbackStyle('error')}>
+          La inicial cubre todo el saldo de la nota: cóbrala sin Cashea.
+        </div>
+      ) : null}
+
+      {/* Sin `required` nativo: handleRegistrarAbono valida la referencia con un
+          mensaje propio (el required nativo bloquea el aviso). */}
       {metodo && !metodo.es_efectivo ? (
         <label style={dateFieldStyle}>
-          <span style={dateLabelStyle}>{metodo.es_cashea ? 'Número de orden de Cashea' : 'Número de referencia'}</span>
+          <span style={dateLabelStyle}>Número de referencia</span>
           <input
             type="text"
-            inputMode={metodo.es_cashea ? 'numeric' : undefined}
-            placeholder={metodo.es_cashea ? 'Número de orden que muestra Cashea' : 'Referencia del pago'}
+            placeholder="Referencia del pago"
             value={referenciaAbono}
-            onChange={(event) => setReferenciaAbono(
-              metodo.es_cashea ? event.target.value.replace(/\D/g, '') : event.target.value,
-            )}
+            onChange={(event) => setReferenciaAbono(event.target.value)}
             style={inputStyle}
           />
         </label>
       ) : null}
 
-      <button type="submit" style={{ ...primaryButtonStyle, width: '100%' }} disabled={saving || sinTasa}>
-        {saving ? 'Registrando...' : 'Registrar cobro e imprimir'}
+      <button
+        type="submit"
+        style={{ ...primaryButtonStyle, width: '100%' }}
+        disabled={saving || sinTasa || inicialCubreTodo}
+      >
+        {saving ? 'Registrando...' : (usarCashea ? 'Registrar cobro con Cashea e imprimir' : 'Registrar cobro e imprimir')}
       </button>
     </form>
   );

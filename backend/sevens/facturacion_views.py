@@ -1214,26 +1214,51 @@ def nota_entrega_abono_view(request, nota_id):
     except json.JSONDecodeError:
         return _auth_response({'ok': False, 'message': 'Formato JSON invalido.'}, status=400)
 
+    # Venta con Cashea: la cajera elige el método donde cayó la inicial del
+    # cliente (en Bs o en $, según ese método) y lo que falte de la nota se
+    # registra solo contra la cuenta Cashea, con el número de orden que escribió.
+    # Sin inicial (monto vacío o 0) todo el saldo va a Cashea (promociones de 0%
+    # de inicial).
+    cashea_orden = str(data.get('cashea_orden', '') or '').strip()
+    con_cashea = bool(cashea_orden)
+    cuenta_cashea = None
+    if con_cashea:
+        cuenta_cashea = VGMetodoPago.objects.filter(es_cashea=True, activo=True).first()
+        if cuenta_cashea is None:
+            return _auth_response({
+                'ok': False,
+                'message': 'No hay una cuenta de Cashea activa configurada.',
+            }, status=400)
+
+    monto_raw = str(data.get('monto', '') or '').strip()
     try:
-        monto_input = Decimal(str(data.get('monto', '')))
+        monto_input = Decimal(monto_raw) if monto_raw else Decimal('0')
     except InvalidOperation:
         return _auth_response({'ok': False, 'message': 'El monto no es valido.'}, status=400)
-    if monto_input <= 0:
+    if monto_input < 0 or (monto_input == 0 and not con_cashea):
         return _auth_response({'ok': False, 'message': 'El monto debe ser mayor a cero.'}, status=400)
+    hay_inicial = monto_input > 0
 
-    try:
-        metodo_pago = VGMetodoPago.objects.get(pk=int(data.get('metodo_pago_id')), activo=True)
-    except (TypeError, ValueError, VGMetodoPago.DoesNotExist):
-        return _auth_response({'ok': False, 'message': 'El metodo de pago es invalido.'}, status=400)
-
-    # Igual que en pedidos_cobro_view: obligatorio para cualquier metodo que no
-    # sea efectivo, para poder cruzarlo despues contra el estado de cuenta.
+    metodo_pago = None
     referencia_usuario = str(data.get('referencia', '') or '').strip()
-    if not referencia_usuario and not metodo_pago.es_efectivo:
-        return _auth_response({
-            'ok': False,
-            'message': f'Indica el número de referencia del pago por {metodo_pago.nombre}.',
-        }, status=400)
+    if hay_inicial:
+        try:
+            metodo_pago = VGMetodoPago.objects.get(pk=int(data.get('metodo_pago_id')), activo=True)
+        except (TypeError, ValueError, VGMetodoPago.DoesNotExist):
+            return _auth_response({'ok': False, 'message': 'El metodo de pago es invalido.'}, status=400)
+        if con_cashea and metodo_pago.es_cashea:
+            return _auth_response({
+                'ok': False,
+                'message': 'La inicial no se cobra con Cashea: elige el método donde cayó el dinero del cliente.',
+            }, status=400)
+
+        # Igual que en pedidos_cobro_view: obligatorio para cualquier metodo que no
+        # sea efectivo, para poder cruzarlo despues contra el estado de cuenta.
+        if not referencia_usuario and not metodo_pago.es_efectivo:
+            return _auth_response({
+                'ok': False,
+                'message': f'Indica el número de referencia del pago por {metodo_pago.nombre}.',
+            }, status=400)
 
     confirma_cambio_metodo = bool(data.get('confirmar_cambio_metodo'))
 
@@ -1260,7 +1285,7 @@ def nota_entrega_abono_view(request, nota_id):
             .select_related('metodo_pago')
             .order_by('-fecha_pago', '-id')
             .first()
-        ) if not metodo_pago.es_cashea else None
+        ) if (hay_inicial and not metodo_pago.es_cashea) else None
         if pago_otra_cuenta is not None and not confirma_cambio_metodo:
             return _auth_response({
                 'ok': False,
@@ -1273,21 +1298,26 @@ def nota_entrega_abono_view(request, nota_id):
                 ),
             }, status=409)
 
-        if metodo_pago.es_cashea:
-            # La referencia ES el número de orden de Cashea: es la llave para
-            # conciliar después contra el reporte semanal de Cashea, por eso
-            # es numérica y no puede repetirse entre cobros vigentes.
-            if not referencia_usuario.isdigit():
+        # La referencia de un cobro Cashea ES el número de orden de Cashea: es
+        # la llave para conciliar después contra el reporte semanal de Cashea,
+        # por eso es numérica y no puede repetirse entre cobros vigentes.
+        orden_cashea, cuenta_de_la_orden = None, None
+        if con_cashea:
+            orden_cashea, cuenta_de_la_orden = cashea_orden, cuenta_cashea
+        elif hay_inicial and metodo_pago.es_cashea:
+            orden_cashea, cuenta_de_la_orden = referencia_usuario, metodo_pago
+        if orden_cashea is not None:
+            if not orden_cashea.isdigit():
                 return _auth_response({
                     'ok': False,
                     'message': 'El número de orden de Cashea debe contener solo números.',
                 }, status=400)
             if VGPago.objects.filter(
-                metodo_pago=metodo_pago, referencia=referencia_usuario, estado='completado',
+                metodo_pago=cuenta_de_la_orden, referencia=orden_cashea, estado='completado',
             ).exists():
                 return _auth_response({
                     'ok': False,
-                    'message': f'Ya hay un cobro registrado con la orden de Cashea {referencia_usuario}.',
+                    'message': f'Ya hay un cobro registrado con la orden de Cashea {orden_cashea}.',
                 }, status=400)
 
         tasa_pago_actual = obtener_tasa_actual()
@@ -1301,89 +1331,143 @@ def nota_entrega_abono_view(request, nota_id):
         # de la tasa BCV se haya refrescado mientras tanto — reportado
         # 2026-09); si es fiado de un dia anterior se usa la tasa de HOY a
         # proposito, para no perder valor por la devaluacion del bolivar.
-        tasa_conversion = _tasa_conversion_vigente(
-            metodo_pago.moneda, nota.fecha_emision, nota.tasa_cambio_referencia, tasa_pago_actual,
-        )
-        if metodo_pago.moneda == 'VES':
-            if not tasa_conversion or tasa_conversion <= 0:
+        monto = Decimal('0')
+        tasa_conversion = None
+        if hay_inicial:
+            tasa_conversion = _tasa_conversion_vigente(
+                metodo_pago.moneda, nota.fecha_emision, nota.tasa_cambio_referencia, tasa_pago_actual,
+            )
+            if metodo_pago.moneda == 'VES':
+                if not tasa_conversion or tasa_conversion <= 0:
+                    return _auth_response({
+                        'ok': False,
+                        'message': 'No hay tasa de cambio disponible para convertir el monto a dolares.',
+                    }, status=400)
+                monto = (monto_input / tasa_conversion).quantize(Decimal('0.000001'))
+            else:
+                monto = monto_input.quantize(Decimal('0.000001'))
+
+            if monto > nota.saldo_pendiente + TOLERANCIA_REDONDEO_ABONO:
+                saldo_en_moneda_metodo = (
+                    nota.saldo_pendiente * tasa_conversion if tasa_conversion else nota.saldo_pendiente
+                )
+                unidad = 'Bs' if metodo_pago.moneda == 'VES' else '$'
                 return _auth_response({
                     'ok': False,
-                    'message': 'No hay tasa de cambio disponible para convertir el monto a dolares.',
+                    'message': f'El monto excede el saldo pendiente ({unidad} {saldo_en_moneda_metodo:.2f}).',
                 }, status=400)
-            monto = (monto_input / tasa_conversion).quantize(Decimal('0.000001'))
-        else:
-            monto = monto_input.quantize(Decimal('0.000001'))
 
-        if monto > nota.saldo_pendiente + TOLERANCIA_REDONDEO_ABONO:
-            saldo_en_moneda_metodo = (
-                nota.saldo_pendiente * tasa_conversion if tasa_conversion else nota.saldo_pendiente
+        # Lo que Cashea financia: todo lo que la inicial no cubre, en dólares
+        # (la deuda con Cashea siempre es en $).
+        financiado = Decimal('0')
+        if con_cashea:
+            financiado = (nota.saldo_pendiente - monto).quantize(Decimal('0.000001'))
+            if financiado <= TOLERANCIA_CIERRE_ABONO:
+                return _auth_response({
+                    'ok': False,
+                    'message': 'La inicial cubre todo el saldo de la nota: cóbrala sin Cashea.',
+                }, status=400)
+
+        pagos_registrados = []
+        pago = None
+        if hay_inicial:
+            referencia = referencia_usuario or f'ABONO-{timezone.now().strftime("%Y%m%d%H%M%S")}-{nota.id}'
+            pago = VGPago.objects.create(
+                nota_entrega=nota,
+                monto=monto,
+                metodo_pago=metodo_pago,
+                referencia=referencia,
+                estado='completado',
+                # La tasa que de verdad se uso para convertir este pago (ver
+                # arriba) — no siempre la de hoy: asi el monto en bolivares que se
+                # muestre despues (cuadre de caja, historial de notas) siempre
+                # reconstruye exactamente lo que la cajera cobro, sin importar que
+                # el BCV cambie despues. Si el metodo es en dolares no hubo
+                # conversion, pero se congela la tasa de hoy igual por si mas
+                # adelante se corrige la cuenta de este pago hacia una cuenta en
+                # bolivares (ver cambiar_metodo_pago).
+                tasa_cambio_referencia=(
+                    tasa_conversion if metodo_pago.moneda == 'VES'
+                    else (tasa_pago_actual.tasa if tasa_pago_actual else None)
+                ),
+                creado_por=request.user,
+                numero_cobro=VGCorrelativoFiscal.siguiente('NOTA_COBRO'),
             )
-            unidad = 'Bs' if metodo_pago.moneda == 'VES' else '$'
-            return _auth_response({
-                'ok': False,
-                'message': f'El monto excede el saldo pendiente ({unidad} {saldo_en_moneda_metodo:.2f}).',
-            }, status=400)
+            # Metodo de punto de venta: el cobro entra al lote POS abierto del metodo.
+            asignar_pago_a_lote(pago, request.user)
+            pagos_registrados.append(pago)
 
-        referencia = referencia_usuario or f'ABONO-{timezone.now().strftime("%Y%m%d%H%M%S")}-{nota.id}'
-
-        pago = VGPago.objects.create(
-            nota_entrega=nota,
-            monto=monto,
-            metodo_pago=metodo_pago,
-            referencia=referencia,
-            estado='completado',
-            # La tasa que de verdad se uso para convertir este pago (ver
-            # arriba) — no siempre la de hoy: asi el monto en bolivares que se
-            # muestre despues (cuadre de caja, historial de notas) siempre
-            # reconstruye exactamente lo que la cajera cobro, sin importar que
-            # el BCV cambie despues. Si el metodo es en dolares no hubo
-            # conversion, pero se congela la tasa de hoy igual por si mas
-            # adelante se corrige la cuenta de este pago hacia una cuenta en
-            # bolivares (ver cambiar_metodo_pago).
-            tasa_cambio_referencia=(
-                tasa_conversion if metodo_pago.moneda == 'VES'
-                else (tasa_pago_actual.tasa if tasa_pago_actual else None)
-            ),
-            creado_por=request.user,
-            numero_cobro=VGCorrelativoFiscal.siguiente('NOTA_COBRO'),
-        )
-        # Metodo de punto de venta: el cobro entra al lote POS abierto del metodo.
-        asignar_pago_a_lote(pago, request.user)
+        pago_cashea = None
+        if con_cashea:
+            # El resto de la nota queda por cobrar a Cashea (en dólares, sin
+            # tocar la disponibilidad hasta que Cashea liquide la semana).
+            pago_cashea = VGPago.objects.create(
+                nota_entrega=nota,
+                monto=financiado,
+                metodo_pago=cuenta_cashea,
+                referencia=cashea_orden,
+                estado='completado',
+                tasa_cambio_referencia=tasa_pago_actual.tasa if tasa_pago_actual else None,
+                creado_por=request.user,
+                numero_cobro=VGCorrelativoFiscal.siguiente('NOTA_COBRO'),
+            )
+            pagos_registrados.append(pago_cashea)
 
         # Ver el comentario equivalente en factura_abono_view: se redondea a 6
         # decimales (mismos que VGPago.monto), no a 2, para no perder
         # fracciones de centavo frente a lo que el cliente de verdad pago en
         # bolivares. Un residuo de hasta un centavo se absorbe como redondeo
         # para que el total mostrado no quede como abonado parcial.
-        saldo_restante = max(
-            (nota.saldo_pendiente - monto).quantize(Decimal('0.000001')),
-            Decimal('0'),
-        )
-        nota.saldo_pendiente = (
-            Decimal('0') if saldo_restante <= TOLERANCIA_CIERRE_ABONO else saldo_restante
-        )
-        nota.estado = 'pagada' if nota.saldo_pendiente <= 0 else 'abonada_parcial'
+        if con_cashea:
+            saldo_tras_inicial = max(
+                (nota.saldo_pendiente - monto).quantize(Decimal('0.000001')), Decimal('0'),
+            )
+            if pago is not None:
+                pago.saldo_posterior = saldo_tras_inicial
+                pago.save(update_fields=['saldo_posterior'])
+            pago_cashea.saldo_posterior = Decimal('0')
+            pago_cashea.save(update_fields=['saldo_posterior'])
+            nota.saldo_pendiente = Decimal('0')
+            nota.estado = 'pagada'
+        else:
+            saldo_restante = max(
+                (nota.saldo_pendiente - monto).quantize(Decimal('0.000001')),
+                Decimal('0'),
+            )
+            nota.saldo_pendiente = (
+                Decimal('0') if saldo_restante <= TOLERANCIA_CIERRE_ABONO else saldo_restante
+            )
+            nota.estado = 'pagada' if nota.saldo_pendiente <= 0 else 'abonada_parcial'
+            pago.saldo_posterior = nota.saldo_pendiente
+            pago.save(update_fields=['saldo_posterior'])
         nota.actualizado_por = request.user
-        pago.saldo_posterior = nota.saldo_pendiente
-        pago.save(update_fields=['saldo_posterior'])
         update_fields = ['saldo_pendiente', 'estado', 'actualizado_por', 'fecha_actualizacion']
         nota.save(update_fields=update_fields)
 
     # Fuera de la transacción: un fallo de impresora nunca deshace el cobro.
-    try:
-        impreso, motivo_no_impreso = imprimir_nota_cobro(pago)
-    except Exception as exc:
-        logger.exception('Fallo al imprimir la nota de cobro %s', pago.id)
-        impreso, motivo_no_impreso = False, f'No se pudo imprimir: {exc}'
+    # Cada cobro lleva su propia nota de cobro (la inicial y la de Cashea).
+    impreso, motivo_no_impreso = True, ''
+    for pago_a_imprimir in pagos_registrados:
+        try:
+            ok_impresion, motivo = imprimir_nota_cobro(pago_a_imprimir)
+        except Exception as exc:
+            logger.exception('Fallo al imprimir la nota de cobro %s', pago_a_imprimir.id)
+            ok_impresion, motivo = False, f'No se pudo imprimir: {exc}'
+        if not ok_impresion:
+            impreso = False
+            motivo_no_impreso = motivo_no_impreso or (motivo or '')
 
-    return _auth_response({
+    principal = pago if pago is not None else pago_cashea
+    respuesta = {
         'ok': True,
         'message': 'Abono registrado correctamente.',
         'nota_entrega': _serialize_nota_entrega(nota, tasa_pago_actual=tasa_pago_actual),
-        'pago': _serialize_pago(pago),
+        'pago': _serialize_pago(principal),
+        'pago_cashea': _serialize_pago(pago_cashea) if pago_cashea is not None else None,
         'impreso': bool(impreso),
         'motivo_no_impreso': motivo_no_impreso or '',
-    }, status=201)
+    }
+    return _auth_response(respuesta, status=201)
 
 
 @csrf_exempt
