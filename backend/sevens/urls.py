@@ -90,6 +90,7 @@ from .compras_views import (
     reporte_notas_credito_compra_view,
     cuentas_por_pagar_view,
 )
+from .cashea_views import cashea_pendientes_view, liquidaciones_cashea_view
 from .contabilidad_views import (
     admin_ingresos_no_facturados_view,
     admin_lotes_pos_view,
@@ -220,6 +221,8 @@ urlpatterns = [
     # --- Administracion: metodos de pago e ingresos extra ------------------
     path('admin/metodos-pago/', admin_metodos_pago_view, name='admin_metodos_pago'),
     path('admin/lotes-pos/', admin_lotes_pos_view, name='admin_lotes_pos'),
+    path('admin/cashea/pendientes/', cashea_pendientes_view, name='cashea_pendientes'),
+    path('admin/cashea/liquidaciones/', liquidaciones_cashea_view, name='cashea_liquidaciones'),
     path('contabilidad/ingresos-extra/', ingresos_extra_view, name='ingresos_extra'),
     path('admin/ingresos-no-facturados/', admin_ingresos_no_facturados_view, name='admin_ingresos_no_facturados'),
     path('metodos-pago/', metodos_pago_activos_view, name='metodos_pago_activos'),

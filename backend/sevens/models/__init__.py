@@ -25,6 +25,7 @@ from .contabilidad import (
     VGCreditoCliente,
     VGGasto,
     VGIngresoExtra,
+    VGLiquidacionCashea,
     VGLotePOS,
     VGMerma,
     VGMetodoPago,

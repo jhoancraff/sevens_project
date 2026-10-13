@@ -331,7 +331,9 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
     }
     if (metodo && !metodo.es_efectivo && !referenciaAbono.trim()) {
       setFeedbackType('error');
-      setFeedback(`Indica el número de referencia del pago por ${metodo.nombre}.`);
+      setFeedback(metodo.es_cashea
+        ? 'Indica el número de orden de Cashea (solo números).'
+        : `Indica el número de referencia del pago por ${metodo.nombre}.`);
       return;
     }
 
@@ -730,6 +732,13 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                   </div>
                 ) : null}
 
+                {Number(notaDetalle.cashea_pendiente_usd) > 0 ? (
+                  <div style={fiadoRecalculadoStyle}>
+                    Cashea nos debe ${Number(notaDetalle.cashea_pendiente_usd).toFixed(2)} de esta nota. El cliente
+                    ya cumplió su parte; ese dinero llega al banco con la liquidación semanal de Cashea.
+                  </div>
+                ) : null}
+
                 {notaDetalle.estado !== 'anulada' ? (
                   <button type="button" onClick={handleAbrirDevolucion} style={devolucionButtonStyle}>
                     Devolución / ajuste
@@ -751,8 +760,17 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                           </span>
                           <span style={{ color: 'var(--vg-f-c8bbbb)', fontSize: 12 }}>
                             {formatFechaHoraLocal(pago.fecha_pago)}
-                            {pago.referencia && !esReferenciaAutogenerada(pago.referencia) ? ` · Ref: ${pago.referencia}` : ''}
+                            {pago.referencia && !esReferenciaAutogenerada(pago.referencia)
+                              ? ` · ${pago.es_cashea ? 'Orden Cashea' : 'Ref'}: ${pago.referencia}`
+                              : ''}
                           </span>
+                          {pago.es_cashea ? (
+                            <span style={{ fontSize: 12, fontWeight: 700, color: pago.liquidacion_cashea ? 'var(--vg-f-9fe3b0)' : 'var(--vg-f-ffcf7d)' }}>
+                              {pago.liquidacion_cashea
+                                ? `Cashea ya pagó · liquidación ${pago.liquidacion_cashea}`
+                                : 'Por cobrar a Cashea'}
+                            </span>
+                          ) : null}
                         </div>
                         <div style={{ display: 'grid', gap: 4, justifyItems: 'end' }}>
                           <span style={{ fontWeight: 700 }}>{formatMontoDocumento(pago.monto, pago.moneda, pago.tasa_cambio_referencia || tasaCambio)}</span>
@@ -1091,14 +1109,24 @@ function AbonoForm({
 
       {/* Sin `required` nativo: handleRegistrarAbono valida la referencia con un
           mensaje propio (el required nativo bloquea el aviso). */}
+      {metodo && metodo.es_cashea ? (
+        <div style={feedbackStyle('warning')}>
+          Cobra primero la inicial que paga el cliente en caja (con su método real) y registra aquí SOLO lo
+          que financia Cashea. Ese monto no entra a la caja: queda por cobrar a Cashea hasta su liquidación semanal.
+        </div>
+      ) : null}
+
       {metodo && !metodo.es_efectivo ? (
         <label style={dateFieldStyle}>
-          <span style={dateLabelStyle}>Número de referencia</span>
+          <span style={dateLabelStyle}>{metodo.es_cashea ? 'Número de orden de Cashea' : 'Número de referencia'}</span>
           <input
             type="text"
-            placeholder="Referencia del pago"
+            inputMode={metodo.es_cashea ? 'numeric' : undefined}
+            placeholder={metodo.es_cashea ? 'Número de orden que muestra Cashea' : 'Referencia del pago'}
             value={referenciaAbono}
-            onChange={(event) => setReferenciaAbono(event.target.value)}
+            onChange={(event) => setReferenciaAbono(
+              metodo.es_cashea ? event.target.value.replace(/\D/g, '') : event.target.value,
+            )}
             style={inputStyle}
           />
         </label>

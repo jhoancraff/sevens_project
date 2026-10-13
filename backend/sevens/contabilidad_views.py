@@ -85,6 +85,7 @@ def _serialize_metodo_pago(metodo):
         'cuenta_bancaria': metodo.cuenta_bancaria,
         'activo': metodo.activo,
         'es_punto_venta': metodo.es_punto_venta,
+        'es_cashea': metodo.es_cashea,
     }
 
 
@@ -282,6 +283,39 @@ def admin_metodos_pago_view(request):
         return _auth_response({'ok': False, 'message': 'Formato JSON invalido.'}, status=400)
 
     action = str(data.get('action', '')).strip().lower()
+
+    if action == 'marcar_cashea':
+        try:
+            metodo = VGMetodoPago.objects.get(pk=int(data.get('id')))
+        except (TypeError, ValueError, VGMetodoPago.DoesNotExist):
+            return _auth_response({'ok': False, 'message': 'El metodo de pago no existe.'}, status=400)
+
+        es_cashea = bool(data.get('es_cashea'))
+        if es_cashea:
+            if metodo.moneda != 'USD':
+                return _auth_response({
+                    'ok': False,
+                    'message': 'La cuenta de Cashea debe estar en dólares (Cashea financia en USD).',
+                }, status=400)
+            if metodo.es_efectivo or metodo.es_punto_venta:
+                return _auth_response({
+                    'ok': False,
+                    'message': 'Un método de efectivo o de punto de venta no puede ser la cuenta de Cashea.',
+                }, status=400)
+            otra = VGMetodoPago.objects.filter(es_cashea=True).exclude(pk=metodo.pk).first()
+            if otra is not None:
+                return _auth_response({
+                    'ok': False,
+                    'message': f'Ya existe una cuenta de Cashea ("{otra.nombre}"). Solo puede haber una.',
+                }, status=400)
+        metodo.es_cashea = es_cashea
+        metodo.actualizado_por = request.user
+        metodo.save(update_fields=['es_cashea', 'actualizado_por', 'fecha_actualizacion'])
+        return _auth_response({
+            'ok': True,
+            'message': 'Método actualizado.',
+            'metodo_pago': _serialize_metodo_pago(metodo),
+        })
 
     if action == 'create':
         nombre = str(data.get('nombre', '')).strip()
@@ -561,7 +595,10 @@ def reporte_cuadre_caja_view(request):
         correcciones_pago = _ultimas_correcciones_por_registro('pago', [item.id for item in pagos_dia])
         correcciones_ingreso = _ultimas_correcciones_por_registro('ingreso_extra', [item.id for item in ingresos_extra_dia])
         cuentas_disp, _bancos_disp = disponibilidad_por_cuenta(fecha)
-        disponibilidad_real = sum((cuenta['saldo_disponible'] for cuenta in cuentas_disp), Decimal('0'))
+        # La cuenta "Por cobrar a Cashea" no es dinero disponible.
+        disponibilidad_real = sum(
+            (cuenta['saldo_disponible'] for cuenta in cuentas_disp if not cuenta['es_cashea']), Decimal('0'),
+        )
 
         return _auth_response({
             'ok': True,
@@ -1188,6 +1225,7 @@ def reporte_disponibilidad_cuentas_view(request):
             'nombre': cuenta['nombre'],
             'moneda': cuenta['moneda'],
             'es_efectivo': cuenta['es_efectivo'],
+            'es_cashea': cuenta['es_cashea'],
             'cuenta_bancaria': cuenta['cuenta_bancaria'],
             'activo': cuenta['activo'],
             'ingresos_acumulados': str(cuenta['ingresos_acumulados']),
@@ -1216,12 +1254,20 @@ def reporte_disponibilidad_cuentas_view(request):
                 'saldo_disponible': str(banco['saldo_disponible']),
                 'saldo_disponible_bs': str(banco['saldo_disponible_bs'].quantize(Decimal('0.01'))) if banco['saldo_disponible_bs'] is not None else None,
                 'tiene_punto_venta': banco['tiene_punto_venta'],
+                'es_cashea': banco['es_cashea'],
                 **_serialize_campos_pos(banco),
                 'metodos': [_serialize_cuenta(cuenta) for cuenta in banco['metodos']],
             }
             for banco in bancos
         ],
-        'total_disponible': str(sum((cuenta['saldo_disponible'] for cuenta in cuentas), Decimal('0'))),
+        # El saldo de la cuenta Cashea es lo que Cashea nos debe: va aparte y
+        # nunca suma a la disponibilidad.
+        'total_disponible': str(sum(
+            (cuenta['saldo_disponible'] for cuenta in cuentas if not cuenta['es_cashea']), Decimal('0'),
+        )),
+        'por_cobrar_cashea': str(sum(
+            (cuenta['saldo_disponible'] for cuenta in cuentas if cuenta['es_cashea']), Decimal('0'),
+        )),
         'total_por_acreditar': str(sum((cuenta['por_acreditar_usd'] for cuenta in cuentas), Decimal('0'))),
         'pos_por_cobrar': _serialize_transitorio(pos_por_cobrar_transitorio(fecha)),
     })
@@ -1331,6 +1377,12 @@ def transferencias_cuentas_view(request):
 
     if cuenta_origen.id == cuenta_destino.id:
         return _auth_response({'ok': False, 'message': 'La cuenta origen y la cuenta destino no pueden ser la misma.'}, status=400)
+
+    if cuenta_origen.es_cashea or cuenta_destino.es_cashea:
+        return _auth_response({
+            'ok': False,
+            'message': 'La cuenta de Cashea no admite transferencias manuales: registra el pago de Cashea desde Liquidaciones de Cashea.',
+        }, status=400)
 
     try:
         monto_origen = Decimal(str(data.get('monto_origen', '')))
@@ -1633,7 +1685,10 @@ def reporte_conciliacion_bancaria_view(request):
             return _auth_response({'ok': False, 'message': 'Fecha invalida.'}, status=400)
 
         _cuentas, bancos = disponibilidad_por_cuenta(fecha)
-        bancos = [banco for banco in bancos if not all(metodo['es_efectivo'] for metodo in banco['metodos'])]
+        bancos = [
+            banco for banco in bancos
+            if not all(metodo['es_efectivo'] for metodo in banco['metodos']) and not banco['es_cashea']
+        ]
         tasa = tasa_para_fecha(fecha)
 
         conciliaciones = {

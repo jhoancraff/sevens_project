@@ -40,6 +40,7 @@ import AnalystNewPromotionPage from './AnalystNewPromotionPage';
 import AnalystNewUserPage from './AnalystNewUserPage';
 import AnalystNewRecipePage from './AnalystNewRecipePage';
 import AnalystPaymentMethodsPage from './AnalystPaymentMethodsPage';
+import CasheaPage from './CasheaPage';
 import AnalystZonasDeliveryPage from './AnalystZonasDeliveryPage';
 import AnalystPreparationsReportPage from './AnalystPreparationsReportPage';
 import AnalystPrintersPage from './AnalysPrintersPage';
@@ -1142,6 +1143,11 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           />
         ) : activeView === 'contabilidad-lotes-pos' ? (
           <LotesPOSPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'contabilidad-cashea' ? (
+          <CasheaPage
             isMobile={isMobile}
             onBack={goBackView}
           />

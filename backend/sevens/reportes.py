@@ -968,6 +968,9 @@ def disponibilidad_por_cuenta(fecha):
                 else saldo_bs_por_metodo.get(metodo.id, Decimal('0'))
             ) if metodo.moneda == 'VES' else None,
             'es_punto_venta': metodo.es_punto_venta,
+            # Cuenta "Por cobrar a Cashea": su saldo es lo que Cashea nos debe,
+            # NO dinero disponible — los totales de disponibilidad la excluyen.
+            'es_cashea': metodo.es_cashea,
             **(fila_pos_a_cuenta(fila_pos) if fila_pos is not None else fila_pos_a_cuenta(None)),
         })
 
@@ -996,6 +999,7 @@ def disponibilidad_por_cuenta(fecha):
                 **{campo: Decimal('0') for campo in CAMPOS_POS_SUMABLES},
                 'lotes_por_acreditar': [],
                 'tiene_punto_venta': False,
+                'es_cashea': False,
             }
             orden_claves.append(clave)
         banco = bancos_por_clave[clave]
@@ -1012,6 +1016,7 @@ def disponibilidad_por_cuenta(fecha):
             banco[campo] += cuenta[campo]
         banco['lotes_por_acreditar'].extend(cuenta['lotes_por_acreditar'])
         banco['tiene_punto_venta'] = banco['tiene_punto_venta'] or cuenta['es_punto_venta']
+        banco['es_cashea'] = banco['es_cashea'] or cuenta['es_cashea']
         if banco['saldo_disponible_bs'] is not None and cuenta['saldo_disponible_bs'] is not None:
             banco['saldo_disponible_bs'] += cuenta['saldo_disponible_bs']
         elif banco['saldo_disponible_bs'] is not None:
