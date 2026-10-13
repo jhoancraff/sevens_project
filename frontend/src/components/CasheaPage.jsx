@@ -9,29 +9,17 @@ function isoLocal(fecha) {
   return local.toISOString().slice(0, 10);
 }
 
-// Semanas de Cashea: de lunes a domingo. La actual y las ocho anteriores.
-function semanasRecientes() {
+// Rango por defecto: la semana anterior (lunes a domingo), que es la que cubre
+// el reporte de Cashea; la administradora puede cambiar cualquiera de las dos fechas.
+function rangoSemanaAnterior() {
   const hoy = new Date();
   hoy.setHours(12, 0, 0, 0);
   const diasDesdeLunes = (hoy.getDay() + 6) % 7;
-  const lunesActual = new Date(hoy);
-  lunesActual.setDate(hoy.getDate() - diasDesdeLunes);
-  const semanas = [];
-  for (let i = 0; i <= 8; i += 1) {
-    const lunes = new Date(lunesActual);
-    lunes.setDate(lunesActual.getDate() - 7 * i);
-    const domingo = new Date(lunes);
-    domingo.setDate(lunes.getDate() + 6);
-    const desde = isoLocal(lunes);
-    const hasta = isoLocal(domingo);
-    semanas.push({
-      clave: desde,
-      desde,
-      hasta,
-      etiqueta: `Lun ${formatFecha(desde).slice(0, 5)} – Dom ${formatFecha(hasta)}${i === 0 ? ' (en curso)' : ''}`,
-    });
-  }
-  return semanas;
+  const lunes = new Date(hoy);
+  lunes.setDate(hoy.getDate() - diasDesdeLunes - 7);
+  const domingo = new Date(lunes);
+  domingo.setDate(lunes.getDate() + 6);
+  return { desde: isoLocal(lunes), hasta: isoLocal(domingo) };
 }
 
 async function pedir(url, opciones) {
@@ -45,17 +33,16 @@ async function pedir(url, opciones) {
 
 // Cashea: lo que Cashea nos debe (cobros con la cuenta Cashea todavía sin
 // liquidar) y el registro de su pago semanal. Cashea entrega un reporte por
-// semana (lunes a domingo) y paga cualquier día de la semana siguiente: se
-// elige la semana, se teclean los dos totales del reporte y Sevens exige que su
-// suma de esa semana coincida con el «Monto financiado» antes de registrar.
+// periodo y paga cualquier día después: se elige el rango de fechas del
+// reporte, se teclean sus dos totales y Sevens exige que su suma de ese rango
+// coincida con el «Monto financiado» antes de registrar.
 function CasheaPage({ isMobile, onBack }) {
-  const semanas = useMemo(() => semanasRecientes(), []);
   const { toast, showSuccess, showError, hideToast } = useToast();
   const [loading, setLoading] = useState(true);
   const [pendientes, setPendientes] = useState(null);
   const [liquidaciones, setLiquidaciones] = useState({ liquidaciones: [], totales: null });
   const [cuentasBs, setCuentasBs] = useState([]);
-  const [semanaClave, setSemanaClave] = useState(semanas[1].clave);
+  const [rango, setRango] = useState(() => rangoSemanaAnterior());
   const [excluidos, setExcluidos] = useState(() => new Set());
   const [saving, setSaving] = useState(false);
 
@@ -67,7 +54,10 @@ function CasheaPage({ isMobile, onBack }) {
   const [ajuste, setAjuste] = useState('');
   const [referencia, setReferencia] = useState('');
 
-  const semana = semanas.find((item) => item.clave === semanaClave) || semanas[1];
+  const rangoValido = Boolean(rango.desde && rango.hasta && rango.desde <= rango.hasta);
+  const etiquetaRango = rangoValido
+    ? `${formatFecha(rango.desde)} al ${formatFecha(rango.hasta)}`
+    : 'rango sin definir';
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -95,8 +85,8 @@ function CasheaPage({ isMobile, onBack }) {
 
   const todos = pendientes?.pendientes || [];
   const deLaSemana = useMemo(
-    () => todos.filter((item) => item.fecha >= semana.desde && item.fecha <= semana.hasta),
-    [todos, semana],
+    () => (rangoValido ? todos.filter((item) => item.fecha >= rango.desde && item.fecha <= rango.hasta) : []),
+    [todos, rango, rangoValido],
   );
   const fueraDeLaSemana = todos.length - deLaSemana.length;
   const incluidos = deLaSemana.filter((item) => !excluidos.has(item.pago_id));
@@ -124,8 +114,12 @@ function CasheaPage({ isMobile, onBack }) {
 
   const registrar = async (event) => {
     event.preventDefault();
+    if (!rangoValido) {
+      showError('Indica el rango de fechas del reporte de Cashea (desde no puede ser posterior a hasta).');
+      return;
+    }
     if (incluidos.length === 0) {
-      showError('No hay cobros de Cashea en esa semana para liquidar.');
+      showError('No hay cobros de Cashea en ese rango para liquidar.');
       return;
     }
     if (!cuentaDestinoId) {
@@ -151,8 +145,8 @@ function CasheaPage({ isMobile, onBack }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'registrar',
-          periodo_desde: semana.desde,
-          periodo_hasta: semana.hasta,
+          periodo_desde: rango.desde,
+          periodo_hasta: rango.hasta,
           pago_ids: incluidos.map((item) => item.pago_id),
           cuenta_destino_id: Number(cuentaDestinoId),
           deposito_bs: depositoBs,
@@ -204,9 +198,9 @@ function CasheaPage({ isMobile, onBack }) {
       <div>
         <h2 style={titleStyle(isMobile)}>Cashea</h2>
         <p style={subtitleStyle}>
-          Lo que financia Cashea no es dinero disponible hasta que Cashea paga la semana. Elige la semana del
-          reporte (lunes a domingo), teclea sus totales y la fecha en que depositó: el total de Sevens tiene
-          que coincidir con el del reporte. El banco sube por lo depositado y la comisión queda como gasto aparte.
+          Lo que financia Cashea no es dinero disponible hasta que Cashea paga. Elige el rango de fechas que
+          cubre el reporte, teclea sus totales y la fecha en que depositó: el total de Sevens tiene que
+          coincidir con el del reporte. El banco sube por lo depositado y la comisión queda como gasto aparte.
         </p>
       </div>
 
@@ -244,23 +238,33 @@ function CasheaPage({ isMobile, onBack }) {
           </section>
 
           <section style={panelStyle}>
-            <div style={sectionTitleStyle}>Semana a liquidar</div>
-            <label style={{ ...fieldStyle, maxWidth: 420 }}>
-              <span>Semana del reporte de Cashea</span>
-              <select
-                value={semanaClave}
-                onChange={(event) => { setSemanaClave(event.target.value); setExcluidos(new Set()); }}
-                style={inputStyle}
-                className="admin-dark-select"
-              >
-                {semanas.map((item) => (
-                  <option key={item.clave} value={item.clave}>{item.etiqueta}</option>
-                ))}
-              </select>
-            </label>
+            <div style={sectionTitleStyle}>Rango del reporte de Cashea</div>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'end' }}>
+              <label style={{ ...fieldStyle, minWidth: 170 }}>
+                <span>Desde</span>
+                <input
+                  type="date"
+                  value={rango.desde}
+                  onChange={(event) => { setRango((actual) => ({ ...actual, desde: event.target.value })); setExcluidos(new Set()); }}
+                  style={inputStyle}
+                />
+              </label>
+              <label style={{ ...fieldStyle, minWidth: 170 }}>
+                <span>Hasta</span>
+                <input
+                  type="date"
+                  value={rango.hasta}
+                  onChange={(event) => { setRango((actual) => ({ ...actual, hasta: event.target.value })); setExcluidos(new Set()); }}
+                  style={inputStyle}
+                />
+              </label>
+            </div>
+            {!rangoValido ? (
+              <div style={noticeStyle}>Indica las dos fechas; «Desde» no puede ser posterior a «Hasta».</div>
+            ) : null}
 
             {deLaSemana.length === 0 ? (
-              <div style={emptyStyle}>No hay cobros de Cashea sin liquidar en esa semana.</div>
+              <div style={emptyStyle}>No hay cobros de Cashea sin liquidar en ese rango.</div>
             ) : (
               <div style={tableWrapStyle}>
                 <div style={pendientesTableStyle}>
@@ -290,14 +294,14 @@ function CasheaPage({ isMobile, onBack }) {
             )}
             {fueraDeLaSemana > 0 ? (
               <div style={mutedStyle}>
-                Hay {fueraDeLaSemana} cobro(s) de otras semanas sin liquidar; no entran en este pago.
+                Hay {fueraDeLaSemana} cobro(s) sin liquidar fuera de este rango; no entran en este pago.
               </div>
             ) : null}
           </section>
 
           {deLaSemana.length > 0 ? (
             <form onSubmit={registrar} style={panelStyle}>
-              <div style={sectionTitleStyle}>Pago de Cashea de la semana {semana.etiqueta}</div>
+              <div style={sectionTitleStyle}>Pago de Cashea del {etiquetaRango}</div>
 
               <div style={formGridStyle(isMobile)}>
                 <label style={fieldStyle}>
@@ -389,7 +393,7 @@ function CasheaPage({ isMobile, onBack }) {
               <div style={tableWrapStyle}>
                 <div style={historialTableStyle}>
                   <div style={headStyle}>Código</div>
-                  <div style={headStyle}>Semana / depósito</div>
+                  <div style={headStyle}>Rango / depósito</div>
                   <div style={headStyle}>Cuenta</div>
                   <div style={{ ...headStyle, textAlign: 'right' }}>Financiado</div>
                   <div style={{ ...headStyle, textAlign: 'right' }}>Comisión</div>
@@ -402,8 +406,8 @@ function CasheaPage({ isMobile, onBack }) {
                       </div>
                       <div style={cellStyle}>
                         {item.periodo_desde && item.periodo_hasta
-                          ? `Semana ${formatFecha(item.periodo_desde).slice(0, 5)} – ${formatFecha(item.periodo_hasta)}`
-                          : 'Semana sin indicar'}
+                          ? `Del ${formatFecha(item.periodo_desde)} al ${formatFecha(item.periodo_hasta)}`
+                          : 'Rango sin indicar'}
                         <span style={mutedStyle}>
                           Pagó {formatFecha(item.fecha_deposito)} · Bs {formatMonto(item.deposito_bs)} a {formatMonto(item.tasa_cambio)}
                         </span>
