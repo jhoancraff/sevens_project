@@ -27,7 +27,7 @@ from reportlab.platypus import (
     CondPageBreak, Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
 
-NOMBRE_NEGOCIO = 'Sevens'
+NOMBRE_NEGOCIO = 'Seven'
 
 # Mismos colores del sistema (rojo de la marca) para que todos los PDF se reconozcan.
 ROJO_MARCA = colors.HexColor('#bf1f1f')

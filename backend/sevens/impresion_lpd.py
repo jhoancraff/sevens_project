@@ -227,7 +227,7 @@ def _ticket_recibo(
 
     ticket = Ticket()
     ticket.logo()
-    ticket.centro('SEVENS', negrita=True, grande=True)
+    ticket.centro('SEVEN', negrita=True, grande=True)
     ticket.centro(titulo, negrita=True)
     if codigo:
         ticket.centro(f'Nº {codigo}')
@@ -392,7 +392,7 @@ def _ticket_nota_cobro(pago, es_reimpresion=False):
 
     ticket = Ticket()
     ticket.logo()
-    ticket.centro((datos.nombre_comercial if datos and datos.nombre_comercial else None) or 'SEVENS', negrita=True, grande=True)
+    ticket.centro((datos.nombre_comercial if datos and datos.nombre_comercial else None) or 'SEVEN', negrita=True, grande=True)
     if datos:
         if datos.razon_social:
             ticket.centro(datos.razon_social)
@@ -418,8 +418,6 @@ def _ticket_nota_cobro(pago, es_reimpresion=False):
     ticket.campo('Moneda:', moneda_texto)
     if pago.referencia and not _REFERENCIA_AUTOGENERADA.match(pago.referencia):
         ticket.campo('Referencia:', pago.referencia)
-    if es_bs:
-        ticket.campo('Tasa:', f'Bs. {_formatear_bs(tasa)}/$')
     ticket.separador()
     ticket.fila('Total nota:', monto(nota.total))
     ticket.fila('MONTO COBRADO:', monto(pago.monto), negrita=True)
@@ -492,7 +490,7 @@ def _ticket_documento_venta(
     ticket = Ticket()
     ticket.logo()
     ticket.centro(
-        (datos_fiscales.nombre_comercial if datos_fiscales and datos_fiscales.nombre_comercial else None) or 'SEVENS',
+        (datos_fiscales.nombre_comercial if datos_fiscales and datos_fiscales.nombre_comercial else None) or 'SEVEN',
         negrita=True, grande=True,
     )
     if datos_fiscales:
@@ -701,7 +699,7 @@ def _build_cierre_lote_pos_bytes(lote, es_reimpresion=False):
     out += ESC_POS_WCP1252
     out += ALIGN_CENTER
     out += BOLD_ON
-    out += _text((datos_fiscales.nombre_comercial if datos_fiscales and datos_fiscales.nombre_comercial else None) or 'SEVENS') + FEED
+    out += _text((datos_fiscales.nombre_comercial if datos_fiscales and datos_fiscales.nombre_comercial else None) or 'SEVEN') + FEED
     out += _text(titulo) + FEED
     out += _text(f'LOTE-{lote.numero:06d}') + FEED
     out += BOLD_OFF
