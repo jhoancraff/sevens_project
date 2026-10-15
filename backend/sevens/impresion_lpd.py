@@ -54,7 +54,7 @@ class LpdError(Exception):
     """La impresora/servidor LPD rechazó o cortó la transferencia del trabajo."""
 
 
-def _recv_ack(sock, etapa):
+def _recv_ack(sock, etapa, cola=None):
     try:
         ack = sock.recv(1)
     except socket.timeout as exc:
@@ -64,20 +64,25 @@ def _recv_ack(sock, etapa):
     if not ack:
         raise LpdError(f'El servidor LPD cerró la conexión sin responder en la etapa "{etapa}".')
     if ack != b'\x00':
+        if etapa == 'seleccionar cola' and ack == b'\x01':
+            raise LpdError(
+                f'El servidor LPD no reconoce la cola compartida "{cola}". '
+                'Verifica que coincida exactamente con el nombre compartido de la impresora en Windows.'
+            )
         raise LpdError(
             f'El servidor LPD rechazó la etapa "{etapa}" con código {ack[0]} '
             f'(0x{ack[0]:02x}).'
         )
 
 
-def _enviar_y_confirmar(sock, payload, etapa):
+def _enviar_y_confirmar(sock, payload, etapa, cola=None):
     try:
         sock.sendall(payload)
     except socket.timeout as exc:
         raise LpdError(f'Tiempo de espera agotado enviando la etapa "{etapa}".') from exc
     except OSError as exc:
         raise LpdError(f'Error de red enviando la etapa "{etapa}": {exc}.') from exc
-    _recv_ack(sock, etapa)
+    _recv_ack(sock, etapa, cola=cola)
 
 
 def enviar_trabajo_lpd(host, puerto, cola, datos, job_id=1, usuario='sevens', nombre_trabajo='Recibo'):
@@ -119,6 +124,7 @@ def enviar_trabajo_lpd(host, puerto, cola, datos, job_id=1, usuario='sevens', no
             sock,
             b'\x02' + cola.encode('ascii', errors='replace') + b'\n',
             'seleccionar cola',
+            cola=cola,
         )
 
         _enviar_y_confirmar(

@@ -685,15 +685,20 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
       }
 
       const descuentoAplicado = Number(data.nota_entrega.descuento_monto || 0);
-      showSuccess(
-        `Nota de entrega ${data.nota_entrega.codigo} registrada: `
+      const mensajeNota = `Nota de entrega ${data.nota_entrega.codigo} registrada: `
         + `${montoDual(data.nota_entrega.total, data.nota_entrega.tasa_cambio_referencia || tasaCambio)} `
         + `(${data.nota_entrega.pedidos.length} pedido(s))`
         + `${descuentoAplicado > 0 ? ` con descuento de $${descuentoAplicado.toFixed(2)}` : ''}. Pendiente de cobro — `
         + `cóbrala desde el reporte de notas de entrega.`
         + `${data.nota_entrega.tasa_origen === 'prefactura' ? ` Se respetó la tasa de la cuenta ${data.nota_entrega.tasa_prefactura} (Bs ${formatTasa(data.nota_entrega.tasa_cambio_referencia)}).` : ''}`
-        + `${data.nota_entrega.tasa_prefactura_vencida ? ` Atención: la tasa de la cuenta ya venció, se usó la tasa de hoy (Bs ${formatTasa(data.nota_entrega.tasa_cambio_referencia)}).` : ''}`,
-      );
+        + `${data.nota_entrega.tasa_prefactura_vencida ? ` Atención: la tasa de la cuenta ya venció, se usó la tasa de hoy (Bs ${formatTasa(data.nota_entrega.tasa_cambio_referencia)}).` : ''}`;
+      if (data.impreso === false) {
+        showError(
+          `${mensajeNota} No se imprimió el recibo${data.motivo_no_impreso ? `: ${data.motivo_no_impreso}` : ''}.`,
+        );
+      } else {
+        showSuccess(`${mensajeNota} Recibo enviado a la impresora.`);
+      }
       setNotasRefreshToken((current) => current + 1);
       clearGroupState(group.key);
       // No fetchPedidos() acá a propósito: el backend ya marcó el pedido como

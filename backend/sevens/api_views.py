@@ -6775,13 +6775,16 @@ def pedidos_cobro_view(request):
         nota_entrega.pedidos.set(pedidos)
 
     try:
-        imprimir_nota_entrega_caja(nota_entrega)
-    except Exception:
+        impreso, motivo_no_impreso = imprimir_nota_entrega_caja(nota_entrega)
+    except Exception as exc:
         logger.exception('Fallo al imprimir la nota de entrega %s', nota_entrega.codigo)
+        impreso, motivo_no_impreso = False, f'No se pudo imprimir: {exc}'
 
     return _auth_response({
         'ok': True,
         'message': f'Se cobraron {len(pedidos)} pedido(s) correctamente.',
+        'impreso': bool(impreso),
+        'motivo_no_impreso': motivo_no_impreso or '',
         'nota_entrega': {
             'id': nota_entrega.id,
             'codigo': nota_entrega.codigo,
