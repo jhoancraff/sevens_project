@@ -697,6 +697,40 @@ class AdminUsersApiTests(TestCase):
         self.assertTrue(any(role['nombre_role'] == 'Administrador' for role in payload['roles']))
         self.assertTrue(any(user['username'] == 'meseroexistente' for user in payload['users']))
 
+    def test_contador_can_create_user_through_admin_users_endpoint(self):
+        contador_role, _ = VGRol.objects.get_or_create(nombre_role='Contador')
+        contador = VGUsuario.objects.create_user(
+            username='contadorusuarios',
+            password='claveContador999',
+            cedula='90000005',
+            id_role=contador_role,
+        )
+
+        login_response = self.client.post(
+            '/api/auth/login/',
+            data=json.dumps({'username': contador.username, 'password': 'claveContador999'}),
+            content_type='application/json',
+        )
+        self.assertEqual(login_response.status_code, 200, login_response.json())
+        self.assertTrue(login_response.json()['user']['is_admin'])
+
+        response = self.client.post(
+            '/api/admin/usuarios/',
+            data=json.dumps({
+                'action': 'create',
+                'username': 'creadoporcontador',
+                'password': 'ClaveNueva123',
+                'cedula': '90000006',
+                'role_id': self.mesero_role.id,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 201, response.json())
+        created_user = VGUsuario.objects.get(username='creadoporcontador')
+        self.assertTrue(created_user.check_password('ClaveNueva123'))
+        self.assertEqual(created_user.id_role, self.mesero_role)
+
     def test_admin_users_endpoint_creates_updates_and_deletes_user(self):
         self.client.force_login(self.admin_user)
 
@@ -2576,6 +2610,36 @@ class NotaEntregaCobroFlujoTests(TestCase):
             }),
             content_type='application/json',
         )
+
+    def test_emision_informa_si_la_nota_de_entrega_no_se_pudo_imprimir(self):
+        from unittest.mock import patch
+
+        pedido = self._pedido()
+        motivo = 'No se pudo conectar al servidor LPD 192.168.1.20:515 (cola "Caja"): timeout.'
+        with patch('sevens.api_views.imprimir_nota_entrega_caja', return_value=(False, motivo)) as imprimir:
+            response = self._emitir(pedido)
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertFalse(response.json()['impreso'])
+        self.assertEqual(response.json()['motivo_no_impreso'], motivo)
+        self.assertTrue(VGNotaEntrega.objects.filter(pk=response.json()['nota_entrega']['id']).exists())
+        imprimir.assert_called_once()
+
+    def test_error_lpd_cola_no_reconocida_identifica_el_nombre_que_hay_que_corregir(self):
+        from unittest.mock import MagicMock, patch
+        from sevens.impresion_lpd import LpdError, enviar_trabajo_lpd
+
+        sock = MagicMock()
+        sock.__enter__.return_value = sock
+        sock.recv.return_value = b'\x01'
+        with patch('sevens.impresion_lpd.socket.create_connection', return_value=sock):
+            with self.assertRaisesRegex(
+                LpdError,
+                'no reconoce la cola compartida "Caja_Recepcion".*nombre compartido',
+            ):
+                enviar_trabajo_lpd('192.168.1.20', 515, 'Caja_Recepcion', b'ticket')
+
+        sock.sendall.assert_called_once_with(b'\x02Caja_Recepcion\n')
 
     def test_emision_exige_cedula_y_nombre_y_reutiliza_cliente(self):
         p1 = self._pedido()

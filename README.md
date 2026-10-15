@@ -239,6 +239,37 @@ sudo systemctl restart gunicorn  # Reiniciar tras cambios en código Python
 sudo journalctl -u gunicorn -f   # Ver logs en tiempo real
 ```
 
+## 📦 6. Publicar cambios que llegan de Git
+
+Cuando traes cambios de tu rama, **no basta con `git pull`**:
+
+```bash
+./desplegar.sh
+```
+
+Eso es porque `frontend/dist/` está en el `.gitignore`: el pull actualiza
+`frontend/src/`, pero **no el build que sirve Nginx**. Sin recompilar, el
+navegador sigue viendo la versión anterior sin avisar.
+
+El script hace el ciclo completo:
+
+1. Descarga los commits nuevos y lista cuáles son
+2. Se niega a seguir si hay cambios sin commitear
+3. Avisa si el código nuevo necesita una migración (y cómo crearla)
+4. Compila el frontend y ajusta permisos para Nginx
+5. Corre `manage.py check`
+6. Reinicia Gunicorn y Nginx (si lo corres con `sudo`)
+7. Verifica que las dos URLs responden
+
+```bash
+sudo ./desplegar.sh            # con reinicio de servicios incluido
+./desplegar.sh --sin-pull      # solo recompila, sin descargar de git
+```
+
+> **En el celular:** si el servidor ya tiene la versión nueva y el teléfono no
+> la muestra, es el `service worker` de la PWA guardando el bundle viejo.
+> Borra la app de la pantalla de inicio y vuelve a instalarla.
+
 ---
 
 ## 💡 4. Arranque automático

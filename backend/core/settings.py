@@ -137,6 +137,7 @@ MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'sevens.VGUsuario'
+SESSION_COOKIE_NAME = os.getenv('SESSION_COOKIE_NAME', 'sessionid')
 
 # CORS Settings
 cors_origins_raw = os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:5173,http://127.0.0.1:5173')
