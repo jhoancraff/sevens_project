@@ -21,6 +21,7 @@ from rest_framework import generics
 from .models import (
     VGAbonoCompra,
     VGAjustePedido,
+    VGCategoriaIngrediente,
     VGCategoriaProducto,
     VGCliente,
     VGCompra,
@@ -2500,6 +2501,21 @@ def _validar_envase_peso_precio(contenido_envase, peso_real, precio_compra):
     return None
 
 
+def _resolver_categoria_ingrediente(valor):
+    """
+    Categoria de inventario a partir del `categoria_id` que manda el formulario:
+    vacio/None = sin categoria. Devuelve (categoria|None, mensaje_de_error|None).
+    Una categoria desactivada no se puede asignar a ingredientes nuevos.
+    """
+    if valor in (None, '', 0, '0'):
+        return None, None
+    try:
+        categoria = VGCategoriaIngrediente.objects.get(pk=int(valor))
+    except (TypeError, ValueError, VGCategoriaIngrediente.DoesNotExist):
+        return None, 'La categoría de inventario no existe.'
+    return categoria, None
+
+
 @csrf_exempt
 def admin_catalog_view(request):
     if request.method not in ['GET', 'POST']:
@@ -2535,9 +2551,11 @@ def admin_catalog_view(request):
                 'id', 'nombre', 'stock_actual', 'unidad_medida', 'ultimo_proveedor', 'costo_unitario',
                 'stock_minimo', 'contenido_envase', 'peso_real', 'precio_compra',
                 'ingrediente_crudo_equivalente', 'rendimiento_ingrediente_crudo',
+                'categoria', 'categoria__nombre',
             )
         )
         for ingredient in inventory:
+            ingredient['categoria_nombre'] = ingredient.pop('categoria__nombre') or ''
             ingredient['costo_unitario'] = _costo_unitario_efectivo(
                 ingredient['costo_unitario'], ingredient['precio_compra'], ingredient['peso_real'],
             )
@@ -2572,6 +2590,10 @@ def admin_catalog_view(request):
         return _auth_response({
             'ok': True,
             'inventory': inventory,
+            'categorias_inventario': [
+                {'id': categoria.id, 'nombre': categoria.nombre, 'activo': categoria.activo}
+                for categoria in VGCategoriaIngrediente.objects.order_by('nombre')
+            ],
             'recipes': recipes,
             'beverages': beverages,
         })
@@ -2591,6 +2613,31 @@ def admin_catalog_view(request):
             return _auth_response({'ok': False, 'message': 'El insumo a eliminar no existe.'}, status=400)
         ingredient.delete()
         return _auth_response({'ok': True, 'message': 'Insumo eliminado correctamente.'})
+
+    if tipo == 'asignar_categoria':
+        # Lleva varios ingredientes de una vez a una categoria (o los deja sin
+        # categoria con categoria_id vacio): clasificar a mano uno por uno un
+        # inventario de cientos de insumos no es practico.
+        try:
+            ids = {int(valor) for valor in (data.get('ids') or [])}
+        except (TypeError, ValueError):
+            return _auth_response({'ok': False, 'message': 'La lista de ingredientes no es valida.'}, status=400)
+        if not ids:
+            return _auth_response({'ok': False, 'message': 'Selecciona al menos un ingrediente.'}, status=400)
+        categoria, error = _resolver_categoria_ingrediente(data.get('categoria_id'))
+        if error:
+            return _auth_response({'ok': False, 'message': error}, status=400)
+        if categoria is not None and not categoria.activo:
+            return _auth_response({'ok': False, 'message': 'La categoría está desactivada.'}, status=400)
+        actualizados = VGIngrediente.objects.filter(pk__in=ids).update(
+            categoria=categoria, actualizado_por=request.user, fecha_actualizacion=timezone.now(),
+        )
+        destino = f'«{categoria.nombre}»' if categoria else 'sin categoría'
+        return _auth_response({
+            'ok': True,
+            'message': f'{actualizados} ingrediente(s) pasaron a {destino}.',
+            'actualizados': actualizados,
+        })
 
     if tipo == 'eliminar_receta':
         preparation_id = data.get('id')
@@ -2681,8 +2728,13 @@ def admin_catalog_view(request):
         if existing is not None:
             return _auth_response({'ok': False, 'message': 'Ya existe un ingrediente con ese nombre.'}, status=400)
 
+        categoria, error_categoria = _resolver_categoria_ingrediente(data.get('categoria_id'))
+        if error_categoria:
+            return _auth_response({'ok': False, 'message': error_categoria}, status=400)
+
         ingredient = VGIngrediente.objects.create(
             nombre=nombre,
+            categoria=categoria,
             unidad_medida=unidad,
             stock_actual=stock_actual_value,
             stock_minimo=stock_minimo_value,
@@ -2797,6 +2849,14 @@ def admin_catalog_view(request):
         if duplicate:
             return _auth_response({'ok': False, 'message': 'Ya existe otro ingrediente con ese nombre.'}, status=400)
 
+        # Si el formulario no manda la clave, la categoria queda como estaba.
+        categoria = ingredient.categoria
+        if 'categoria_id' in data:
+            categoria, error_categoria = _resolver_categoria_ingrediente(data.get('categoria_id'))
+            if error_categoria:
+                return _auth_response({'ok': False, 'message': error_categoria}, status=400)
+
+        ingredient.categoria = categoria
         ingredient.nombre = nombre
         ingredient.unidad_medida = unidad
         ingredient.ultimo_proveedor = proveedor
@@ -2810,7 +2870,7 @@ def admin_catalog_view(request):
         ingredient.rendimiento_ingrediente_crudo = rendimiento_ingrediente_crudo_value
         ingredient.actualizado_por = request.user
         ingredient.save(update_fields=[
-            'nombre', 'unidad_medida', 'ultimo_proveedor', 'stock_actual', 'stock_minimo', 'costo_unitario',
+            'nombre', 'categoria', 'unidad_medida', 'ultimo_proveedor', 'stock_actual', 'stock_minimo', 'costo_unitario',
             'contenido_envase', 'peso_real', 'precio_compra', 'ingrediente_crudo_equivalente', 'rendimiento_ingrediente_crudo',
             'actualizado_por', 'fecha_actualizacion',
         ])

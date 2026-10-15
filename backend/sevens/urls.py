@@ -92,6 +92,7 @@ from .compras_views import (
     cuentas_por_pagar_view,
 )
 from .cashea_views import cashea_pendientes_view, liquidaciones_cashea_view
+from .categorias_inventario_views import admin_categorias_inventario_view
 from .contabilidad_views import (
     admin_ingresos_no_facturados_view,
     admin_lotes_pos_view,
@@ -183,6 +184,7 @@ urlpatterns = [
     path('admin/productos/', admin_products_view, name='admin_productos'),
     path('admin/recetas/', admin_recipes_view, name='admin_recetas'),
     path('admin/categorias/', admin_categorias_view, name='admin_categorias'),
+    path('admin/categorias-inventario/', admin_categorias_inventario_view, name='admin_categorias_inventario'),
     path('admin/configuracion-costeo/', admin_configuracion_costeo_view, name='admin_configuracion_costeo'),
     path('admin/promociones/', admin_promotions_view, name='admin_promociones'),
     path('admin/recomendaciones-chef/', admin_chef_recommendations_view, name='admin_recomendaciones_chef'),
