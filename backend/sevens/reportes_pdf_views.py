@@ -21,10 +21,17 @@ from .auth_helpers import _auth_response, _is_admin_user, _is_cajera_user
 from .contabilidad_views import MAX_DIAS_RANGO_CUADRE_CAJA, _parse_rango_o_fecha_reporte
 from .facturacion_views import _serialize_nota_entrega
 from .gastos_views import _parse_fecha, _serialize_gasto
-from .models import VGCategoriaIngrediente, VGCompra, VGGasto, VGIngrediente, VGNotaEntrega, VGPago
+from .activos_views import filas_inventario_general
+from .inventario_movimientos_views import (
+    ParametrosInvalidos, detalle_movimientos, leer_parametros, resumen_por_articulo,
+)
+from .models import (
+    VGCategoriaActivo, VGCategoriaIngrediente, VGCompra, VGGasto, VGIngrediente, VGMovimientoActivo, VGNotaEntrega, VGPago,
+)
 from .cashea_views import _cuenta_cashea, _serialize_pendiente
 from .pdf_reportes import (
-    generar_pdf_cashea_por_cobrar, generar_pdf_cuentas_por_cobrar, generar_pdf_cuentas_por_pagar, generar_pdf_facturado, generar_pdf_gastos,
+    generar_pdf_cashea_por_cobrar, generar_pdf_comprobante_entrega, generar_pdf_cuentas_por_cobrar,
+    generar_pdf_inventario_general, generar_pdf_inventario_movimientos, generar_pdf_cuentas_por_pagar, generar_pdf_facturado, generar_pdf_gastos,
     generar_pdf_inventario, generar_pdf_margen_por_plato,
 )
 from .reportes import detalle_ventas_rango
@@ -452,3 +459,98 @@ def reporte_cashea_por_cobrar_pdf_view(request):
     else:
         nombre.append(f'{ahora:%Y-%m-%d}')
     return responder_pdf(pdf, '-'.join(nombre), con_fecha=False)
+
+
+@pdf_solo_admin
+def reporte_inventario_general_pdf_view(request):
+    """
+    PDF del inventario general: ingredientes y/o utensilios y equipos, con el mismo filtro que la
+    pantalla «Todo el inventario» (tipo, categoria y texto; ver activos_views.filas_inventario_general).
+    Cada tipo va en su bloque con su subtotal; los valores no se mezclan en un solo total.
+    """
+    tipo = (request.GET.get('tipo') or 'todo').strip().lower()
+    if tipo not in ('todo', 'ingredientes', 'utensilios'):
+        return _auth_response({'ok': False, 'message': 'El tipo debe ser todo, ingredientes o utensilios.'}, status=400)
+    ingredientes, utensilios = filas_inventario_general(request.GET)
+
+    partes = []
+    categoria = (request.GET.get('categoria') or '').strip().lower()
+    if categoria == 'sin':
+        partes.append('Sin categoría')
+    elif categoria[:2] in ('i:', 'a:'):
+        modelo = VGCategoriaIngrediente if categoria.startswith('i:') else VGCategoriaActivo
+        try:
+            partes.append(f'Categoría: {modelo.objects.get(pk=int(categoria[2:])).nombre}')
+        except (ValueError, modelo.DoesNotExist):
+            return _auth_response({'ok': False, 'message': 'La categoría no existe.'}, status=400)
+    texto = ' '.join((request.GET.get('q') or '').split())
+    if texto:
+        partes.append(f'Búsqueda: {texto}')
+
+    ahora = timezone.localtime()
+    pdf = generar_pdf_inventario_general(
+        ingredientes, utensilios, tipo=tipo, subtitulo=' · '.join(partes) or None, generado_en=ahora,
+    )
+    nombre = {'todo': 'inventario-general', 'ingredientes': 'inventario-ingredientes', 'utensilios': 'utensilios-y-equipos'}[tipo]
+    return responder_pdf(pdf, nombre, ahora)
+
+
+@pdf_solo_admin
+def comprobante_entrega_activo_pdf_view(request, movimiento_id):
+    """Comprobante imprimible de una entrega de dotacion a un empleado (VGMovimientoActivo tipo 'entrega')."""
+    try:
+        movimiento = VGMovimientoActivo.objects.select_related('activo_ref__categoria', 'creado_por').get(
+            pk=movimiento_id, tipo='entrega',
+        )
+    except VGMovimientoActivo.DoesNotExist:
+        return _auth_response({'ok': False, 'message': 'La entrega no existe.'}, status=404)
+
+    activo = movimiento.activo_ref
+    entregador = movimiento.creado_por
+    pdf = generar_pdf_comprobante_entrega({
+        'codigo': movimiento.codigo_comprobante,
+        'fecha': timezone.localtime(movimiento.fecha_creacion),
+        'receptor': movimiento.receptor,
+        'articulo': activo.nombre,
+        'categoria': activo.categoria.nombre if activo.categoria_id else '',
+        'cantidad': abs(movimiento.delta),
+        'motivo': movimiento.motivo,
+        'entregado_por': (entregador.get_full_name() or entregador.username) if entregador else '',
+    }, generado_en=timezone.localtime())
+    return responder_pdf(pdf, f'comprobante-{movimiento.codigo_comprobante}', con_fecha=False)
+
+
+@pdf_solo_admin
+def reporte_inventario_movimientos_pdf_view(request):
+    """
+    PDF de los movimientos del inventario (ingredientes y utensilios) de un rango de fechas, con el mismo
+    filtro que la pantalla «Movimientos del inventario» (origen, tipo, texto y receptor): el resumen por
+    articulo y el detalle de cada movimiento. Ver inventario_movimientos_views.
+    """
+    try:
+        p = leer_parametros(request.GET)
+    except ParametrosInvalidos as error:
+        return _auth_response({'ok': False, 'message': str(error)}, status=400)
+
+    resumen = resumen_por_articulo(p)
+    detalle, total = detalle_movimientos(p, limite=1500)
+    for fila in detalle:
+        fila['fecha'] = timezone.localtime(fila['fecha'])
+
+    partes = []
+    if p['origen'] != 'todo':
+        partes.append({'utensilios': 'Solo utensilios y equipos', 'ingredientes': 'Solo ingredientes'}[p['origen']])
+    if p['tipo']:
+        partes.append(f"Movimiento: {p['tipo']}")
+    if p['q']:
+        partes.append(f"Artículo: {p['q']}")
+    if p['receptor']:
+        partes.append(f"Recibió: {p['receptor']}")
+
+    ahora = timezone.localtime()
+    pdf = generar_pdf_inventario_movimientos(
+        resumen, detalle, total, p['desde'], p['hasta'], filtros=' · '.join(partes), generado_en=ahora,
+    )
+    return responder_pdf(
+        pdf, f"movimientos-inventario-{p['desde']:%Y-%m-%d}-al-{p['hasta']:%Y-%m-%d}", con_fecha=False,
+    )

@@ -6120,3 +6120,469 @@ class CategoriasInventarioTests(TestCase):
         ])
         self.assertEqual([f['categoria'] for f in filas], ['Carnes', ''])
         self.assertEqual(total, Decimal('9.00'))
+
+
+class ActivosUtensiliosTests(TestCase):
+    """Utensilios y equipos: aparte de los ingredientes, con movimientos de cantidad y comprobante de entrega."""
+
+    ACTIVOS = '/api/admin/activos/'
+    CATEGORIAS = '/api/admin/categorias-activos/'
+    GENERAL = '/api/admin/inventario-general/'
+    PDF_GENERAL = '/api/admin/reportes/inventario-general-pdf/'
+
+    def setUp(self):
+        from sevens.models import VGIngrediente
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='act_admin', password='claveAdmin123', cedula='95000041',
+            email='act_admin@sevens.test', id_role=admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='act_cajera', password='claveCajera123', cedula='95000042',
+            email='act_cajera@sevens.test', id_role=cajera_role,
+        )
+        self.client.force_login(self.admin)
+        self.sal = VGIngrediente.objects.create(
+            nombre='Sal ACT', unidad_medida='g', stock_actual='1000', costo_unitario='0.002',
+        )
+
+    def _post(self, url, cuerpo):
+        return self.client.post(url, data=json.dumps(cuerpo), content_type='application/json')
+
+    def _categoria(self, nombre):
+        r = self._post(self.CATEGORIAS, {'action': 'create', 'nombre': nombre})
+        self.assertEqual(r.status_code, 201, r.content)
+        return next(c['id'] for c in r.json()['categorias'] if c['nombre'] == nombre)
+
+    def _crear(self, nombre, **extra):
+        cuerpo = {'action': 'create', 'nombre': nombre, 'tipo': 'equipo', 'cantidad': 0, **extra}
+        r = self._post(self.ACTIVOS, cuerpo)
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.json()['activo']
+
+    def _mover(self, activo_id, tipo, cantidad, **extra):
+        return self._post(self.ACTIVOS, {'action': 'movimiento', 'id': activo_id, 'tipo': tipo, 'cantidad': cantidad, **extra})
+
+    # --- artículos -------------------------------------------------------------------------
+    def test_crear_modificar_y_eliminar_un_articulo(self):
+        from sevens.models import VGActivo, VGMovimientoActivo
+        uniformes = self._categoria('Uniformes')
+        franela = self._crear(
+            'Franela M', tipo='dotacion', categoria_id=uniformes, cantidad=10, cantidad_minima=3,
+            ubicacion='Almacén', valor_unitario='4.50', proveedor='Textiles X',
+        )
+        self.assertEqual(franela['cantidad'], 10)
+        self.assertEqual(franela['valor_total'], '45.00')
+        # La existencia inicial queda como una entrada con su motivo.
+        mov = VGMovimientoActivo.objects.get()
+        self.assertEqual((mov.tipo, mov.delta, mov.cantidad_resultante), ('entrada', 10, 10))
+
+        # Nombre repetido (sin importar mayúsculas), estado o tipo inválidos y valor negativo se rechazan.
+        self.assertEqual(self._post(self.ACTIVOS, {'action': 'create', 'nombre': 'franela m'}).status_code, 400)
+        self.assertEqual(self._post(self.ACTIVOS, {'action': 'create', 'nombre': 'X', 'estado': 'roto'}).status_code, 400)
+        self.assertEqual(self._post(self.ACTIVOS, {'action': 'create', 'nombre': 'X', 'tipo': 'otro'}).status_code, 400)
+        self.assertEqual(self._post(self.ACTIVOS, {'action': 'create', 'nombre': 'X', 'valor_unitario': '-1'}).status_code, 400)
+
+        # Modificar NO cambia la cantidad (eso solo lo hacen los movimientos).
+        r = self._post(self.ACTIVOS, {
+            'action': 'update', 'id': franela['id'], 'nombre': 'Franela M roja', 'tipo': 'dotacion',
+            'estado': 'regular', 'cantidad': 999, 'ubicacion': 'Caja',
+        })
+        self.assertEqual(r.status_code, 200, r.content)
+        activo = VGActivo.objects.get(pk=franela['id'])
+        self.assertEqual((activo.nombre, activo.estado, activo.ubicacion, activo.cantidad), ('Franela M roja', 'regular', 'Caja', 10))
+
+        r = self._post(self.ACTIVOS, {'action': 'delete', 'id': franela['id']})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(VGActivo.objects.count(), 0)
+        self.assertEqual(VGMovimientoActivo.objects.count(), 0)
+
+    def test_solo_administradores_y_sin_token_csrf(self):
+        self.client.logout()
+        self.assertEqual(self.client.get(self.ACTIVOS).status_code, 401)
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.client.get(self.ACTIVOS).status_code, 401)
+        self.assertEqual(self.client.get(self.CATEGORIAS).status_code, 401)
+        self.assertEqual(self.client.get(self.GENERAL).status_code, 401)
+        self.assertEqual(self._post(self.ACTIVOS, {'action': 'create', 'nombre': 'X'}).status_code, 401)
+
+        from django.test import Client
+        cliente = Client(enforce_csrf_checks=True)
+        cliente.force_login(self.admin)
+        r = cliente.post(self.ACTIVOS, data=json.dumps({'action': 'create', 'nombre': 'Sin token'}), content_type='application/json')
+        self.assertEqual(r.status_code, 201, r.content)
+
+    # --- movimientos -------------------------------------------------------------------------
+    def test_entrega_a_empleado_descuenta_y_genera_comprobante(self):
+        franela = self._crear('Franela L', tipo='dotacion', cantidad=5)
+        # Sin receptor no se puede entregar; tampoco más de lo que hay.
+        self.assertEqual(self._mover(franela['id'], 'entrega', 2).status_code, 400)
+        self.assertEqual(self._mover(franela['id'], 'entrega', 6, receptor='Ana').status_code, 400)
+        self.assertEqual(self._mover(franela['id'], 'entrega', 0, receptor='Ana').status_code, 400)
+
+        r = self._mover(franela['id'], 'entrega', 2, receptor='  Ana   Pérez ', motivo='Dotación inicial')
+        self.assertEqual(r.status_code, 201, r.content)
+        data = r.json()
+        self.assertEqual(data['activo']['cantidad'], 3)
+        self.assertEqual(data['movimiento']['receptor'], 'Ana Pérez')
+        self.assertEqual(data['movimiento']['comprobante'], 'ENT-000001')
+        r = self._mover(franela['id'], 'entrega', 1, receptor='Luis')
+        self.assertEqual(r.json()['movimiento']['comprobante'], 'ENT-000002')
+
+        historial = self.client.get(f'{self.ACTIVOS}?movimientos_de={franela["id"]}').json()
+        self.assertEqual([m['tipo'] for m in historial['movimientos']], ['entrega', 'entrega', 'entrada'])
+        self.assertEqual(historial['activo']['cantidad'], 2)
+
+    def test_baja_entrada_y_ajuste_de_conteo(self):
+        plato = self._crear('Plato hondo', cantidad=20)
+        # La baja pide motivo; la entrada suma; el ajuste fija la existencia contada.
+        self.assertEqual(self._mover(plato['id'], 'baja', 3).status_code, 400)
+        r = self._mover(plato['id'], 'baja', 3, motivo='Se rompieron en el lavado')
+        self.assertEqual(r.json()['activo']['cantidad'], 17)
+        r = self._mover(plato['id'], 'entrada', 10, motivo='Compra nueva')
+        self.assertEqual(r.json()['activo']['cantidad'], 27)
+        self.assertEqual(self._mover(plato['id'], 'ajuste', 27, motivo='Conteo').status_code, 400)  # no cambia nada
+        self.assertEqual(self._mover(plato['id'], 'ajuste', 25).status_code, 400)  # falta el motivo
+        r = self._mover(plato['id'], 'ajuste', 25, motivo='Conteo de fin de mes')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual((r.json()['activo']['cantidad'], r.json()['movimiento']['delta']), (25, -2))
+        self.assertEqual(self._mover(plato['id'], 'baja', 26, motivo='x').status_code, 400)  # más de lo que hay
+        self.assertEqual(self._mover(plato['id'], 'otro', 1).status_code, 400)
+
+    def test_listado_filtros_y_alerta_de_minimo(self):
+        uniformes = self._categoria('Uniformes')
+        cocina = self._categoria('Cocina')
+        self._crear('Franela S', tipo='dotacion', categoria_id=uniformes, cantidad=2, cantidad_minima=5, ubicacion='Almacén')
+        self._crear('Nevera vertical', tipo='equipo', categoria_id=cocina, cantidad=1, ubicacion='Cocina', serial='NV-123')
+        self._crear('Mesa suelta', tipo='equipo', cantidad=4)
+
+        def listar(**params):
+            consulta = '&'.join(f'{k}={v}' for k, v in params.items())
+            return self.client.get(f'{self.ACTIVOS}?{consulta}').json()
+
+        todo = listar()
+        self.assertEqual(todo['resumen']['articulos'], 3)
+        self.assertEqual(todo['resumen']['unidades'], 7)
+        self.assertEqual(todo['resumen']['bajo_minimo'], 1)
+        self.assertEqual([a['nombre'] for a in listar(tipo='dotacion')['activos']], ['Franela S'])
+        self.assertEqual([a['nombre'] for a in listar(categoria_id=cocina)['activos']], ['Nevera vertical'])
+        self.assertEqual([a['nombre'] for a in listar(categoria_id='sin')['activos']], ['Mesa suelta'])
+        self.assertEqual([a['nombre'] for a in listar(q='nv-123')['activos']], ['Nevera vertical'])
+        self.assertEqual([a['nombre'] for a in listar(ubicacion='almacén')['activos']], ['Franela S'])
+        self.assertTrue(next(a for a in todo['activos'] if a['nombre'] == 'Franela S')['bajo_minimo'])
+        self.assertEqual(set(todo['ubicaciones']), {'Almacén', 'Cocina'})
+
+    # --- categorías ---------------------------------------------------------------------------
+    def test_categorias_de_utensilios(self):
+        cocina = self._categoria('Cocina')
+        self.assertEqual(self._post(self.CATEGORIAS, {'action': 'create', 'nombre': 'cocina'}).status_code, 400)
+        self.assertEqual(self._post(self.CATEGORIAS, {'action': 'create', 'nombre': ' '}).status_code, 400)
+        r = self._post(self.CATEGORIAS, {'action': 'update', 'id': cocina, 'nombre': 'Equipos de cocina'})
+        self.assertEqual(r.status_code, 200)
+        self._crear('Nevera', categoria_id=cocina)
+        # Con artículos no se puede eliminar; vacía, sí.
+        self.assertEqual(self._post(self.CATEGORIAS, {'action': 'delete', 'id': cocina}).status_code, 400)
+        vacia = self._categoria('Vacía')
+        r = self._post(self.CATEGORIAS, {'action': 'delete', 'id': vacia})
+        self.assertEqual(r.status_code, 200)
+        listado = self.client.get(self.CATEGORIAS).json()
+        self.assertEqual([c['nombre'] for c in listado['categorias']], ['Equipos de cocina'])
+        self.assertEqual(listado['categorias'][0]['articulos'], 1)
+
+    # --- aislamiento de los ingredientes y del estado de resultados -------------------------
+    def test_los_utensilios_no_tocan_ingredientes_ni_estado_de_resultados(self):
+        from sevens.models import VGIngrediente
+        url_er = '/api/admin/reportes/estado-resultados/?desde=2026-01-01&hasta=2026-12-31'
+        antes_er = self.client.get(url_er).json()
+        antes_cat = self.client.get('/api/admin/catalogo/').json()
+
+        nevera = self._crear('Nevera grande', cantidad=2, valor_unitario='800.00')
+        franela = self._crear('Franela XL', tipo='dotacion', cantidad=10, valor_unitario='5.00')
+        self._mover(franela['id'], 'entrega', 4, receptor='Ana')
+        self._mover(nevera['id'], 'baja', 1, motivo='Se dañó el compresor')
+
+        self.assertEqual(self.client.get(url_er).json(), antes_er)
+        despues_cat = self.client.get('/api/admin/catalogo/').json()
+        self.assertEqual(despues_cat['inventory'], antes_cat['inventory'])
+        self.assertEqual(VGIngrediente.objects.count(), 1)
+        self.sal.refresh_from_db()
+        self.assertEqual(self.sal.stock_actual, Decimal('1000.00'))
+        # El inventario de ingredientes (PDF/catalogo) no lista utensilios.
+        nombres = {item['nombre'] for item in despues_cat['inventory']}
+        self.assertNotIn('Nevera grande', nombres)
+
+    # --- vista combinada y PDF -----------------------------------------------------------------
+    def test_inventario_general_junto_o_separado_y_por_categoria(self):
+        from sevens.models import VGCategoriaIngrediente
+        condimentos = VGCategoriaIngrediente.objects.create(nombre='Condimentos ACT')
+        self.sal.categoria = condimentos
+        self.sal.save()
+        cocina = self._categoria('Cocina')
+        self._crear('Nevera', categoria_id=cocina, cantidad=2, valor_unitario='500')
+        self._crear('Mesa', cantidad=3, valor_unitario='50')
+
+        def pedir(**params):
+            consulta = '&'.join(f'{k}={v}' for k, v in params.items())
+            return self.client.get(f'{self.GENERAL}?{consulta}').json()
+
+        todo = pedir()
+        self.assertEqual([f['nombre'] for f in todo['ingredientes']], ['Sal ACT'])
+        self.assertEqual({f['nombre'] for f in todo['utensilios']}, {'Nevera', 'Mesa'})
+        self.assertEqual(todo['resumen']['valor_utensilios'], '1150.00')
+        self.assertEqual(todo['resumen']['valor_ingredientes'], '2.00')  # 1000 g x 0.002
+
+        self.assertEqual(pedir(tipo='ingredientes')['utensilios'], [])
+        self.assertEqual(pedir(tipo='utensilios')['ingredientes'], [])
+        # Una categoria de ingredientes deja fuera a los utensilios, y al reves.
+        por_ing = pedir(categoria=f'i:{condimentos.id}')
+        self.assertEqual((len(por_ing['ingredientes']), len(por_ing['utensilios'])), (1, 0))
+        por_act = pedir(categoria=f'a:{cocina}')
+        self.assertEqual(([f['nombre'] for f in por_act['utensilios']], por_act['ingredientes']), (['Nevera'], []))
+        self.assertEqual([f['nombre'] for f in pedir(categoria='sin')['utensilios']], ['Mesa'])
+        self.assertEqual([f['nombre'] for f in pedir(q='nevera')['utensilios']], ['Nevera'])
+
+    def test_los_pdf_del_inventario_general_y_el_comprobante(self):
+        franela = self._crear('Franela PDF', tipo='dotacion', cantidad=5, valor_unitario='4.00')
+        self._crear('Mesa PDF', cantidad=2, valor_unitario='60')
+        entrega = self._mover(franela['id'], 'entrega', 2, receptor='Ana Pérez', motivo='Dotación').json()['movimiento']
+        baja = self._mover(franela['id'], 'baja', 1, motivo='Se perdió').json()['movimiento']
+
+        for tipo, nombre in (('todo', 'inventario-general'), ('ingredientes', 'inventario-ingredientes'), ('utensilios', 'utensilios-y-equipos')):
+            r = self.client.get(f'{self.PDF_GENERAL}?tipo={tipo}')
+            self.assertEqual(r.status_code, 200, tipo)
+            self.assertTrue(r.content.startswith(b'%PDF'))
+            self.assertIn(f'filename="{nombre}-', r['Content-Disposition'])
+        self.assertEqual(self.client.get(f'{self.PDF_GENERAL}?tipo=otro').status_code, 400)
+        self.assertEqual(self.client.get(f'{self.PDF_GENERAL}?categoria=a:99999').status_code, 400)
+
+        r = self.client.get(f'/api/admin/activos/entregas/{entrega["id"]}/comprobante-pdf/')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.content.startswith(b'%PDF'))
+        self.assertIn('comprobante-ENT-000001', r['Content-Disposition'])
+        # Solo las entregas tienen comprobante.
+        self.assertEqual(self.client.get(f'/api/admin/activos/entregas/{baja["id"]}/comprobante-pdf/').status_code, 404)
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.client.get(f'/api/admin/activos/entregas/{entrega["id"]}/comprobante-pdf/').status_code, 401)
+
+    def test_el_pdf_general_no_mezcla_los_totales(self):
+        from sevens.pdf_reportes import generar_pdf_inventario_general
+        ingredientes = [{'origen': 'ingrediente', 'nombre': 'Sal', 'categoria': 'Condimentos', 'cantidad': Decimal('1000'),
+                         'unidad': 'g', 'valor_total': Decimal('2.00')}]
+        utensilios = [{'origen': 'utensilio', 'nombre': 'Nevera', 'categoria': '', 'cantidad': 2, 'unidad': 'unidad',
+                       'ubicacion': 'Cocina', 'estado': 'Bueno', 'valor_unitario': Decimal('500'),
+                       'valor_total': Decimal('1000.00')}]
+        for tipo in ('todo', 'ingredientes', 'utensilios'):
+            self.assertTrue(generar_pdf_inventario_general(ingredientes, utensilios, tipo=tipo).startswith(b'%PDF'))
+        # Sin datos tambien genera el documento.
+        self.assertTrue(generar_pdf_inventario_general([], [], tipo='todo').startswith(b'%PDF'))
+
+
+class InventarioMovimientosTests(TestCase):
+    """Movimientos del inventario: ingredientes y utensilios, resumen que cuadra con el stock y PDF."""
+
+    URL = '/api/admin/inventario-movimientos/'
+    PDF = '/api/admin/reportes/inventario-movimientos-pdf/'
+
+    def setUp(self):
+        from sevens.models import VGIngrediente, VGMovimientoInventario
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='mov_admin', password='claveAdmin123', cedula='95000051',
+            email='mov_admin@sevens.test', id_role=admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='mov_cajera', password='claveCajera123', cedula='95000052',
+            email='mov_cajera@sevens.test', id_role=cajera_role,
+        )
+        self.client.force_login(self.admin)
+        self.hoy = timezone.localdate()
+
+        # Ingrediente con stock actual 800 g: 1000 de compra, -300 de venta y +100 de ajuste.
+        self.harina = VGIngrediente.objects.create(nombre='Harina MOV', unidad_medida='g', stock_actual='800', costo_unitario='0.01')
+        for tipo, cantidad, motivo in (('entrada', '1000', 'Compra registrada #1'), ('salida', '300', 'Venta — Pedido #5'), ('ajuste', '100', 'Ajuste de inventario #2')):
+            VGMovimientoInventario.objects.create(
+                ingrediente=self.harina, tipo_movimiento=tipo, cantidad=cantidad, motivo=motivo, creado_por=self.admin,
+            )
+
+    def _post(self, cuerpo):
+        return self.client.post('/api/admin/activos/', data=json.dumps(cuerpo), content_type='application/json')
+
+    def _utensilio(self):
+        r = self._post({'action': 'create', 'nombre': 'Franela MOV', 'tipo': 'dotacion', 'cantidad': 10})
+        activo = r.json()['activo']
+        self._post({'action': 'movimiento', 'id': activo['id'], 'tipo': 'entrega', 'cantidad': 2, 'receptor': 'Ana'})
+        self._post({'action': 'movimiento', 'id': activo['id'], 'tipo': 'baja', 'cantidad': 1, 'motivo': 'Se perdió'})
+        self._post({'action': 'movimiento', 'id': activo['id'], 'tipo': 'ajuste', 'cantidad': 6, 'motivo': 'Conteo'})
+        return activo['id']
+
+    def _consultar(self, **params):
+        base = {'desde': self.hoy.isoformat(), 'hasta': self.hoy.isoformat()}
+        consulta = '&'.join(f'{k}={v}' for k, v in {**base, **params}.items())
+        return self.client.get(f'{self.URL}?{consulta}')
+
+    def test_el_resumen_cuadra_con_el_stock_actual_de_ingredientes_y_utensilios(self):
+        self._utensilio()
+        data = self._consultar().json()
+        por_nombre = {f['nombre']: f for f in data['resumen']}
+
+        harina = por_nombre['Harina MOV']
+        # Inicial 0 + 1000 entrada - 300 salida + 100 ajuste = 800 (el stock actual).
+        self.assertEqual((harina['inicial'], harina['entradas'], harina['salidas'], harina['ajustes'], harina['final'], harina['actual']),
+                         ('0', '1000', '300', '100', '800', '800'))
+
+        franela = por_nombre['Franela MOV']
+        # 10 de existencia inicial (entrada) - 2 entregadas - 1 baja, y un conteo que lo deja en 6 (ajuste -1).
+        self.assertEqual(franela['origen'], 'utensilio')
+        self.assertEqual((franela['entradas'], franela['salidas'], franela['bajas'], franela['ajustes'], franela['final'], franela['actual']),
+                         ('10', '2', '1', '-1', '6', '6'))
+        self.assertEqual(Decimal(franela['inicial']) + Decimal(franela['entradas']) - Decimal(franela['salidas'])
+                         - Decimal(franela['bajas']) + Decimal(franela['ajustes']), Decimal(franela['final']))
+        self.assertEqual(data['totales']['utensilio']['articulos'], 1)
+
+    def test_las_existencias_se_calculan_hacia_atras_con_los_movimientos_de_otras_fechas(self):
+        from datetime import timedelta
+        from sevens.models import VGMovimientoInventario
+        # Un movimiento anterior al rango (ayer) y uno posterior (mañana): el inicial incluye el pasado y el final excluye el futuro.
+        ayer = timezone.now() - timedelta(days=1)
+        VGMovimientoInventario.objects.filter(ingrediente=self.harina, tipo_movimiento='entrada').update(fecha_movimiento=ayer)
+        manana = timezone.now() + timedelta(days=1)
+        futuro = VGMovimientoInventario.objects.create(
+            ingrediente=self.harina, tipo_movimiento='salida', cantidad='50', motivo='Venta futura', creado_por=self.admin,
+        )
+        VGMovimientoInventario.objects.filter(pk=futuro.pk).update(fecha_movimiento=manana)
+        self.harina.stock_actual = Decimal('750')  # 800 - 50 de la venta de mañana
+        self.harina.save()
+
+        fila = {f['nombre']: f for f in self._consultar().json()['resumen']}['Harina MOV']
+        # En el rango de hoy: -300 de salida y +100 de ajuste. Final de hoy = 750 + 50 = 800; inicial = 800 + 300 - 100 = 1000.
+        self.assertEqual((fila['inicial'], fila['salidas'], fila['ajustes'], fila['final'], fila['actual']),
+                         ('1000', '300', '100', '800', '750'))
+
+    def test_detalle_filtros_y_paginacion(self):
+        self._utensilio()
+        data = self._consultar().json()
+        # 3 de ingrediente + (entrada inicial, entrega, baja, ajuste) = 7
+        self.assertEqual(data['total_movimientos'], 7)
+        tipos = {(m['articulo'], m['tipo']) for m in data['movimientos']}
+        self.assertIn(('Harina MOV', 'salida'), tipos)
+        self.assertIn(('Franela MOV', 'entrega'), tipos)
+        entrega = next(m for m in data['movimientos'] if m['tipo'] == 'entrega')
+        self.assertEqual((entrega['delta'], entrega['receptor'], entrega['comprobante']), ('-2', 'Ana', 'ENT-000001'))
+        salida = next(m for m in data['movimientos'] if m['tipo'] == 'salida')
+        self.assertEqual(salida['delta'], '-300')  # las salidas de ingredientes se muestran en negativo
+
+        self.assertEqual({m['articulo'] for m in self._consultar(origen='ingredientes').json()['movimientos']}, {'Harina MOV'})
+        self.assertEqual({m['articulo'] for m in self._consultar(origen='utensilios').json()['movimientos']}, {'Franela MOV'})
+        self.assertEqual([m['tipo'] for m in self._consultar(tipo='baja').json()['movimientos']], ['baja'])
+        self.assertEqual({m['articulo'] for m in self._consultar(tipo='salida').json()['movimientos']}, {'Harina MOV'})
+        self.assertEqual([m['articulo'] for m in self._consultar(receptor='ana').json()['movimientos']], ['Franela MOV'])
+        self.assertEqual({m['articulo'] for m in self._consultar(q='harina').json()['movimientos']}, {'Harina MOV'})
+        # Con un filtro de tipo el resumen sigue sumando TODOS los movimientos del articulo (cuadra igual).
+        filtrado = {f['nombre']: f for f in self._consultar(tipo='entrada').json()['resumen']}['Harina MOV']
+        self.assertEqual((filtrado['salidas'], filtrado['final']), ('300', '800'))
+
+        pagina = self._consultar().json()
+        self.assertEqual((pagina['pagina'], pagina['paginas']), (1, 1))
+
+    def test_validaciones_y_permisos(self):
+        self.assertEqual(self._consultar(origen='otro').status_code, 400)
+        self.assertEqual(self._consultar(tipo='raro').status_code, 400)
+        self.assertEqual(self.client.get(f'{self.URL}?desde=2026-10-10&hasta=2026-10-01').status_code, 400)
+        self.assertEqual(self.client.get(f'{self.URL}?desde=no').status_code, 400)
+        self.client.force_login(self.cajera)
+        self.assertEqual(self._consultar().status_code, 401)
+        self.assertEqual(self.client.get(self.PDF).status_code, 401)
+
+    def test_el_pdf_de_movimientos(self):
+        self._utensilio()
+        desde = self.hoy.isoformat()
+        r = self.client.get(f'{self.PDF}?desde={desde}&hasta={desde}')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r['Content-Type'], 'application/pdf')
+        self.assertTrue(r.content.startswith(b'%PDF'))
+        self.assertIn(f'movimientos-inventario-{desde}-al-{desde}', r['Content-Disposition'])
+        r = self.client.get(f'{self.PDF}?desde={desde}&hasta={desde}&origen=utensilios&tipo=entrega')
+        self.assertEqual(r.status_code, 200)
+        # Un rango sin movimientos igual genera el documento.
+        self.assertTrue(self.client.get(f'{self.PDF}?desde=2020-01-01&hasta=2020-01-07').content.startswith(b'%PDF'))
+        self.assertEqual(self.client.get(f'{self.PDF}?origen=otro').status_code, 400)
+
+    def test_el_detalle_del_pdf_se_recorta_pero_el_resumen_no(self):
+        from sevens.pdf_reportes import generar_pdf_inventario_movimientos
+        from sevens.pdf_reportes.inventario_movimientos import MAX_FILAS_DETALLE
+        from datetime import datetime
+        resumen = [{'origen': 'ingrediente', 'nombre': 'Harina', 'inicial': Decimal('0'), 'entradas': Decimal('10'),
+                    'salidas': Decimal('0'), 'bajas': Decimal('0'), 'ajustes': Decimal('0'), 'final': Decimal('10'),
+                    'actual': Decimal('10')}]
+        detalle = [{'fecha': datetime(2026, 10, 1, 9, 0), 'articulo': 'Harina', 'tipo': 'entrada', 'delta': Decimal('1'),
+                    'motivo': 'x', 'receptor': '', 'registrado_por': 'a', 'comprobante': ''}] * (MAX_FILAS_DETALLE + 5)
+        pdf = generar_pdf_inventario_movimientos(
+            resumen, detalle, MAX_FILAS_DETALLE + 5, self.hoy, self.hoy,
+        )
+        self.assertTrue(pdf.startswith(b'%PDF'))
+
+
+class StockDeIngredienteNoSeEditaAManoTests(TestCase):
+    """El stock de un ingrediente solo cambia por movimientos (compras, ventas, ajustes), nunca editandolo a mano."""
+
+    CATALOGO = '/api/admin/catalogo/'
+
+    def setUp(self):
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='stk_admin', password='claveAdmin123', cedula='95000061',
+            email='stk_admin@sevens.test', id_role=admin_role,
+        )
+        self.client.force_login(self.admin)
+        self.harina = VGIngrediente.objects.create(
+            nombre='Harina STK', unidad_medida='g', stock_actual='800', stock_minimo='100', costo_unitario='0.01',
+        )
+
+    def _post(self, cuerpo):
+        return self.client.post(self.CATALOGO, data=json.dumps(cuerpo), content_type='application/json')
+
+    def _actualizar(self, **extra):
+        return self._post({'tipo': 'actualizar_ingrediente', 'id': self.harina.id, 'nombre': 'Harina STK', 'unidad': 'g', **extra})
+
+    def test_un_cambio_de_stock_a_mano_se_rechaza_y_no_toca_nada(self):
+        r = self._actualizar(stock_actual='5000')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('no se cambia a mano', r.json()['message'])
+        self.harina.refresh_from_db()
+        self.assertEqual(self.harina.stock_actual, Decimal('800'))
+        self.assertEqual(self.harina.movimientos.count(), 0)
+
+    def test_editar_los_demas_datos_sigue_funcionando_y_no_mueve_el_stock(self):
+        # Sin la clave de stock, o enviando el mismo valor que ya hay (una pantalla vieja), se guarda lo demas.
+        r = self._actualizar(nombre='Harina STK', stock_minimo='150', proveedor='Molinos X')
+        self.assertEqual(r.status_code, 200, r.content)
+        r = self._actualizar(stock_actual='800.00', stock_minimo='200', proveedor='Molinos X')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.harina.refresh_from_db()
+        self.assertEqual((self.harina.stock_actual, self.harina.stock_minimo), (Decimal('800'), Decimal('200')))
+        self.assertEqual(self.harina.ultimo_proveedor, 'Molinos X')
+        self.assertEqual(self.harina.movimientos.count(), 0)
+
+    def test_un_stock_enviado_invalido_se_rechaza(self):
+        self.assertEqual(self._actualizar(stock_actual='abc').status_code, 400)
+
+    def test_el_stock_inicial_al_crear_deja_su_movimiento(self):
+        r = self._post({
+            'tipo': 'crear_ingrediente', 'nombre': 'Azucar STK', 'unidad': 'g', 'stock_actual': '2500',
+            'contenido_envase': '1000', 'peso_real': '1000', 'precio_compra': '3',
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+        azucar = VGIngrediente.objects.get(nombre='Azucar STK')
+        mov = azucar.movimientos.get()
+        self.assertEqual((mov.tipo_movimiento, mov.cantidad, mov.creado_por_id), ('entrada', Decimal('2500'), self.admin.id))
+        self.assertIn('Existencia inicial', mov.motivo)
+
+        # Sin stock inicial no hay movimiento que registrar.
+        r = self._post({
+            'tipo': 'crear_ingrediente', 'nombre': 'Sal STK', 'unidad': 'g', 'stock_actual': '0',
+            'contenido_envase': '1000', 'peso_real': '1000', 'precio_compra': '1',
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(VGIngrediente.objects.get(nombre='Sal STK').movimientos.count(), 0)

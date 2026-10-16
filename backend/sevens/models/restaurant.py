@@ -330,6 +330,117 @@ class VGIngrediente(VGAuditoria):
         return self.nombre
 
 
+class VGCategoriaActivo(VGAuditoria):
+    """
+    Categoría de los utensilios y equipos del restaurante (Electrodomésticos, Vajilla,
+    Cubiertos, Mobiliario, Uniformes...). Aparte de VGCategoriaIngrediente a propósito:
+    los utensilios no son ingredientes y no deben mezclarse con ellos.
+    """
+    nombre = models.CharField(max_length=80, unique=True)
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = "vg_categorias_activo"
+        verbose_name = "Categoría de utensilios"
+        verbose_name_plural = "Categorías de utensilios"
+        ordering = ["nombre"]
+
+    def __str__(self):
+        return self.nombre
+
+
+class VGActivo(VGAuditoria):
+    """
+    Un artículo, utensilio o equipo del restaurante (nevera, impresora, platos, tenedores,
+    franelas para los empleados...). NO es un ingrediente: no tiene relación con VGIngrediente,
+    no entra a ninguna receta, no descuenta stock de cocina y no suma al costo de ventas ni a
+    los gastos del estado de resultados (valor_unitario es solo informativo). Es una tabla
+    aparte para que el inventario de ingredientes y sus costos queden intactos.
+
+    tipo: 'equipo' (se queda en el negocio: neveras, platos, mesas; solo se ajusta por rotura,
+    pérdida o baja) o 'dotacion' (se entrega a las personas: franelas, delantales; su cantidad
+    baja con cada entrega, ver VGMovimientoActivo).
+    """
+    TIPOS = [
+        ("equipo", "Equipo / mobiliario"),
+        ("dotacion", "Dotación"),
+    ]
+    ESTADOS = [
+        ("bueno", "Bueno"),
+        ("regular", "Regular"),
+        ("danado", "Dañado"),
+        ("baja", "Dado de baja"),
+    ]
+    nombre = models.CharField(max_length=150)
+    tipo = models.CharField(max_length=10, choices=TIPOS, default="equipo")
+    categoria = models.ForeignKey(
+        VGCategoriaActivo, on_delete=models.SET_NULL, null=True, blank=True, related_name="activos",
+    )
+    cantidad = models.PositiveIntegerField(default=0)
+    cantidad_minima = models.PositiveIntegerField(
+        default=0, help_text="Avisa cuando la cantidad baja de este número (útil en dotación). 0 = sin aviso.",
+    )
+    estado = models.CharField(max_length=10, choices=ESTADOS, default="bueno")
+    ubicacion = models.CharField(max_length=80, blank=True, help_text="Cocina, barra, salón, caja, almacén...")
+    valor_unitario = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        help_text="Solo informativo: no entra al estado de resultados.",
+    )
+    fecha_adquisicion = models.DateField(null=True, blank=True)
+    proveedor = models.CharField(max_length=150, blank=True)
+    serial = models.CharField(max_length=100, blank=True, help_text="Serial o código (neveras, impresoras...).")
+    notas = models.TextField(blank=True)
+    activo = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = "vg_activos"
+        verbose_name = "Utensilio o equipo"
+        verbose_name_plural = "Utensilios y equipos"
+        ordering = ["nombre"]
+
+    def __str__(self):
+        return self.nombre
+
+    @property
+    def valor_total(self):
+        return (self.valor_unitario or 0) * self.cantidad
+
+
+class VGMovimientoActivo(VGAuditoria):
+    """
+    Cada cambio de cantidad de un VGActivo, con su motivo: compra (entrada), entrega a un
+    empleado, baja (rota, perdida, deteriorada) o ajuste de conteo. delta es con signo y
+    cantidad_resultante la existencia después del movimiento. Las entregas llevan quien
+    recibió (texto libre) y un número de comprobante (serie ENTREGA_ACTIVO, ENT-000001).
+    """
+    TIPOS = [
+        ("entrada", "Entrada"),
+        ("entrega", "Entrega a empleado"),
+        ("baja", "Baja"),
+        ("ajuste", "Ajuste de conteo"),
+    ]
+    activo_ref = models.ForeignKey(VGActivo, on_delete=models.CASCADE, related_name="movimientos")
+    tipo = models.CharField(max_length=10, choices=TIPOS)
+    delta = models.IntegerField()
+    cantidad_resultante = models.PositiveIntegerField()
+    motivo = models.CharField(max_length=255, blank=True)
+    receptor = models.CharField(max_length=150, blank=True, help_text="A quién se entregó (solo en entregas).")
+    numero_comprobante = models.PositiveIntegerField(null=True, blank=True, unique=True)
+
+    class Meta:
+        db_table = "vg_movimientos_activo"
+        verbose_name = "Movimiento de utensilio"
+        verbose_name_plural = "Movimientos de utensilios"
+        ordering = ["-fecha_creacion", "-id"]
+
+    @property
+    def codigo_comprobante(self):
+        return f"ENT-{self.numero_comprobante:06d}" if self.numero_comprobante else ""
+
+    def __str__(self):
+        return f"{self.get_tipo_display()} {self.delta:+d} — {self.activo_ref}"
+
+
 class VGPreparacion(VGAuditoria):
     """
     Una elaboración intermedia (salsa, base, marinado, aderezo...) que no se

@@ -110,7 +110,6 @@ function AnalystEditIngredientPage({ isMobile, ingredientId, onBack }) {
           id: form.id,
           nombre: form.nombre,
           unidad: form.unidad,
-          stock_actual: form.stock_actual,
           stock_minimo: form.stock_minimo,
           costo_unitario: form.costo_unitario,
           contenido_envase: form.contenido_envase || null,
@@ -155,7 +154,13 @@ function AnalystEditIngredientPage({ isMobile, ingredientId, onBack }) {
                   ))}
                 </select>
               </label>
-              <label style={fieldStyle}><span style={labelStyle}>Stock actual</span><input type="number" step="0.001" value={form.stock_actual} onChange={(e) => handleChange('stock_actual', e.target.value)} style={inputStyle} /></label>
+              <label style={fieldStyle}>
+                <span style={labelStyle}>Stock actual (no se edita a mano)</span>
+                <input type="number" value={form.stock_actual} readOnly disabled style={{ ...inputStyle, opacity: 0.7, cursor: 'not-allowed' }} />
+                <span style={{ fontSize: 12, color: 'var(--vg-f-a89999)', lineHeight: 1.4 }}>
+                  Para cambiarlo usa «Ajuste de inventario», una compra o una carga por lote, así queda registrado en los movimientos.
+                </span>
+              </label>
               <label style={fieldStyle}><span style={labelStyle}>Stock minimo</span><input type="number" step="0.001" value={form.stock_minimo} onChange={(e) => handleChange('stock_minimo', e.target.value)} style={inputStyle} /></label>
               <label style={fieldStyle}>
                 <span style={labelStyle}>Costo unitario{costoUnitarioCalculado !== null ? ' (calculado)' : ''}</span>
