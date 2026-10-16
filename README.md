@@ -56,7 +56,7 @@ VITE_API_URL=/api
 
 - **Servicio Systemd:** `gunicorn.service` (Activo y corriendo en segundo plano)
 - **Panel de administración:** `/admin/`
-- **App de restaurante:** `backend/sevens/` — 50 modelos, 63 migraciones, 83 endpoints
+- **App de restaurante:** `backend/sevens/` — 50 modelos, 76 migraciones, 83 endpoints
 - **Autenticación:** sesión con cookies de Django (no JWT). El login acepta
   username o email, sin distinguir mayúsculas.
 
@@ -123,7 +123,7 @@ pruebas se pueden romper, borrar o llenar de basura sin tocar los reales.
 | **produccion** | `sevensdb` | La que usa la app en `http://192.168.68.100/` |
 | **prueba** | `sevensdb_test` | Solo para experimentar |
 
-Las dos tienen las **mismas 63 migraciones**, así que el esquema siempre coincide.
+Las dos tienen las **mismas 76 migraciones**, así que el esquema siempre coincide.
 
 ### Cambiar de entorno
 
