@@ -9,11 +9,13 @@ generar_pdf_tabla(), exportarla aqui, y agregar su vista en reportes_pdf_views.p
 """
 from .base import Columna, Seccion, escapar, formatear_numero, generar_pdf_reporte, generar_pdf_tabla
 from .cashea_por_cobrar import armar_filas_cashea, generar_pdf_cashea_por_cobrar
+from .comprobante_entrega import generar_pdf_comprobante_entrega
 from .cuentas_por_cobrar import armar_bloques_clientes, generar_pdf_cuentas_por_cobrar
 from .cuentas_por_pagar import armar_bloques_cuentas, generar_pdf_cuentas_por_pagar
 from .facturado import armar_dias_facturado, generar_pdf_facturado
 from .gastos import armar_bloques_gastos, generar_pdf_gastos
 from .inventario import armar_filas_inventario, generar_pdf_inventario
+from .inventario_general import generar_pdf_inventario_general
 from .margen_por_plato import armar_secciones_margen_por_plato, generar_pdf_margen_por_plato
 
 __all__ = [
@@ -21,6 +23,7 @@ __all__ = [
     'armar_filas_inventario', 'generar_pdf_inventario', 'armar_bloques_gastos', 'generar_pdf_gastos',
     'armar_dias_facturado', 'generar_pdf_facturado', 'armar_bloques_cuentas', 'generar_pdf_cuentas_por_pagar',
     'armar_bloques_clientes', 'generar_pdf_cuentas_por_cobrar',
-    'armar_filas_cashea', 'generar_pdf_cashea_por_cobrar',
+    'armar_filas_cashea', 'generar_pdf_cashea_por_cobrar', 'generar_pdf_comprobante_entrega',
+    'generar_pdf_inventario_general',
     'armar_secciones_margen_por_plato', 'generar_pdf_margen_por_plato',
 ]

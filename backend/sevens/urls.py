@@ -61,7 +61,9 @@ from .api_views import (
 )
 from .delivery_views import pedido_cargo_delivery_view, zonas_delivery_view
 from .reportes_pdf_views import (
+    comprobante_entrega_activo_pdf_view,
     reporte_cashea_por_cobrar_pdf_view,
+    reporte_inventario_general_pdf_view,
     reporte_cuentas_por_cobrar_pdf_view,
     reporte_cuentas_por_pagar_pdf_view,
     reporte_facturado_pdf_view,
@@ -92,6 +94,9 @@ from .compras_views import (
     cuentas_por_pagar_view,
 )
 from .cashea_views import cashea_pendientes_view, liquidaciones_cashea_view
+from .activos_views import (
+    admin_activos_view, admin_categorias_activos_view, admin_inventario_general_view,
+)
 from .categorias_inventario_views import admin_categorias_inventario_view
 from .contabilidad_views import (
     admin_ingresos_no_facturados_view,
@@ -185,6 +190,11 @@ urlpatterns = [
     path('admin/recetas/', admin_recipes_view, name='admin_recetas'),
     path('admin/categorias/', admin_categorias_view, name='admin_categorias'),
     path('admin/categorias-inventario/', admin_categorias_inventario_view, name='admin_categorias_inventario'),
+    path('admin/activos/', admin_activos_view, name='admin_activos'),
+    path('admin/categorias-activos/', admin_categorias_activos_view, name='admin_categorias_activos'),
+    path('admin/inventario-general/', admin_inventario_general_view, name='admin_inventario_general'),
+    path('admin/activos/entregas/<int:movimiento_id>/comprobante-pdf/', comprobante_entrega_activo_pdf_view,
+         name='comprobante_entrega_activo_pdf'),
     path('admin/configuracion-costeo/', admin_configuracion_costeo_view, name='admin_configuracion_costeo'),
     path('admin/promociones/', admin_promotions_view, name='admin_promociones'),
     path('admin/recomendaciones-chef/', admin_chef_recommendations_view, name='admin_recomendaciones_chef'),
@@ -244,6 +254,7 @@ urlpatterns = [
     path('admin/reportes/cuentas-por-pagar-pdf/', reporte_cuentas_por_pagar_pdf_view, name='reporte_cuentas_por_pagar_pdf'),
     path('admin/reportes/cuentas-por-cobrar-pdf/', reporte_cuentas_por_cobrar_pdf_view, name='reporte_cuentas_por_cobrar_pdf'),
     path('admin/reportes/cashea-por-cobrar-pdf/', reporte_cashea_por_cobrar_pdf_view, name='reporte_cashea_por_cobrar_pdf'),
+    path('admin/reportes/inventario-general-pdf/', reporte_inventario_general_pdf_view, name='reporte_inventario_general_pdf'),
     path('admin/reportes/cuadre-caja/', reporte_cuadre_caja_view, name='reporte_cuadre_caja'),
     path('admin/reportes/cuadre-caja-rango/', reporte_cuadre_caja_rango_view, name='reporte_cuadre_caja_rango'),
     path('admin/reportes/ventas-dia/', reporte_ventas_dia_view, name='reporte_ventas_dia'),

@@ -29,6 +29,9 @@ import AnalystIngredientsBulkCreatePage from './AnalystIngredientsBulkCreatePage
 import AnalystIngredientsCreateReportPage from './AnalystIngredientsCreateReportPage';
 import AnalystIngredientsImportPage from './AnalystIngredientsImportPage';
 import AnalystIngredientsReportPage from './AnalystIngredientsReportPage';
+import AnalystActivoCategoriesPage from './AnalystActivoCategoriesPage';
+import AnalystActivosPage from './AnalystActivosPage';
+import AnalystInventarioGeneralPage from './AnalystInventarioGeneralPage';
 import AnalystInventoryCategoriesPage from './AnalystInventoryCategoriesPage';
 import AnalystInventoryHubPage from './AnalystInventoryHubPage';
 import AnalystMesasPage from './AnalystMesasPage';
@@ -1289,6 +1292,25 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             onViewInventory={() => goToView('admin-ingredients-inventory')}
             onAdjustInventory={() => goToView('admin-ingredients-ajuste')}
             onCategories={() => goToView('admin-ingredients-categories')}
+            onActivos={() => goToView('admin-activos')}
+            onActivosCategories={() => goToView('admin-activos-categories')}
+            onGeneral={() => goToView('admin-inventario-general')}
+          />
+        ) : activeView === 'admin-activos' ? (
+          <AnalystActivosPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onCategorias={() => goToView('admin-activos-categories')}
+          />
+        ) : activeView === 'admin-activos-categories' ? (
+          <AnalystActivoCategoriesPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'admin-inventario-general' ? (
+          <AnalystInventarioGeneralPage
+            isMobile={isMobile}
+            onBack={goBackView}
           />
         ) : activeView === 'admin-ingredients-categories' ? (
           <AnalystInventoryCategoriesPage

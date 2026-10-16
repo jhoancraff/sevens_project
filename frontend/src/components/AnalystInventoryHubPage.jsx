@@ -3,10 +3,19 @@ const options = [
   { id: 'view', title: 'Ver inventario actual' },
   { id: 'adjust', title: 'Ajuste de inventario' },
   { id: 'categories', title: 'Categorías de inventario' },
+  { id: 'activos', title: 'Utensilios y equipos' },
+  { id: 'activos-categories', title: 'Categorías de utensilios' },
+  { id: 'general', title: 'Todo el inventario (ingredientes y utensilios)' },
 ];
 
-function AnalystInventoryHubPage({ isMobile, onBack, onCreate, onViewInventory, onAdjustInventory, onCategories }) {
-  const handlers = { create: onCreate, view: onViewInventory, adjust: onAdjustInventory, categories: onCategories };
+function AnalystInventoryHubPage({
+  isMobile, onBack, onCreate, onViewInventory, onAdjustInventory, onCategories,
+  onActivos, onActivosCategories, onGeneral,
+}) {
+  const handlers = {
+    create: onCreate, view: onViewInventory, adjust: onAdjustInventory, categories: onCategories,
+    activos: onActivos, 'activos-categories': onActivosCategories, general: onGeneral,
+  };
 
   return (
     <section style={containerStyle(isMobile)}>

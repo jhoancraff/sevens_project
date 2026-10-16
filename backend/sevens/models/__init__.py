@@ -38,8 +38,10 @@ from .contabilidad import (
 )
 from .restaurant import (
     VGAbonoCompra,
+    VGActivo,
     VGAjusteInventario,
     VGAjustePedido,
+    VGCategoriaActivo,
     VGCategoriaIngrediente,
     VGCategoriaProducto,
     VGCierreInventario,
@@ -58,6 +60,7 @@ from .restaurant import (
     VGImpresoraCaja,
     VGIngrediente,
     VGMesa,
+    VGMovimientoActivo,
     VGMovimientoInventario,
     VGNotaCreditoCompra,
     VGOpcionProducto,
@@ -78,9 +81,11 @@ from .restaurant import (
 __all__ = [
     "VGAbonoCompra",
     "VGAbonoGasto",
+    "VGActivo",
     "VGAjusteInventario",
     "VGAjustePedido",
     "VGAuditoria",
+    "VGCategoriaActivo",
     "VGCategoriaGasto",
     "VGCategoriaIngrediente",
     "VGCategoriaProducto",
@@ -116,6 +121,7 @@ __all__ = [
     "VGMerma",
     "VGMesa",
     "VGMetodoPago",
+    "VGMovimientoActivo",
     "VGMovimientoInventario",
     "VGNotaCreditoCompra",
     "VGNotaCredito",

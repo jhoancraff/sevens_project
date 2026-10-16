@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import BotonDescargarPdf from './BotonDescargarPdf';
+import ConfirmModal from './ConfirmModal';
 import Pagination from './Pagination';
 import Toast from './Toast';
 import useToast from '../hooks/useToast';
@@ -13,6 +14,7 @@ function AnalystIngredientsReportPage({ isMobile, onBack, onEdit, onImport, onCa
   const [filtroCategoria, setFiltroCategoria] = useState('');
   const [seleccion, setSeleccion] = useState(() => new Set());
   const [categoriaLote, setCategoriaLote] = useState('');
+  const [confirmarLote, setConfirmarLote] = useState(false);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [saving, setSaving] = useState(false);
@@ -78,6 +80,7 @@ function AnalystIngredientsReportPage({ isMobile, onBack, onEdit, onImport, onCa
 
   // Lleva los ingredientes marcados a una categoría (o los deja sin categoría).
   const handleAsignarCategoria = async () => {
+    setConfirmarLote(false);
     if (seleccion.size === 0) {
       showError('Marca al menos un ingrediente.');
       return;
@@ -249,7 +252,7 @@ function AnalystIngredientsReportPage({ isMobile, onBack, onEdit, onImport, onCa
                 <option key={categoria.id} value={String(categoria.id)}>{categoria.nombre}</option>
               ))}
             </select>
-            <button type="button" onClick={handleAsignarCategoria} style={primaryButtonStyle} disabled={saving}>
+            <button type="button" onClick={() => setConfirmarLote(true)} style={primaryButtonStyle} disabled={saving}>
               Asignar categoría
             </button>
             <button type="button" onClick={() => setSeleccion(new Set())} style={secondaryButtonStyle}>Limpiar</button>
@@ -329,6 +332,17 @@ function AnalystIngredientsReportPage({ isMobile, onBack, onEdit, onImport, onCa
           onNext={() => setPage((current) => Math.min(pageCount - 1, current + 1))}
         />
       </section>
+      <ConfirmModal
+        open={confirmarLote}
+        title="Asignar categoría"
+        message={`¿Pasar ${seleccion.size} ingrediente(s) a ${
+          categoriaLote ? `«${(categorias.find((c) => String(c.id) === String(categoriaLote)) || {}).nombre || 'la categoría'}»` : 'sin categoría'
+        }?`}
+        confirmLabel="Asignar"
+        busy={saving}
+        onCancel={() => setConfirmarLote(false)}
+        onConfirm={handleAsignarCategoria}
+      />
     </section>
   );
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import ConfirmModal from './ConfirmModal';
 import Toast from './Toast';
 import useToast from '../hooks/useToast';
 
@@ -27,6 +28,7 @@ function AnalystInventoryCategoriesPage({ isMobile, onBack, onViewInventory }) {
   const [editandoId, setEditandoId] = useState(null);
   const [nombreEnEdicion, setNombreEnEdicion] = useState('');
   const { toast, showSuccess, showError, hideToast } = useToast();
+  const [confirmacion, setConfirmacion] = useState(null);
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -67,18 +69,34 @@ function AnalystInventoryCategoriesPage({ isMobile, onBack, onViewInventory }) {
     }
   };
 
-  const handleCrear = async (event) => {
+  // Todo guardar/actualizar pasa primero por un diálogo de confirmación.
+  const confirmar = async () => {
+    if (!confirmacion) {
+      return;
+    }
+    const hecho = await enviar(confirmacion.cuerpo, 'Listo.');
+    if (hecho && confirmacion.alTerminar) {
+      confirmacion.alTerminar();
+    }
+    setConfirmacion(null);
+  };
+
+  const handleCrear = (event) => {
     event.preventDefault();
     if (!nuevoNombre.trim()) {
       showError('Escribe el nombre de la categoría.');
       return;
     }
-    if (await enviar({ action: 'create', nombre: nuevoNombre.trim() }, 'Categoría creada.')) {
-      setNuevoNombre('');
-    }
+    setConfirmacion({
+      title: 'Guardar categoría',
+      message: `¿Crear la categoría «${nuevoNombre.trim()}»?`,
+      confirmLabel: 'Guardar',
+      cuerpo: { action: 'create', nombre: nuevoNombre.trim() },
+      alTerminar: () => setNuevoNombre(''),
+    });
   };
 
-  const handleGuardarNombre = async (categoria) => {
+  const handleGuardarNombre = (categoria) => {
     if (!nombreEnEdicion.trim()) {
       showError('El nombre no puede quedar vacío.');
       return;
@@ -87,15 +105,23 @@ function AnalystInventoryCategoriesPage({ isMobile, onBack, onViewInventory }) {
       setEditandoId(null);
       return;
     }
-    if (await enviar({ action: 'update', id: categoria.id, nombre: nombreEnEdicion.trim() }, 'Categoría actualizada.')) {
-      setEditandoId(null);
-    }
+    setConfirmacion({
+      title: 'Actualizar categoría',
+      message: `¿Cambiar el nombre de «${categoria.nombre}» a «${nombreEnEdicion.trim()}»?`,
+      confirmLabel: 'Actualizar',
+      cuerpo: { action: 'update', id: categoria.id, nombre: nombreEnEdicion.trim() },
+      alTerminar: () => setEditandoId(null),
+    });
   };
 
-  const handleToggleActivo = (categoria) => enviar(
-    { action: 'update', id: categoria.id, activo: !categoria.activo },
-    categoria.activo ? 'Categoría desactivada.' : 'Categoría activada.',
-  );
+  const handleToggleActivo = (categoria) => setConfirmacion({
+    title: categoria.activo ? 'Desactivar categoría' : 'Activar categoría',
+    message: categoria.activo
+      ? `¿Desactivar «${categoria.nombre}»? Deja de ofrecerse al clasificar, pero los ingredientes que ya la tienen la conservan.`
+      : `¿Activar «${categoria.nombre}» otra vez?`,
+    confirmLabel: categoria.activo ? 'Desactivar' : 'Activar',
+    cuerpo: { action: 'update', id: categoria.id, activo: !categoria.activo },
+  });
 
   return (
     <section style={containerStyle(isMobile)}>
@@ -195,6 +221,15 @@ function AnalystInventoryCategoriesPage({ isMobile, onBack, onViewInventory }) {
           ) : null}
         </div>
       </section>
+      <ConfirmModal
+        open={Boolean(confirmacion)}
+        title={confirmacion?.title || ''}
+        message={confirmacion?.message || ''}
+        confirmLabel={confirmacion?.confirmLabel}
+        busy={saving}
+        onCancel={() => setConfirmacion(null)}
+        onConfirm={confirmar}
+      />
     </section>
   );
 }
