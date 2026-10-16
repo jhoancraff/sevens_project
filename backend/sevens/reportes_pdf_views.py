@@ -22,13 +22,16 @@ from .contabilidad_views import MAX_DIAS_RANGO_CUADRE_CAJA, _parse_rango_o_fecha
 from .facturacion_views import _serialize_nota_entrega
 from .gastos_views import _parse_fecha, _serialize_gasto
 from .activos_views import filas_inventario_general
+from .inventario_movimientos_views import (
+    ParametrosInvalidos, detalle_movimientos, leer_parametros, resumen_por_articulo,
+)
 from .models import (
     VGCategoriaActivo, VGCategoriaIngrediente, VGCompra, VGGasto, VGIngrediente, VGMovimientoActivo, VGNotaEntrega, VGPago,
 )
 from .cashea_views import _cuenta_cashea, _serialize_pendiente
 from .pdf_reportes import (
     generar_pdf_cashea_por_cobrar, generar_pdf_comprobante_entrega, generar_pdf_cuentas_por_cobrar,
-    generar_pdf_inventario_general, generar_pdf_cuentas_por_pagar, generar_pdf_facturado, generar_pdf_gastos,
+    generar_pdf_inventario_general, generar_pdf_inventario_movimientos, generar_pdf_cuentas_por_pagar, generar_pdf_facturado, generar_pdf_gastos,
     generar_pdf_inventario, generar_pdf_margen_por_plato,
 )
 from .reportes import detalle_ventas_rango
@@ -515,3 +518,39 @@ def comprobante_entrega_activo_pdf_view(request, movimiento_id):
         'entregado_por': (entregador.get_full_name() or entregador.username) if entregador else '',
     }, generado_en=timezone.localtime())
     return responder_pdf(pdf, f'comprobante-{movimiento.codigo_comprobante}', con_fecha=False)
+
+
+@pdf_solo_admin
+def reporte_inventario_movimientos_pdf_view(request):
+    """
+    PDF de los movimientos del inventario (ingredientes y utensilios) de un rango de fechas, con el mismo
+    filtro que la pantalla «Movimientos del inventario» (origen, tipo, texto y receptor): el resumen por
+    articulo y el detalle de cada movimiento. Ver inventario_movimientos_views.
+    """
+    try:
+        p = leer_parametros(request.GET)
+    except ParametrosInvalidos as error:
+        return _auth_response({'ok': False, 'message': str(error)}, status=400)
+
+    resumen = resumen_por_articulo(p)
+    detalle, total = detalle_movimientos(p, limite=1500)
+    for fila in detalle:
+        fila['fecha'] = timezone.localtime(fila['fecha'])
+
+    partes = []
+    if p['origen'] != 'todo':
+        partes.append({'utensilios': 'Solo utensilios y equipos', 'ingredientes': 'Solo ingredientes'}[p['origen']])
+    if p['tipo']:
+        partes.append(f"Movimiento: {p['tipo']}")
+    if p['q']:
+        partes.append(f"Artículo: {p['q']}")
+    if p['receptor']:
+        partes.append(f"Recibió: {p['receptor']}")
+
+    ahora = timezone.localtime()
+    pdf = generar_pdf_inventario_movimientos(
+        resumen, detalle, total, p['desde'], p['hasta'], filtros=' · '.join(partes), generado_en=ahora,
+    )
+    return responder_pdf(
+        pdf, f"movimientos-inventario-{p['desde']:%Y-%m-%d}-al-{p['hasta']:%Y-%m-%d}", con_fecha=False,
+    )

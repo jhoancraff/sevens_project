@@ -32,6 +32,7 @@ import AnalystIngredientsReportPage from './AnalystIngredientsReportPage';
 import AnalystActivoCategoriesPage from './AnalystActivoCategoriesPage';
 import AnalystActivosPage from './AnalystActivosPage';
 import AnalystInventarioGeneralPage from './AnalystInventarioGeneralPage';
+import AnalystInventarioMovimientosPage from './AnalystInventarioMovimientosPage';
 import AnalystInventoryCategoriesPage from './AnalystInventoryCategoriesPage';
 import AnalystInventoryHubPage from './AnalystInventoryHubPage';
 import AnalystMesasPage from './AnalystMesasPage';
@@ -1295,12 +1296,19 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             onActivos={() => goToView('admin-activos')}
             onActivosCategories={() => goToView('admin-activos-categories')}
             onGeneral={() => goToView('admin-inventario-general')}
+            onMovimientos={() => goToView('admin-inventario-movimientos')}
+          />
+        ) : activeView === 'admin-inventario-movimientos' ? (
+          <AnalystInventarioMovimientosPage
+            isMobile={isMobile}
+            onBack={goBackView}
           />
         ) : activeView === 'admin-activos' ? (
           <AnalystActivosPage
             isMobile={isMobile}
             onBack={goBackView}
             onCategorias={() => goToView('admin-activos-categories')}
+            onMovimientos={() => goToView('admin-inventario-movimientos')}
           />
         ) : activeView === 'admin-activos-categories' ? (
           <AnalystActivoCategoriesPage
@@ -1338,6 +1346,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             onImport={() => goToView('admin-ingredients-import')}
             onCargaPorLote={() => goToView('admin-ingredients-compras-borrador')}
             onCategorias={() => goToView('admin-ingredients-categories')}
+            onMovimientos={() => goToView('admin-inventario-movimientos')}
           />
         ) : activeView === 'admin-ingredients-compras-borrador' ? (
           <AnalystComprasBorradorPage

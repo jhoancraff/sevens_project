@@ -64,6 +64,7 @@ from .reportes_pdf_views import (
     comprobante_entrega_activo_pdf_view,
     reporte_cashea_por_cobrar_pdf_view,
     reporte_inventario_general_pdf_view,
+    reporte_inventario_movimientos_pdf_view,
     reporte_cuentas_por_cobrar_pdf_view,
     reporte_cuentas_por_pagar_pdf_view,
     reporte_facturado_pdf_view,
@@ -98,6 +99,7 @@ from .activos_views import (
     admin_activos_view, admin_categorias_activos_view, admin_inventario_general_view,
 )
 from .categorias_inventario_views import admin_categorias_inventario_view
+from .inventario_movimientos_views import admin_inventario_movimientos_view
 from .contabilidad_views import (
     admin_ingresos_no_facturados_view,
     admin_lotes_pos_view,
@@ -193,6 +195,7 @@ urlpatterns = [
     path('admin/activos/', admin_activos_view, name='admin_activos'),
     path('admin/categorias-activos/', admin_categorias_activos_view, name='admin_categorias_activos'),
     path('admin/inventario-general/', admin_inventario_general_view, name='admin_inventario_general'),
+    path('admin/inventario-movimientos/', admin_inventario_movimientos_view, name='admin_inventario_movimientos'),
     path('admin/activos/entregas/<int:movimiento_id>/comprobante-pdf/', comprobante_entrega_activo_pdf_view,
          name='comprobante_entrega_activo_pdf'),
     path('admin/configuracion-costeo/', admin_configuracion_costeo_view, name='admin_configuracion_costeo'),
@@ -255,6 +258,10 @@ urlpatterns = [
     path('admin/reportes/cuentas-por-cobrar-pdf/', reporte_cuentas_por_cobrar_pdf_view, name='reporte_cuentas_por_cobrar_pdf'),
     path('admin/reportes/cashea-por-cobrar-pdf/', reporte_cashea_por_cobrar_pdf_view, name='reporte_cashea_por_cobrar_pdf'),
     path('admin/reportes/inventario-general-pdf/', reporte_inventario_general_pdf_view, name='reporte_inventario_general_pdf'),
+    path(
+        'admin/reportes/inventario-movimientos-pdf/', reporte_inventario_movimientos_pdf_view,
+        name='reporte_inventario_movimientos_pdf',
+    ),
     path('admin/reportes/cuadre-caja/', reporte_cuadre_caja_view, name='reporte_cuadre_caja'),
     path('admin/reportes/cuadre-caja-rango/', reporte_cuadre_caja_rango_view, name='reporte_cuadre_caja_rango'),
     path('admin/reportes/ventas-dia/', reporte_ventas_dia_view, name='reporte_ventas_dia'),

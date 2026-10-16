@@ -16,6 +16,7 @@ from .facturado import armar_dias_facturado, generar_pdf_facturado
 from .gastos import armar_bloques_gastos, generar_pdf_gastos
 from .inventario import armar_filas_inventario, generar_pdf_inventario
 from .inventario_general import generar_pdf_inventario_general
+from .inventario_movimientos import generar_pdf_inventario_movimientos
 from .margen_por_plato import armar_secciones_margen_por_plato, generar_pdf_margen_por_plato
 
 __all__ = [
@@ -24,6 +25,6 @@ __all__ = [
     'armar_dias_facturado', 'generar_pdf_facturado', 'armar_bloques_cuentas', 'generar_pdf_cuentas_por_pagar',
     'armar_bloques_clientes', 'generar_pdf_cuentas_por_cobrar',
     'armar_filas_cashea', 'generar_pdf_cashea_por_cobrar', 'generar_pdf_comprobante_entrega',
-    'generar_pdf_inventario_general',
+    'generar_pdf_inventario_general', 'generar_pdf_inventario_movimientos',
     'armar_secciones_margen_por_plato', 'generar_pdf_margen_por_plato',
 ]

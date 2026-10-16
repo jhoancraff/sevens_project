@@ -9,7 +9,7 @@ import descargarPdf from '../utils/descargarPdf';
 
 const PAGE_SIZE = 50;
 
-function AnalystIngredientsReportPage({ isMobile, onBack, onEdit, onImport, onCargaPorLote, onCategorias }) {
+function AnalystIngredientsReportPage({ isMobile, onBack, onEdit, onImport, onCargaPorLote, onCategorias, onMovimientos }) {
   const [items, setItems] = useState([]);
   const [categorias, setCategorias] = useState([]);
   // '' = todas, 'sin' = sin categoría, o el id de la categoría.
@@ -197,6 +197,7 @@ function AnalystIngredientsReportPage({ isMobile, onBack, onEdit, onImport, onCa
             label="Más acciones"
             items={[
               { label: 'Categorías de inventario', onClick: onCategorias, hidden: !onCategorias },
+              { label: 'Ver movimientos del inventario', onClick: onMovimientos, hidden: !onMovimientos },
               { label: 'Cargar por lote (manual)', onClick: onCargaPorLote, hidden: !onCargaPorLote },
               { label: 'Importar desde Excel', onClick: onImport, hidden: !onImport },
             ]}

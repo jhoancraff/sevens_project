@@ -24,17 +24,18 @@ const grupos = [
     titulo: 'Vista general',
     opciones: [
       { id: 'general', title: 'Todo el inventario', detalle: 'Ingredientes y utensilios, juntos o separados' },
+      { id: 'movimientos', title: 'Movimientos del inventario', detalle: 'Qué entró, salió o se ajustó, y por qué hay ese stock' },
     ],
   },
 ];
 
 function AnalystInventoryHubPage({
   isMobile, onBack, onCreate, onViewInventory, onAdjustInventory, onCategories,
-  onActivos, onActivosCategories, onGeneral,
+  onActivos, onActivosCategories, onGeneral, onMovimientos,
 }) {
   const handlers = {
     create: onCreate, view: onViewInventory, adjust: onAdjustInventory, categories: onCategories,
-    activos: onActivos, 'activos-categories': onActivosCategories, general: onGeneral,
+    activos: onActivos, 'activos-categories': onActivosCategories, general: onGeneral, movimientos: onMovimientos,
   };
 
   return (

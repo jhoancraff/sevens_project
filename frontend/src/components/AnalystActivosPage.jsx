@@ -47,7 +47,7 @@ const enviar = (cuerpo) => pedir('/api/admin/activos/', {
 // Utensilios y equipos del restaurante (neveras, platos, impresoras, franelas...). Son aparte de los
 // ingredientes: no entran a recetas ni al estado de resultados. Cada guardar, actualizar, eliminar o
 // movimiento de cantidad pide confirmación antes de ejecutarse.
-function AnalystActivosPage({ isMobile, onBack, onCategorias }) {
+function AnalystActivosPage({ isMobile, onBack, onCategorias, onMovimientos }) {
   const { toast, showSuccess, showError, hideToast } = useToast();
   const [activos, setActivos] = useState([]);
   const [resumen, setResumen] = useState(null);
@@ -232,6 +232,7 @@ function AnalystActivosPage({ isMobile, onBack, onCategorias }) {
                 }).catch((error) => showError(error.message || 'No se pudo generar el PDF.')),
               },
               { label: 'Categorías de utensilios', onClick: onCategorias, hidden: !onCategorias },
+              { label: 'Ver todos los movimientos', onClick: onMovimientos, hidden: !onMovimientos },
             ]}
           />
         </div>

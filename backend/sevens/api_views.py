@@ -2732,22 +2732,32 @@ def admin_catalog_view(request):
         if error_categoria:
             return _auth_response({'ok': False, 'message': error_categoria}, status=400)
 
-        ingredient = VGIngrediente.objects.create(
-            nombre=nombre,
-            categoria=categoria,
-            unidad_medida=unidad,
-            stock_actual=stock_actual_value,
-            stock_minimo=stock_minimo_value,
-            costo_unitario=costo_unitario_value,
-            contenido_envase=contenido_envase_value,
-            peso_real=peso_real_value,
-            precio_compra=precio_compra_value,
-            ingrediente_crudo_equivalente=ingrediente_crudo_equivalente,
-            rendimiento_ingrediente_crudo=rendimiento_ingrediente_crudo_value,
-            ultimo_proveedor=proveedor,
-            creado_por=request.user,
-            actualizado_por=request.user,
-        )
+        with transaction.atomic():
+            ingredient = VGIngrediente.objects.create(
+                nombre=nombre,
+                categoria=categoria,
+                unidad_medida=unidad,
+                stock_actual=stock_actual_value,
+                stock_minimo=stock_minimo_value,
+                costo_unitario=costo_unitario_value,
+                contenido_envase=contenido_envase_value,
+                peso_real=peso_real_value,
+                precio_compra=precio_compra_value,
+                ingrediente_crudo_equivalente=ingrediente_crudo_equivalente,
+                rendimiento_ingrediente_crudo=rendimiento_ingrediente_crudo_value,
+                ultimo_proveedor=proveedor,
+                creado_por=request.user,
+                actualizado_por=request.user,
+            )
+            if stock_actual_value > 0:
+                # El stock con el que nace el ingrediente tambien debe quedar explicado en los movimientos.
+                VGMovimientoInventario.objects.create(
+                    ingrediente=ingredient,
+                    tipo_movimiento='entrada',
+                    cantidad=stock_actual_value,
+                    motivo='Existencia inicial al crear el ingrediente',
+                    creado_por=request.user,
+                )
 
         return _auth_response({'ok': True, 'message': 'Ingrediente creado correctamente.', 'item': {'id': ingredient.id, 'nombre': ingredient.nombre}}, status=201)
 
@@ -2764,7 +2774,24 @@ def admin_catalog_view(request):
 
         unidad = str(data.get('unidad', '')).strip() or 'unidad'
         proveedor = str(data.get('proveedor', '')).strip() or 'Sin proveedor'
-        stock_actual = data.get('stock_actual', ingredient.stock_actual)
+        # El stock NO se cambia a mano: solo se mueve con compras, ventas, ajustes de inventario o cargas,
+        # que dejan su movimiento (ver «Movimientos del inventario»). Un cambio directo dejaria el stock
+        # sin explicacion; si llega uno distinto al actual, se rechaza (por ejemplo desde una pantalla vieja).
+        stock_enviado = data.get('stock_actual')
+        if stock_enviado not in [None, '']:
+            try:
+                cambio_manual = abs(Decimal(str(stock_enviado)) - Decimal(str(ingredient.stock_actual))) > Decimal('0.005')
+            except InvalidOperation:
+                return _auth_response({'ok': False, 'message': 'El stock enviado no es valido.'}, status=400)
+            if cambio_manual:
+                return _auth_response({
+                    'ok': False,
+                    'message': (
+                        'El stock no se cambia a mano. Usa «Ajuste de inventario», registra una compra o una carga por lote '
+                        'para que el cambio quede registrado en los movimientos del inventario.'
+                    ),
+                }, status=400)
+        stock_actual = ingredient.stock_actual
         stock_minimo = data.get('stock_minimo', ingredient.stock_minimo)
         costo_unitario = data.get('costo_unitario', ingredient.costo_unitario)
         contenido_envase = data.get('contenido_envase', ingredient.contenido_envase)
