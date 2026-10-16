@@ -1,9 +1,11 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import BotonDescargarPdf from './BotonDescargarPdf';
 import ConfirmModal from './ConfirmModal';
+import MenuAcciones from './MenuAcciones';
 import Pagination from './Pagination';
 import Toast from './Toast';
 import useToast from '../hooks/useToast';
+import descargarPdf from '../utils/descargarPdf';
 
 const PAGE_SIZE = 50;
 
@@ -183,7 +185,7 @@ function AnalystIngredientsReportPage({ isMobile, onBack, onEdit, onImport, onCa
         <div>
           <h2 style={titleStyle(isMobile)}>Reporte de ingredientes</h2>
         </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <BotonDescargarPdf
             url="/api/admin/reportes/inventario-pdf/"
             params={{ categoria_id: filtroCategoria }}
@@ -191,21 +193,14 @@ function AnalystIngredientsReportPage({ isMobile, onBack, onEdit, onImport, onCa
           >
             {filtroCategoria ? 'Descargar PDF de esta categoría' : 'Descargar PDF'}
           </BotonDescargarPdf>
-          {onCategorias ? (
-            <button type="button" onClick={onCategorias} style={secondaryButtonStyle}>
-              Categorías
-            </button>
-          ) : null}
-          {onCargaPorLote ? (
-            <button type="button" onClick={onCargaPorLote} style={secondaryButtonStyle}>
-              Cargar por lote (manual)
-            </button>
-          ) : null}
-          {onImport ? (
-            <button type="button" onClick={onImport} style={primaryButtonStyle}>
-              Importar desde Excel
-            </button>
-          ) : null}
+          <MenuAcciones
+            label="Más acciones"
+            items={[
+              { label: 'Categorías de inventario', onClick: onCategorias, hidden: !onCategorias },
+              { label: 'Cargar por lote (manual)', onClick: onCargaPorLote, hidden: !onCargaPorLote },
+              { label: 'Importar desde Excel', onClick: onImport, hidden: !onImport },
+            ]}
+          />
         </div>
       </div>
 
@@ -309,12 +304,13 @@ function AnalystIngredientsReportPage({ isMobile, onBack, onEdit, onImport, onCa
                   </div>
                   <div key={`actions-${item.id}`} style={cellActionsStyle}>
                     <button type="button" onClick={() => onEdit(item.id)} style={secondaryButtonStyle}>Modificar</button>
-                    {item.ingrediente_crudo_equivalente ? (
-                      <button type="button" onClick={() => handleReponer(item)} style={reponerButtonStyle} disabled={saving}>
-                        Reponer cocina
-                      </button>
-                    ) : null}
-                    <button type="button" onClick={() => handleDelete(item)} style={dangerButtonStyle} disabled={saving}>Eliminar</button>
+                    <MenuAcciones
+                      disabled={saving}
+                      items={[
+                        { label: 'Reponer cocina', onClick: () => handleReponer(item), hidden: !item.ingrediente_crudo_equivalente },
+                        { label: 'Eliminar', onClick: () => handleDelete(item), danger: true },
+                      ]}
+                    />
                   </div>
                 </Fragment>
               ))}
@@ -357,17 +353,15 @@ const sectionTitleStyle = { color: 'var(--vg-text-strong)', fontSize: 19, fontWe
 const searchInputStyle = (isMobile) => ({ width: isMobile ? '100%' : 360, borderRadius: 12, border: '1px solid rgba(var(--vg-ink), 0.14)', background: 'var(--vg-s-161010)', padding: '10px 12px', color: 'var(--vg-text-strong)' });
 const emptyStyle = { minHeight: 80, display: 'grid', placeItems: 'center', borderRadius: 14, border: '1px dashed rgba(var(--vg-ink), 0.12)', color: 'var(--vg-f-c8bbbb)' };
 const tableWrapStyle = { overflowX: 'auto' };
-const tableStyle = { display: 'grid', gridTemplateColumns: '48px minmax(200px,1.2fr) minmax(140px,0.8fr) minmax(130px,0.9fr) minmax(140px,0.9fr) minmax(120px,0.8fr) minmax(160px,1fr) minmax(220px,1fr)', minWidth: 1250, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
+const tableStyle = { display: 'grid', gridTemplateColumns: '48px minmax(200px,1.2fr) minmax(140px,0.8fr) minmax(130px,0.9fr) minmax(140px,0.9fr) minmax(120px,0.8fr) minmax(160px,1fr) minmax(170px,0.8fr)', minWidth: 1180, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
 const headStyle = { padding: '12px 14px', background: 'rgba(var(--vg-ink), 0.06)', color: 'var(--vg-f-ffb0b0)', fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 800 };
 const cellStyle = { padding: '14px', borderTop: '1px solid rgba(var(--vg-ink), 0.08)', color: 'var(--vg-f-f2e6e6)', display: 'grid', alignContent: 'center' };
 const cellPrimaryStyle = { ...cellStyle, background: 'rgba(var(--vg-ink), 0.02)' };
 const cellActionsStyle = { ...cellStyle, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' };
 const primaryButtonStyle = { border: 'none', borderRadius: 999, padding: '10px 16px', background: 'linear-gradient(90deg, #bf1f1f 0%, var(--vg-accent-primary) 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer' };
 const secondaryButtonStyle = { border: '1px solid rgba(var(--vg-ink), 0.14)', borderRadius: 999, padding: '10px 16px', background: 'rgba(var(--vg-ink), 0.04)', color: 'var(--vg-text-strong)', fontWeight: 700, cursor: 'pointer', width: 'fit-content' };
-const dangerButtonStyle = { border: '1px solid var(--vg-f-ff7e7e-a400)', borderRadius: 999, padding: '10px 16px', background: 'rgba(145,33,33,0.25)', color: 'var(--vg-f-ffd3d3)', fontWeight: 700, cursor: 'pointer' };
 const selectStyle = { borderRadius: 12, border: '1px solid rgba(var(--vg-ink), 0.14)', background: 'var(--vg-s-161010)', padding: '10px 12px', color: 'var(--vg-text-strong)', minWidth: 190 };
 const loteBarStyle = { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', padding: '10px 14px', borderRadius: 14, border: '1px solid var(--vg-f-ffcf85-a350)', background: 'rgba(255,207,133,0.06)', color: 'var(--vg-text-strong)' };
-const reponerButtonStyle = { border: '1px solid var(--vg-f-34d399-a400)', borderRadius: 999, padding: '10px 16px', background: 'rgba(52, 211, 153, 0.12)', color: '#7ce8bd', fontWeight: 700, cursor: 'pointer' };
 const backButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', border: 'none', borderRadius: 999, padding: '11px 18px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(37, 99, 235, 0.35)' };
 
 export default AnalystIngredientsReportPage;

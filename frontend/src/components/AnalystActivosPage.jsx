@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import BotonDescargarPdf from './BotonDescargarPdf';
 import ConfirmModal from './ConfirmModal';
+import MenuAcciones from './MenuAcciones';
 import Toast from './Toast';
 import useToast from '../hooks/useToast';
+import descargarPdf from '../utils/descargarPdf';
 
 const TIPOS = [
   { value: 'equipo', label: 'Equipo / mobiliario' },
@@ -214,18 +216,24 @@ function AnalystActivosPage({ isMobile, onBack, onCategorias }) {
             las recetas, no mueven el stock de cocina ni afectan el estado de resultados.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <button type="button" style={primaryButtonStyle} onClick={() => { setMov(null); setForm({ ...formVacio }); }}>
             + Nuevo artículo
           </button>
-          {onCategorias ? <button type="button" style={secondaryButtonStyle} onClick={onCategorias}>Categorías</button> : null}
-          <BotonDescargarPdf
-            url="/api/admin/reportes/inventario-general-pdf/"
-            params={{ tipo: 'utensilios', categoria: filtros.categoria_id ? (filtros.categoria_id === 'sin' ? 'sin' : `a:${filtros.categoria_id}`) : '', q: filtros.q }}
-            onError={showError}
-          >
-            Descargar PDF
-          </BotonDescargarPdf>
+          <MenuAcciones
+            label="Más acciones"
+            items={[
+              {
+                label: 'Descargar PDF',
+                onClick: () => descargarPdf('/api/admin/reportes/inventario-general-pdf/', {
+                  tipo: 'utensilios',
+                  categoria: filtros.categoria_id ? (filtros.categoria_id === 'sin' ? 'sin' : `a:${filtros.categoria_id}`) : '',
+                  q: filtros.q,
+                }).catch((error) => showError(error.message || 'No se pudo generar el PDF.')),
+              },
+              { label: 'Categorías de utensilios', onClick: onCategorias, hidden: !onCategorias },
+            ]}
+          />
         </div>
       </div>
 
@@ -388,9 +396,13 @@ function AnalystActivosPage({ isMobile, onBack, onCategorias }) {
                   <div style={{ ...cellStyle, textAlign: 'right' }}>{activo.valor_unitario !== null ? `$${activo.valor_total}` : '—'}</div>
                   <div style={cellActionsStyle}>
                     <button type="button" style={miniButtonStyle} onClick={() => { setForm(null); setMov({ ...movimientoVacio, activo, tipo: activo.tipo === 'dotacion' ? 'entrega' : 'baja' }); }}>Mover cantidad</button>
-                    <button type="button" style={miniButtonStyle} onClick={() => editar(activo)}>Modificar</button>
-                    <button type="button" style={miniButtonStyle} onClick={() => abrirHistorial(activo)}>Historial</button>
-                    <button type="button" style={miniDangerStyle} onClick={() => pedirEliminar(activo)}>Eliminar</button>
+                    <MenuAcciones
+                      items={[
+                        { label: 'Modificar', onClick: () => editar(activo) },
+                        { label: 'Historial de movimientos', onClick: () => abrirHistorial(activo) },
+                        { label: 'Eliminar', onClick: () => pedirEliminar(activo), danger: true },
+                      ]}
+                    />
                   </div>
                 </div>
               ))}
@@ -459,14 +471,13 @@ const filtrosStyle = (isMobile) => ({ display: 'grid', gridTemplateColumns: isMo
 const fieldStyle = { display: 'grid', gap: 6, color: 'var(--vg-f-f2e6e6)', fontSize: 13, fontWeight: 700 };
 const inputStyle = { borderRadius: 12, border: '1px solid rgba(var(--vg-ink), 0.14)', background: 'var(--vg-s-161010)', padding: '10px 12px', color: 'var(--vg-text-strong)', width: '100%', boxSizing: 'border-box' };
 const tableWrapStyle = { overflowX: 'auto' };
-const tableStyle = { display: 'grid', gridTemplateColumns: 'minmax(190px,1.3fr) minmax(130px,0.8fr) minmax(110px,0.7fr) minmax(100px,0.6fr) minmax(90px,0.5fr) minmax(110px,0.6fr) minmax(330px,1.6fr)', minWidth: 1100, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
+const tableStyle = { display: 'grid', gridTemplateColumns: 'minmax(190px,1.3fr) minmax(130px,0.8fr) minmax(110px,0.7fr) minmax(100px,0.6fr) minmax(90px,0.5fr) minmax(110px,0.6fr) minmax(190px,0.9fr)', minWidth: 960, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
 const headStyle = { padding: '12px 14px', background: 'rgba(var(--vg-ink), 0.06)', color: 'var(--vg-f-ffb0b0)', fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 800 };
 const cellStyle = { padding: '12px 14px', borderTop: '1px solid rgba(var(--vg-ink), 0.08)', color: 'var(--vg-f-f2e6e6)', display: 'grid', alignContent: 'center', gap: 2 };
 const cellActionsStyle = { ...cellStyle, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' };
 const primaryButtonStyle = { border: 'none', borderRadius: 999, padding: '10px 16px', background: 'linear-gradient(90deg, #bf1f1f 0%, var(--vg-accent-primary) 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer' };
 const secondaryButtonStyle = { border: '1px solid rgba(var(--vg-ink), 0.14)', borderRadius: 999, padding: '10px 16px', background: 'rgba(var(--vg-ink), 0.04)', color: 'var(--vg-text-strong)', fontWeight: 700, cursor: 'pointer', width: 'fit-content' };
 const miniButtonStyle = { border: '1px solid rgba(var(--vg-ink), 0.18)', borderRadius: 999, padding: '6px 12px', background: 'rgba(var(--vg-ink), 0.05)', color: 'var(--vg-text-strong)', fontWeight: 700, cursor: 'pointer', fontSize: 12.5 };
-const miniDangerStyle = { ...miniButtonStyle, border: '1px solid var(--vg-f-ff7e7e-a400)', background: 'rgba(145,33,33,0.25)', color: 'var(--vg-f-ffd3d3)' };
 const backButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', border: 'none', borderRadius: 999, padding: '11px 18px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(37, 99, 235, 0.35)' };
 const backdropStyle = { position: 'fixed', inset: 0, background: 'rgba(0, 0, 0, 0.65)', display: 'grid', placeItems: 'center', zIndex: 900, padding: 16 };
 const modalStyle = { width: 'min(640px, 100%)', display: 'grid', gap: 14, padding: 22, borderRadius: 20, border: '1px solid rgba(var(--vg-ink), 0.14)', background: 'var(--vg-s-140b0b)' };

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import ConfirmModal from './ConfirmModal';
+import MenuAcciones from './MenuAcciones';
 import Toast from './Toast';
 import useToast from '../hooks/useToast';
 
@@ -199,9 +200,10 @@ function AnalystInventoryCategoriesPage({ isMobile, onBack, onViewInventory }) {
                         >
                           Renombrar
                         </button>
-                        <button type="button" style={secondaryButtonStyle} disabled={saving} onClick={() => handleToggleActivo(categoria)}>
-                          {categoria.activo ? 'Desactivar' : 'Activar'}
-                        </button>
+                        <MenuAcciones
+                          disabled={saving}
+                          items={[{ label: categoria.activo ? 'Desactivar' : 'Activar', onClick: () => handleToggleActivo(categoria) }]}
+                        />
                       </>
                     )}
                   </div>

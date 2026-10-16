@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import BotonDescargarPdf from './BotonDescargarPdf';
 import Toast from './Toast';
+import MenuAcciones from './MenuAcciones';
 import MoneyInput from './MoneyInput';
 import useToast from '../hooks/useToast';
 import { formatFecha, formatMonto } from '../utils/lotesPos';
@@ -467,7 +468,7 @@ function CasheaPage({ isMobile, onBack }) {
                         ) : (
                           <>
                             <span style={{ ...badgeStyle, color: '#bdf0cf', background: 'rgba(70,200,120,0.16)' }}>Registrada</span>
-                            <button type="button" style={miniDangerStyle} onClick={() => anular(item)}>Anular</button>
+                            <MenuAcciones items={[{ label: 'Anular liquidación', onClick: () => anular(item), danger: true }]} />
                           </>
                         )}
                       </div>
@@ -506,7 +507,6 @@ const inputStyle = { borderRadius: 12, border: '1px solid rgba(var(--vg-ink), 0.
 const calculoBoxStyle = { display: 'grid', gap: 8, padding: 14, borderRadius: 14, border: '1px solid var(--vg-f-ffcf85-a350)', background: 'rgba(255,207,133,0.05)' };
 const calculoFilaStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, color: 'var(--vg-f-f2e6e6)' };
 const badgeStyle = { fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 999, textTransform: 'uppercase', letterSpacing: '0.04em', width: 'fit-content' };
-const miniDangerStyle = { border: '1px solid var(--vg-f-ff7e7e-a400)', borderRadius: 999, padding: '6px 12px', background: 'rgba(145,33,33,0.25)', color: 'var(--vg-f-ffd3d3)', fontWeight: 700, cursor: 'pointer', fontSize: 12.5, width: 'fit-content' };
 const primaryButtonStyle = { border: 'none', borderRadius: 999, padding: '12px 18px', background: 'linear-gradient(90deg, #bf1f1f 0%, var(--vg-accent-primary) 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', width: 'fit-content' };
 const backButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', border: 'none', borderRadius: 999, padding: '11px 18px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(37, 99, 235, 0.35)' };
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import ConfirmModal from './ConfirmModal';
+import MenuAcciones from './MenuAcciones';
 import Toast from './Toast';
 import useToast from '../hooks/useToast';
 
@@ -176,10 +177,13 @@ function AnalystActivoCategoriesPage({ isMobile, onBack }) {
                     ) : (
                       <>
                         <button type="button" style={secondaryButtonStyle} disabled={saving} onClick={() => { setEditandoId(categoria.id); setNombreEnEdicion(categoria.nombre); }}>Renombrar</button>
-                        <button type="button" style={secondaryButtonStyle} disabled={saving} onClick={() => pedirActivar(categoria)}>{categoria.activo ? 'Desactivar' : 'Activar'}</button>
-                        {categoria.articulos === 0 ? (
-                          <button type="button" style={dangerButtonStyle} disabled={saving} onClick={() => pedirEliminar(categoria)}>Eliminar</button>
-                        ) : null}
+                        <MenuAcciones
+                          disabled={saving}
+                          items={[
+                            { label: categoria.activo ? 'Desactivar' : 'Activar', onClick: () => pedirActivar(categoria) },
+                            { label: 'Eliminar', onClick: () => pedirEliminar(categoria), danger: true, hidden: categoria.articulos !== 0 },
+                          ]}
+                        />
                       </>
                     )}
                   </div>
@@ -212,14 +216,13 @@ const sectionTitleStyle = { color: 'var(--vg-text-strong)', fontSize: 19, fontWe
 const emptyStyle = { minHeight: 80, display: 'grid', placeItems: 'center', borderRadius: 14, border: '1px dashed rgba(var(--vg-ink), 0.12)', color: 'var(--vg-f-c8bbbb)' };
 const mutedStyle = { color: 'var(--vg-f-a89999)', fontSize: 13 };
 const tableWrapStyle = { overflowX: 'auto' };
-const tableStyle = { display: 'grid', gridTemplateColumns: 'minmax(220px,1.4fr) minmax(100px,0.6fr) minmax(100px,0.6fr) minmax(320px,1.4fr)', minWidth: 760, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
+const tableStyle = { display: 'grid', gridTemplateColumns: 'minmax(220px,1.4fr) minmax(100px,0.6fr) minmax(100px,0.6fr) minmax(220px,1fr)', minWidth: 640, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
 const headStyle = { padding: '12px 14px', background: 'rgba(var(--vg-ink), 0.06)', color: 'var(--vg-f-ffb0b0)', fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 800 };
 const cellStyle = { padding: '12px 14px', borderTop: '1px solid rgba(var(--vg-ink), 0.08)', color: 'var(--vg-f-f2e6e6)', display: 'grid', alignContent: 'center' };
 const cellActionsStyle = { ...cellStyle, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' };
 const inputStyle = { borderRadius: 12, border: '1px solid rgba(var(--vg-ink), 0.14)', background: 'var(--vg-s-161010)', padding: '10px 12px', color: 'var(--vg-text-strong)', width: '100%', boxSizing: 'border-box' };
 const primaryButtonStyle = { border: 'none', borderRadius: 999, padding: '10px 16px', background: 'linear-gradient(90deg, #bf1f1f 0%, var(--vg-accent-primary) 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer' };
 const secondaryButtonStyle = { border: '1px solid rgba(var(--vg-ink), 0.14)', borderRadius: 999, padding: '10px 16px', background: 'rgba(var(--vg-ink), 0.04)', color: 'var(--vg-text-strong)', fontWeight: 700, cursor: 'pointer', width: 'fit-content' };
-const dangerButtonStyle = { border: '1px solid var(--vg-f-ff7e7e-a400)', borderRadius: 999, padding: '10px 16px', background: 'rgba(145,33,33,0.25)', color: 'var(--vg-f-ffd3d3)', fontWeight: 700, cursor: 'pointer' };
 const backButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', border: 'none', borderRadius: 999, padding: '11px 18px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(37, 99, 235, 0.35)' };
 
 export default AnalystActivoCategoriesPage;
