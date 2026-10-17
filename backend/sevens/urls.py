@@ -143,6 +143,13 @@ from .facturacion_views import (
     prefactura_convertir_view,
     prefacturas_view,
 )
+from .comida_empleados_views import (
+    comida_empleados_anular_view,
+    comida_empleados_detalle_view,
+    comida_empleados_opciones_view,
+    comida_empleados_previsualizar_view,
+    comida_empleados_view,
+)
 from .gastos_views import (
     admin_categorias_gasto_view,
     admin_gastos_view,
@@ -250,6 +257,17 @@ urlpatterns = [
     path('admin/reportes/inventario-pdf/', reporte_inventario_pdf_view, name='reporte_inventario_pdf'),
     path('admin/reportes/gastos-pdf/', reporte_gastos_pdf_view, name='reporte_gastos_pdf'),
     path('admin/reportes/facturado-pdf/', reporte_facturado_pdf_view, name='reporte_facturado_pdf'),
+    path('admin/comida-empleados/', comida_empleados_view, name='admin_comida_empleados'),
+    path('admin/comida-empleados/opciones/', comida_empleados_opciones_view, name='admin_comida_empleados_opciones'),
+    path(
+        'admin/comida-empleados/previsualizar/', comida_empleados_previsualizar_view,
+        name='admin_comida_empleados_previsualizar',
+    ),
+    path('admin/comida-empleados/<int:comida_id>/', comida_empleados_detalle_view, name='admin_comida_empleados_detalle'),
+    path(
+        'admin/comida-empleados/<int:comida_id>/anular/', comida_empleados_anular_view,
+        name='admin_comida_empleados_anular',
+    ),
     path(
         'admin/reportes/margen-por-plato-pdf/', reporte_margen_por_plato_pdf_view,
         name='reporte_margen_por_plato_pdf',
