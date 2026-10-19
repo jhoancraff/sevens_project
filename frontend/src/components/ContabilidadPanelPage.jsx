@@ -138,6 +138,7 @@ const reportSections = [
   { id: 'contabilidad-flujo-banco', title: 'Flujo de banco diario', icon: ReconciliationIcon },
   { id: 'contabilidad-lotes-pos', title: 'Lotes de punto de venta', icon: PosTerminalIcon },
   { id: 'contabilidad-cashea', title: 'Cashea: por cobrar y liquidaciones', icon: ReceivablesIcon },
+  { id: 'contabilidad-conciliacion-movimientos', title: 'Conciliación de movimientos', icon: ReconciliationIcon },
   ...(CONCILIACION_BANCARIA_HABILITADA ? [{
     id: 'contabilidad-conciliacion-bancaria',
     title: 'Conciliación bancaria',
@@ -166,6 +167,7 @@ const reportGroups = [
       'contabilidad-flujo-banco',
       'contabilidad-lotes-pos',
       'contabilidad-cashea',
+      'contabilidad-conciliacion-movimientos',
       'contabilidad-conciliacion-bancaria',
     ],
   },

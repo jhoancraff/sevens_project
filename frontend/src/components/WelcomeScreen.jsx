@@ -17,6 +17,7 @@ import ReporteDisponibilidadCuentasPage from './ReporteDisponibilidadCuentasPage
 import ReporteFlujoBancoPage from './ReporteFlujoBancoPage';
 import HistorialTransferenciasPage from './HistorialTransferenciasPage';
 import HistorialIngresosNoFacturadosPage from './HistorialIngresosNoFacturadosPage';
+import ConciliacionMovimientosPage from './ConciliacionMovimientosPage';
 import ReporteConciliacionBancariaPage from './ReporteConciliacionBancariaPage';
 import AnalystBulkPromotionPage from './AnalystBulkPromotionPage';
 import AnalystChefRecommendationsPage from './AnalystChefRecommendationsPage';
@@ -1223,6 +1224,11 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           />
         ) : activeView === 'contabilidad-flujo-banco' ? (
           <ReporteFlujoBancoPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
+        ) : activeView === 'contabilidad-conciliacion-movimientos' ? (
+          <ConciliacionMovimientosPage
             isMobile={isMobile}
             onBack={goBackView}
           />
