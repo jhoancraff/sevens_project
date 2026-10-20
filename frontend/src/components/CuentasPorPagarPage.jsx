@@ -5,6 +5,7 @@ import { consumirAperturaCuentasPorPagarPagadas } from '../utils/fechaContabilid
 import BotonDescargarPdf from './BotonDescargarPdf';
 import ReporteNotasCreditoCompra from './ReporteNotasCreditoCompra';
 import { RangoFechas } from './FiltroFechas';
+import MoneyInput from './MoneyInput';
 
 // `bsPreciso`, cuando viene, es el total_bs que ya calculó el backend (para
 // una compra con total_bs_factura, es el monto EXACTO que el analista
@@ -86,6 +87,9 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
   // Tasa propia del abono (vacia = la de la factura/BCV). Ver tasaPorDefecto.
   const [tasaAbono, setTasaAbono] = useState('');
   const [metodoAbono, setMetodoAbono] = useState('');
+  // Nº de la transferencia / pago móvil con el que se pagó: se guarda en VGAbonoCompra.referencia
+  // (y VGAbonoGasto.referencia), que es lo que la conciliación bancaria cruza con el extracto.
+  const [referenciaAbono, setReferenciaAbono] = useState('');
   const [savingAbono, setSavingAbono] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [feedbackType, setFeedbackType] = useState('success');
@@ -212,6 +216,7 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
     setMontoAbono('');
     setMonedaAbono('USD');
     setTasaAbono('');
+    setReferenciaAbono('');
     setSelectedCompraId(compra.id);
     setSelectedTipo(compra.tipo);
     fetchCompraDetalle(compra.id, compra.tipo);
@@ -272,6 +277,7 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
           // Solo si la tasa se cambio a mano: asi un abono normal sigue usando la de la factura.
           ...(selectedTipo === 'compra' && tasaAbonoManual ? { tasa_cambio: tasaAbono } : {}),
           metodo_pago_id: metodoPagoId,
+          referencia: referenciaAbono.trim(),
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -287,6 +293,7 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
       setUltimoAbonoId(data.abono.id);
       setMontoAbono('');
       setTasaAbono('');
+      setReferenciaAbono('');
       await fetchCompras();
     } catch (requestError) {
       setFeedbackType('error');
@@ -649,7 +656,10 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
                     <div style={{ color: 'var(--vg-f-9fe3b0)', fontWeight: 700, fontSize: 12, textTransform: 'uppercase' }}>Abonos registrados</div>
                     {compraDetalle.abonos.map((abono) => (
                       <div key={abono.id} style={lineaRowStyle}>
-                        <span>{abono.metodo_pago} — {new Date(abono.fecha_pago).toLocaleString('es-VE')}</span>
+                        <span>
+                          {abono.metodo_pago} — {new Date(abono.fecha_pago).toLocaleString('es-VE')}
+                          {abono.referencia ? ` · Ref. ${abono.referencia}` : ''}
+                        </span>
                         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           {abono.tasa_manual ? <span title={`Pagado a tasa propia: ${abono.tasa_cambio_referencia}`} style={{ color: 'var(--vg-f-ffcf7d)', fontSize: 11.5 }}>tasa {abono.tasa_cambio_referencia}</span> : null}
                           {formatUsdBs(abono.monto, abono.tasa_cambio_referencia ?? tasaCambio, abono.monto_bs)}
@@ -756,13 +766,14 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
                         Bolívares (Bs)
                       </button>
                     </div>
-                    <input
-                      type="number"
-                      min="0.01"
-                      step="any"
+                    {/* Con separador de miles mientras se escribe (1,100.88), igual que los cobros;
+                        el valor que se guarda y se envía es el número limpio. En $ admite hasta
+                        6 decimales para que "Pagar todo el saldo" no pierda centavos. */}
+                    <MoneyInput
+                      maxDecimales={monedaAbono === 'VES' ? 2 : 6}
                       placeholder={monedaAbono === 'VES' ? 'Monto del abono en Bs' : 'Monto del abono en $'}
                       value={montoAbono}
-                      onChange={(event) => setMontoAbono(event.target.value)}
+                      onChange={setMontoAbono}
                       style={inputStyle}
                       required
                     />
@@ -771,13 +782,11 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
                         <label style={{ color: 'var(--vg-f-c8bbbb)', fontSize: 12.5 }}>
                           Tasa de este pago (Bs por $) — cámbiala si el proveedor cobró a otra tasa
                         </label>
-                        <input
-                          type="number"
-                          min="0.0001"
-                          step="0.0001"
+                        <MoneyInput
+                          maxDecimales={4}
                           placeholder={Number.isFinite(tasaPorDefecto) && tasaPorDefecto > 0 ? `Sin cambiar usa ${tasaPorDefecto} (${origenTasaPorDefecto})` : 'Tasa en Bs por $'}
                           value={tasaAbono}
-                          onChange={(event) => setTasaAbono(event.target.value)}
+                          onChange={setTasaAbono}
                           style={inputStyle}
                         />
                         {Number.isFinite(tasaEfectiva) && tasaEfectiva > 0 ? (
@@ -812,6 +821,14 @@ function CuentasPorPagarPage({ isMobile, onBack, onVerComprobante }) {
                         <option key={metodo.id} value={metodo.id}>{metodo.nombre}</option>
                       ))}
                     </select>
+                    <input
+                      type="text"
+                      maxLength={100}
+                      placeholder="ID de la transferencia o pago móvil (opcional)"
+                      value={referenciaAbono}
+                      onChange={(event) => setReferenciaAbono(event.target.value)}
+                      style={inputStyle}
+                    />
                     <button type="submit" style={primaryButtonStyle} disabled={savingAbono}>
                       {savingAbono ? 'Registrando...' : 'Registrar abono'}
                     </button>

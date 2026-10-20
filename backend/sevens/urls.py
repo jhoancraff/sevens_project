@@ -68,6 +68,7 @@ from .reportes_pdf_views import (
     reporte_cuentas_por_cobrar_pdf_view,
     reporte_cuentas_por_pagar_pdf_view,
     reporte_facturado_pdf_view,
+    reporte_conciliacion_bancaria_pdf_view,
     reporte_margen_por_plato_pdf_view,
     reporte_gastos_pdf_view,
     reporte_inventario_pdf_view,
@@ -100,6 +101,20 @@ from .activos_views import (
 )
 from .categorias_inventario_views import admin_categorias_inventario_view
 from .inventario_movimientos_views import admin_inventario_movimientos_view
+from .conciliacion_bancaria_views import (
+    conciliacion_candidatos_view,
+    conciliacion_cerrar_dia_view,
+    conciliacion_cierres_view,
+    conciliacion_conciliar_view,
+    conciliacion_confirmar_probables_view,
+    conciliacion_cuentas_view,
+    conciliacion_extractos_view,
+    conciliacion_importar_view,
+    conciliacion_movimiento_accion_view,
+    conciliacion_movimientos_view,
+    conciliacion_reabrir_cierre_view,
+    conciliacion_reverso_view,
+)
 from .contabilidad_views import (
     admin_ingresos_no_facturados_view,
     admin_lotes_pos_view,
@@ -256,6 +271,19 @@ urlpatterns = [
     path('admin/reportes/margen-productos/', reporte_margen_productos_view, name='reporte_margen_productos'),
     path('admin/reportes/inventario-pdf/', reporte_inventario_pdf_view, name='reporte_inventario_pdf'),
     path('admin/reportes/gastos-pdf/', reporte_gastos_pdf_view, name='reporte_gastos_pdf'),
+    path('admin/conciliacion-bancaria/cuentas/', conciliacion_cuentas_view, name='conciliacion-cuentas'),
+    path('admin/conciliacion-bancaria/importar/', conciliacion_importar_view, name='conciliacion-importar'),
+    path('admin/conciliacion-bancaria/extractos/', conciliacion_extractos_view, name='conciliacion-extractos'),
+    path('admin/conciliacion-bancaria/movimientos/', conciliacion_movimientos_view, name='conciliacion-movimientos'),
+    path('admin/conciliacion-bancaria/movimientos/<int:movimiento_id>/accion/', conciliacion_movimiento_accion_view, name='conciliacion-movimiento-accion'),
+    path('admin/conciliacion-bancaria/movimientos/<int:movimiento_id>/candidatos/', conciliacion_candidatos_view, name='conciliacion-movimiento-candidatos'),
+    path('admin/conciliacion-bancaria/conciliar/', conciliacion_conciliar_view, name='conciliacion-conciliar'),
+    path('admin/conciliacion-bancaria/confirmar-probables/', conciliacion_confirmar_probables_view, name='conciliacion-confirmar-probables'),
+    path('admin/conciliacion-bancaria/reverso/', conciliacion_reverso_view, name='conciliacion-reverso'),
+    path('admin/conciliacion-bancaria/cierres/', conciliacion_cierres_view, name='conciliacion-cierres'),
+    path('admin/conciliacion-bancaria/cierres/cerrar/', conciliacion_cerrar_dia_view, name='conciliacion-cerrar-dia'),
+    path('admin/conciliacion-bancaria/cierres/<int:cierre_id>/reabrir/', conciliacion_reabrir_cierre_view, name='conciliacion-reabrir-cierre'),
+    path('admin/conciliacion-bancaria/pdf/', reporte_conciliacion_bancaria_pdf_view, name='conciliacion-pdf'),
     path('admin/reportes/facturado-pdf/', reporte_facturado_pdf_view, name='reporte_facturado_pdf'),
     path('admin/comida-empleados/', comida_empleados_view, name='admin_comida_empleados'),
     path('admin/comida-empleados/opciones/', comida_empleados_opciones_view, name='admin_comida_empleados_opciones'),
