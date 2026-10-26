@@ -60,6 +60,11 @@ from .api_views import (
     tasa_cambio_view,
 )
 from .delivery_views import pedido_cargo_delivery_view, zonas_delivery_view
+from .servicios_adicionales_views import (
+    pedido_servicios_view,
+    servicio_adicional_detail_view,
+    servicios_adicionales_view,
+)
 from .reportes_pdf_views import (
     comprobante_entrega_activo_pdf_view,
     reporte_cashea_por_cobrar_pdf_view,
@@ -170,6 +175,7 @@ from .gastos_views import (
     admin_gastos_view,
     gasto_abono_view,
     gasto_detail_view,
+    gasto_inhabilitar_view,
 )
 
 urlpatterns = [
@@ -254,6 +260,7 @@ urlpatterns = [
     path('admin/categorias-gasto/', admin_categorias_gasto_view, name='admin_categorias_gasto'),
     path('admin/gastos/', admin_gastos_view, name='admin_gastos'),
     path('admin/gastos/<int:gasto_id>/abonos/', gasto_abono_view, name='gasto_abono'),
+    path('admin/gastos/<int:gasto_id>/inhabilitar/', gasto_inhabilitar_view, name='gasto_inhabilitar'),
     path('admin/gastos/<int:gasto_id>/', gasto_detail_view, name='gasto_detail'),
 
     # --- Administracion: metodos de pago e ingresos extra ------------------
@@ -324,6 +331,9 @@ urlpatterns = [
     # --- Facturacion ------------------------------------------------------
     path('clientes/buscar/', clientes_buscar_view, name='clientes_buscar'),
     path('delivery/zonas/', zonas_delivery_view, name='delivery_zonas'),
+    path('servicios-adicionales/', servicios_adicionales_view, name='servicios_adicionales'),
+    path('servicios-adicionales/<int:servicio_id>/', servicio_adicional_detail_view, name='servicio_adicional_detalle'),
+    path('pedidos/<int:pedido_id>/servicios/', pedido_servicios_view, name='pedido_servicios'),
     path('pedidos/<int:pedido_id>/delivery/', pedido_cargo_delivery_view, name='pedido_cargo_delivery'),
     path('admin/datos-fiscales/', datos_fiscales_view, name='datos_fiscales'),
     path('prefacturas/', prefacturas_view, name='prefacturas'),

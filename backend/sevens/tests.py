@@ -5941,6 +5941,18 @@ class TicketGraficoCajaTests(TestCase):
         self.assertEqual(datos, self._ticket().to_text_bytes())
         self.assertNotIn(b'\x1dv0', datos)
 
+    def test_la_nota_de_entrega_lleva_los_datos_de_la_empresa_bajo_el_logo(self):
+        from types import SimpleNamespace
+        from sevens.impresion_lpd import _ticket_recibo
+        datos = SimpleNamespace(razon_social='SEVENS C.A.', rif='J-12345678-9', domicilio_fiscal='AV PRINCIPAL LOCAL 1', telefono='0412-0000000')
+        ticket = _ticket_recibo([], None, None, Decimal('10.00'), Decimal('100'), codigo='1', moneda='USD',
+                                total_ambas_monedas=True, datos_fiscales=datos)
+        texto = ticket.texto_plano()
+        self.assertEqual(ticket.ops[0], ('logo',))
+        self.assertEqual(texto[:5], ['SEVEN', 'SEVENS C.A.', 'RIF: J-12345678-9', 'AV PRINCIPAL LOCAL 1', 'Tel: 0412-0000000'])
+        # sin datos fiscales cargados el encabezado queda como siempre
+        self.assertEqual(_ticket_recibo([], None, None, Decimal('1'), None, moneda='USD').texto_plano()[0], 'SEVEN')
+
     def test_se_puede_apagar_el_ticket_grafico_por_configuracion(self):
         with self.settings(TICKET_CAJA_GRAFICO=False):
             datos = self._ticket().to_bytes()
@@ -7768,3 +7780,375 @@ class ConciliacionCierreDiarioViewsTests(TestCase):
         self.assertEqual((data['resumen']['dias'], data['resumen']['cerrados'], data['resumen']['completo']), (2, 0, False))
         r = self.client.get(self.BASE + 'pdf/?cuenta=Banco Cierre V&desde=2026-10-05&hasta=2026-10-06&conciliados=0')
         self.assertEqual((r.status_code, r.content[:4]), (200, b'%PDF'))
+
+
+class InhabilitarGastoTests(TestCase):
+    """Inhabilitar un gasto: el dinero vuelve al banco, con motivo obligatorio, advertencias y auditoria."""
+
+    def setUp(self):
+        from sevens.models import VGAbonoGasto, VGCategoriaGasto, VGGasto
+        rol, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='inh_admin', password='claveInh123', cedula='96000001', email='inh@test.test', id_role=rol,
+        )
+        self.client.force_login(self.admin)
+        _set_tasa_actual('100.0000')
+        self.metodo = VGMetodoPago.objects.create(nombre='Transf Inh', moneda='VES', cuenta_bancaria='Banco Inh')
+        self.cat = VGCategoriaGasto.objects.get_or_create(nombre='Servicios')[0]
+        self.hoy = timezone.localdate()
+        # gasto de $100 pagado en Bs (tasa 100) = Bs 10.000 que salieron del banco
+        self.gasto = VGGasto.objects.create(
+            categoria=self.cat, descripcion='Luz de octubre', monto=Decimal('100'), saldo_pendiente=0,
+            estado_pago='pagado', fecha_gasto=self.hoy, tasa_cambio_referencia=Decimal('100'),
+        )
+        self.abono = VGAbonoGasto.objects.create(
+            gasto=self.gasto, monto=Decimal('100'), metodo_pago=self.metodo, tasa_cambio_referencia=Decimal('100'),
+        )
+
+    def url(self, gasto=None):
+        return f'/api/admin/gastos/{(gasto or self.gasto).id}/inhabilitar/'
+
+    def post(self, cuerpo, gasto=None):
+        return self.client.post(self.url(gasto), data=json.dumps(cuerpo), content_type='application/json')
+
+    def saldo_bs(self):
+        from sevens.reportes import disponibilidad_por_cuenta
+        _cuentas, bancos = disponibilidad_por_cuenta(self.hoy)
+        return next(b for b in bancos if b['nombre'] == 'Banco Inh')['saldo_disponible_bs']
+
+    def test_inhabilitar_hace_subir_el_banco_y_deja_la_auditoria(self):
+        from sevens.models import VGInhabilitacionGasto
+        self.assertEqual(self.saldo_bs(), Decimal('-10000.00'))
+
+        # la vista previa dice que el dinero vuelve y no toca nada
+        previa = self.client.get(self.url()).json()
+        self.assertEqual(previa['accion'], 'inhabilitar')
+        self.assertEqual([a['codigo'] for a in previa['advertencias']], ['devuelve_al_banco'])
+        self.assertIn('Banco Inh: Bs 10.000,00', previa['advertencias'][0]['detalle'])
+        self.assertEqual(previa['bloqueos'], [])
+        self.assertEqual(self.saldo_bs(), Decimal('-10000.00'))
+
+        # sin motivo: 400; con motivo pero sin aceptar la advertencia: 409 y no cambia nada
+        self.assertEqual(self.post({'accion': 'inhabilitar', 'motivo': 'corto', 'aceptadas': ['devuelve_al_banco']}).status_code, 400)
+        r = self.post({'accion': 'inhabilitar', 'motivo': 'Se cargo dos veces por error'})
+        self.assertEqual(r.status_code, 409)
+        self.assertTrue(r.json()['requiere_confirmacion'])
+        self.assertEqual([a['codigo'] for a in r.json()['advertencias']], ['devuelve_al_banco'])
+        self.assertEqual(self.saldo_bs(), Decimal('-10000.00'))
+        self.assertEqual(VGInhabilitacionGasto.objects.count(), 0)
+
+        r = self.post({'accion': 'inhabilitar', 'motivo': 'Se cargo dos veces por error', 'aceptadas': ['devuelve_al_banco']})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(r.json()['gasto']['inhabilitado'])
+        self.gasto.refresh_from_db()
+        self.assertTrue(self.gasto.inhabilitado)
+        self.assertEqual(self.saldo_bs(), Decimal('0.00'))           # el banco subio lo que habia salido
+
+        auditoria = VGInhabilitacionGasto.objects.get()
+        self.assertEqual((auditoria.accion, auditoria.motivo, auditoria.creado_por), ('inhabilitado', 'Se cargo dos veces por error', self.admin))
+        self.assertEqual(auditoria.monto_usd_afectado, Decimal('100.00'))
+        self.assertEqual(auditoria.efecto_cuentas[0]['cuenta'], 'Banco Inh')
+        self.assertEqual(auditoria.efecto_cuentas[0]['bs'], '10000.00')
+        self.assertEqual([a['codigo'] for a in auditoria.advertencias_aceptadas], ['devuelve_al_banco'])
+
+        # no se puede inhabilitar dos veces
+        r = self.post({'accion': 'inhabilitar', 'motivo': 'Otra vez por si acaso', 'aceptadas': ['devuelve_al_banco']})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json()['bloqueos'][0]['codigo'], 'ya_inhabilitado')
+
+    def test_rehabilitar_vuelve_a_sacar_el_dinero_del_banco(self):
+        from sevens.models import VGInhabilitacionGasto
+        self.post({'accion': 'inhabilitar', 'motivo': 'Se cargo dos veces por error', 'aceptadas': ['devuelve_al_banco']})
+        self.assertEqual(self.saldo_bs(), Decimal('0.00'))
+        previa = self.client.get(self.url()).json()      # ya inhabilitado: la vista previa es de rehabilitar
+        self.assertEqual((previa['accion'], previa['advertencias'][0]['codigo']), ('rehabilitar', 'vuelve_a_salir'))
+        r = self.post({'accion': 'rehabilitar', 'motivo': 'Resulto que si era un gasto real', 'aceptadas': ['vuelve_a_salir']})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self.saldo_bs(), Decimal('-10000.00'))
+        self.assertEqual(
+            list(VGInhabilitacionGasto.objects.order_by('id').values_list('accion', flat=True)), ['inhabilitado', 'rehabilitado'],
+        )
+
+    def test_un_gasto_inhabilitado_no_suma_ni_se_puede_pagar_ni_editar(self):
+        self.post({'accion': 'inhabilitar', 'motivo': 'Se cargo dos veces por error', 'aceptadas': ['devuelve_al_banco']})
+        lista = self.client.get('/api/admin/gastos/').json()
+        fila = next(g for g in lista['gastos'] if g['id'] == self.gasto.id)
+        self.assertTrue(fila['inhabilitado'])
+        self.assertEqual(fila['inhabilitacion']['motivo'], 'Se cargo dos veces por error')
+        self.assertEqual(Decimal(lista['total_general']), Decimal('0'))
+        self.assertEqual(self.client.get('/api/admin/gastos/?inhabilitados=ocultar').json()['gastos'], [])
+        # no sale en cuentas por pagar ni en el estado de resultados
+        from sevens.models import VGGasto
+        pendiente = VGGasto.objects.create(
+            categoria=self.cat, descripcion='Pendiente', monto=Decimal('5'), saldo_pendiente=Decimal('5'),
+            estado_pago='pendiente', fecha_gasto=self.hoy, tasa_cambio_referencia=Decimal('100'),
+        )
+        self.post({'accion': 'inhabilitar', 'motivo': 'No era un gasto del negocio', 'aceptadas': ['sin_pagos']}, gasto=pendiente)
+        por_pagar = self.client.get('/api/cuentas-por-pagar/').json()['compras']
+        self.assertNotIn(pendiente.id, [c['id'] for c in por_pagar if c['tipo'] == 'gasto'])
+        # ni abonarlo ni editarlo
+        r = self.client.post(
+            f'/api/admin/gastos/{pendiente.id}/abonos/',
+            data=json.dumps({'monto': '1', 'metodo_pago_id': self.metodo.id}), content_type='application/json',
+        )
+        self.assertEqual(r.status_code, 409)
+        r = self.client.post(
+            f'/api/admin/gastos/{self.gasto.id}/', data=json.dumps({'action': 'editar', 'motivo': 'x', 'monto': '50'}),
+            content_type='application/json',
+        )
+        self.assertEqual(r.status_code, 409)
+
+    def test_un_gasto_de_un_mes_anterior_pide_aceptar_el_cambio_de_periodo(self):
+        from sevens.models import VGGasto
+        viejo = VGGasto.objects.create(
+            categoria=self.cat, descripcion='Alquiler del mes pasado', monto=Decimal('50'), saldo_pendiente=Decimal('50'),
+            estado_pago='pendiente', fecha_gasto=self.hoy.replace(day=1) - timedelta(days=3), tasa_cambio_referencia=Decimal('100'),
+        )
+        codigos = [a['codigo'] for a in self.client.get(self.url(viejo)).json()['advertencias']]
+        self.assertEqual(sorted(codigos), ['periodo_pasado', 'sin_pagos'])
+        r = self.post({'accion': 'inhabilitar', 'motivo': 'Ese alquiler no corresponde', 'aceptadas': ['sin_pagos']}, gasto=viejo)
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual([a['codigo'] for a in r.json()['advertencias']], ['periodo_pasado'])
+
+    def test_la_comision_de_una_liquidacion_de_cashea_no_se_puede_inhabilitar(self):
+        from sevens.models import VGLiquidacionCashea
+        destino = VGMetodoPago.objects.create(nombre='Destino Cashea', moneda='VES', cuenta_bancaria='Banco Dest')
+        VGLiquidacionCashea.objects.create(
+            numero=1, fecha_deposito=self.hoy, cuenta_cashea=self.metodo, cuenta_destino=destino, tasa_cambio=Decimal('100'),
+            deposito_bs=Decimal('900'), monto_financiado_usd=Decimal('10'), neto_usd=Decimal('9'), comision_usd=Decimal('1'),
+            gasto=self.gasto,
+        )
+        previa = self.client.get(self.url()).json()
+        self.assertEqual([b['codigo'] for b in previa['bloqueos']], ['liquidacion_cashea'])
+        r = self.post({'accion': 'inhabilitar', 'motivo': 'Intento sobre la comision de Cashea', 'aceptadas': ['devuelve_al_banco']})
+        self.assertEqual(r.status_code, 409)
+        self.gasto.refresh_from_db()
+        self.assertFalse(self.gasto.inhabilitado)
+
+    def test_solo_el_administrador_puede_inhabilitar(self):
+        self.client.logout()
+        self.assertEqual(self.client.get(self.url()).status_code, 401)
+        self.assertEqual(self.post({'accion': 'inhabilitar', 'motivo': 'Intento sin sesion'}).status_code, 401)
+        cajera = VGUsuario.objects.create_user(
+            username='inh_cajera', password='claveInh123', cedula='96000002', email='inhc@test.test',
+            id_role=VGRol.objects.get(nombre_role='Cajera'),
+        )
+        self.client.force_login(cajera)
+        self.assertEqual(self.post({'accion': 'inhabilitar', 'motivo': 'Intento de la cajera'}).status_code, 401)
+        self.gasto.refresh_from_db()
+        self.assertFalse(self.gasto.inhabilitado)
+
+    # ---- conciliacion bancaria
+    def _movimiento_conciliado(self, dia=None):
+        from sevens import conciliacion_bancaria as motor
+        from sevens.models import VGExtractoBancario, VGMovimientoBancario
+        dia = dia or self.hoy
+        extracto = VGExtractoBancario.objects.create(cuenta_bancaria='Banco Inh')
+        mov = VGMovimientoBancario.objects.create(
+            extracto=extracto, cuenta_bancaria='Banco Inh', fecha=timezone.make_aware(datetime.combine(dia, datetime.min.time().replace(hour=12))),
+            referencia='123456', descripcion='TRF PROVEEDOR', tipo='debito', monto=Decimal('10000.00'), clase='transferencia_enviada',
+            huella='inh1',
+        )
+        motor.vincular_manual(mov, 'abono_gasto', self.abono.id, self.admin)
+        mov.refresh_from_db()
+        self.assertEqual(mov.estado, 'conciliado')
+        return mov
+
+    def test_inhabilitar_un_gasto_conciliado_deshace_el_vinculo_y_lo_audita(self):
+        from sevens.models import VGConciliacionMovimiento, VGInhabilitacionGasto
+        mov = self._movimiento_conciliado()
+        previa = self.client.get(self.url()).json()
+        self.assertEqual([a['codigo'] for a in previa['advertencias']], ['devuelve_al_banco', 'conciliado'])
+        r = self.post({
+            'accion': 'inhabilitar', 'motivo': 'Era un pago duplicado del banco', 'aceptadas': ['devuelve_al_banco', 'conciliado'],
+        })
+        self.assertEqual(r.status_code, 200, r.content)
+        mov.refresh_from_db()
+        self.assertFalse(VGConciliacionMovimiento.objects.filter(movimiento=mov, estado='confirmado').exists())
+        self.assertNotEqual(mov.estado, 'conciliado')
+        deshechos = VGInhabilitacionGasto.objects.get().vinculos_deshechos
+        self.assertEqual([d['movimiento_id'] for d in deshechos], [mov.id])
+        # el pago inhabilitado ya no aparece como candidato ni como "en el sistema, no en el banco"
+        from sevens import conciliacion_bancaria as motor
+        self.assertEqual(motor.registros_sin_movimiento('Banco Inh', self.hoy, self.hoy), [])
+
+    def test_si_el_dia_del_movimiento_esta_cerrado_bloquea(self):
+        from sevens.models import VGCierreConciliacion
+        self._movimiento_conciliado()
+        VGCierreConciliacion.objects.create(cuenta_bancaria='Banco Inh', fecha=self.hoy, estado='vigente')
+        previa = self.client.get(self.url()).json()
+        self.assertEqual([b['codigo'] for b in previa['bloqueos']], ['dia_conciliacion_cerrado'])
+        r = self.post({
+            'accion': 'inhabilitar', 'motivo': 'Era un pago duplicado del banco', 'aceptadas': ['devuelve_al_banco', 'conciliado'],
+        })
+        self.assertEqual(r.status_code, 409)
+        self.gasto.refresh_from_db()
+        self.assertFalse(self.gasto.inhabilitado)
+
+
+class ServiciosAdicionalesTests(TestCase):
+    """Servicios adicionales: catalogo del administrador/contador, varios por pedido, sin IVA, sin costo (entrada neta)."""
+
+    def setUp(self):
+        from sevens.models import VGServicioAdicional
+        roles = {n: VGRol.objects.get_or_create(nombre_role=n)[0] for n in ('Administrador', 'Contador', 'Cajera', 'Mesero')}
+        crear = lambda user, rol, ced: VGUsuario.objects.create_user(
+            username=user, password='claveSrv123', cedula=ced, email=f'{user}@sevens.test', id_role=roles[rol],
+        )
+        self.admin = crear('sv_admin', 'Administrador', '98000001')
+        self.contador = crear('sv_contador', 'Contador', '98000002')
+        self.cajera = crear('sv_cajera', 'Cajera', '98000003')
+        self.mesero = crear('sv_mesero', 'Mesero', '98000004')
+        categoria = VGCategoriaProducto.objects.create(nombre='Platos SV', no_requiere_cocina=True)
+        self.plato = VGProducto.objects.create(nombre='Plato SV', categoria=categoria, precio_venta='10.00', disponible=True)
+        self.efectivo = VGMetodoPago.objects.create(nombre='Efectivo SV', moneda='USD', es_efectivo=True)
+        _set_tasa_actual('100.0000')
+        self.torta = VGServicioAdicional.objects.create(nombre='Torta de cumpleaños', precio=Decimal('15.00'))
+        self.descorche = VGServicioAdicional.objects.create(nombre='Descorche', precio=Decimal('5.50'))
+
+    def post(self, url, payload=None, usuario=None):
+        self.client.force_login(usuario or self.cajera)
+        return self.client.post(url, data=json.dumps(payload or {}), content_type='application/json')
+
+    def crear_pedido(self, servicios=None, usuario=None, **extra):
+        payload = {'tipo_pedido': 'llevar', 'cliente_nombre': 'Cliente SV', 'items': [{'product_id': self.plato.id, 'cantidad': 2}], **extra}
+        if servicios is not None:
+            payload['servicios'] = servicios
+        return self.post('/api/pedidos/', payload, usuario)
+
+    def pedido(self, respuesta):
+        self.assertEqual(respuesta.status_code, 201, respuesta.content)
+        return VGPedido.objects.get(pk=respuesta.json()['pedido']['id'])
+
+    # ---- catalogo
+    def test_solo_administrador_o_contador_crean_y_editan_el_catalogo(self):
+        cuerpo = {'nombre': 'Decoración de mesa', 'precio': '20', 'descripcion': 'Globos y flores'}
+        for usuario in (self.cajera, self.mesero):
+            self.assertEqual(self.post('/api/servicios-adicionales/', cuerpo, usuario).status_code, 401)
+        r = self.post('/api/servicios-adicionales/', cuerpo, self.contador)
+        self.assertEqual(r.status_code, 201, r.content)
+        nuevo = r.json()['servicio']
+        self.assertEqual((nuevo['nombre'], nuevo['precio'], nuevo['activo']), ('Decoración de mesa', '20.00', True))
+        # nombre repetido o precio invalido
+        self.assertEqual(self.post('/api/servicios-adicionales/', {'nombre': 'descorche', 'precio': '1'}, self.admin).status_code, 400)
+        self.assertEqual(self.post('/api/servicios-adicionales/', {'nombre': 'Otro', 'precio': '-3'}, self.admin).status_code, 400)
+        self.assertEqual(self.post('/api/servicios-adicionales/', {'nombre': '', 'precio': '3'}, self.admin).status_code, 400)
+        # editar: solo admin/contador; no se puede con otro rol
+        url = f'/api/servicios-adicionales/{nuevo["id"]}/'
+        self.assertEqual(self.post(url, {'precio': '25'}, self.cajera).status_code, 401)
+        r = self.post(url, {'precio': '25.50', 'activo': False}, self.admin)
+        self.assertEqual((r.json()['servicio']['precio'], r.json()['servicio']['activo']), ('25.50', False))
+
+    def test_cualquier_rol_ve_solo_los_activos_y_el_admin_puede_ver_todos(self):
+        from sevens.models import VGServicioAdicional
+        VGServicioAdicional.objects.filter(pk=self.descorche.pk).update(activo=False)
+        self.client.force_login(self.mesero)
+        nombres = [s['nombre'] for s in self.client.get('/api/servicios-adicionales/').json()['servicios']]
+        self.assertEqual(nombres, ['Torta de cumpleaños'])
+        self.assertEqual(len(self.client.get('/api/servicios-adicionales/?todos=1').json()['servicios']), 1)  # el mesero no ve inactivos
+        self.client.force_login(self.admin)
+        self.assertEqual(len(self.client.get('/api/servicios-adicionales/?todos=1').json()['servicios']), 2)
+        self.client.logout()
+        self.assertEqual(self.client.get('/api/servicios-adicionales/').status_code, 401)
+
+    # ---- en el pedido
+    def test_un_pedido_lleva_varios_servicios_y_el_mismo_mas_de_una_vez_sumados_al_total_sin_iva(self):
+        pedido = self.pedido(self.crear_pedido(
+            servicios=[{'servicio_id': self.torta.id, 'cantidad': 1}, {'servicio_id': self.descorche.id, 'cantidad': 2},
+                       {'servicio_id': self.descorche.id, 'cantidad': 1}],
+            usuario=self.mesero,   # cualquier rol puede ponerlos
+        ))
+        lineas = {l.nombre: (l.cantidad, l.precio_unitario, l.subtotal) for l in pedido.servicios.all()}
+        self.assertEqual(lineas, {'Torta de cumpleaños': (1, Decimal('15.00'), Decimal('15.00')), 'Descorche': (3, Decimal('5.50'), Decimal('16.50'))})
+        self.assertEqual((pedido.subtotal, pedido.cargo_servicios, pedido.total), (Decimal('20.00'), Decimal('31.50'), Decimal('51.50')))
+
+    def test_servicio_inactivo_inexistente_o_con_cantidad_invalida_se_rechaza(self):
+        from sevens.models import VGServicioAdicional
+        VGServicioAdicional.objects.filter(pk=self.descorche.pk).update(activo=False)
+        for servicios in ([{'servicio_id': self.descorche.id, 'cantidad': 1}], [{'servicio_id': 99999, 'cantidad': 1}],
+                          [{'servicio_id': self.torta.id, 'cantidad': 0}], [{'servicio_id': self.torta.id, 'cantidad': 500}], 'hola'):
+            self.assertEqual(self.crear_pedido(servicios=servicios).status_code, 400, servicios)
+        self.assertEqual(VGPedido.objects.count(), 0)
+
+    def test_cambiar_el_precio_del_catalogo_no_toca_lo_ya_cobrado(self):
+        pedido = self.pedido(self.crear_pedido(servicios=[{'servicio_id': self.torta.id, 'cantidad': 1}]))
+        self.post(f'/api/servicios-adicionales/{self.torta.id}/', {'precio': '99', 'activo': False}, self.admin)
+        pedido.refresh_from_db()
+        self.assertEqual((pedido.cargo_servicios, pedido.total), (Decimal('15.00'), Decimal('35.00')))
+        # al editar el pedido conservando el servicio (ya inactivo y con otro precio) se mantiene el precio original
+        r = self.post(f'/api/pedidos/{pedido.id}/servicios/', {'servicios': [{'servicio_id': self.torta.id, 'cantidad': 2}]})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['pedido']['cargo_servicios'], '30.00')
+
+    def test_agregar_cambiar_y_quitar_servicios_de_un_pedido_ya_creado(self):
+        pedido = self.pedido(self.crear_pedido())
+        url = f'/api/pedidos/{pedido.id}/servicios/'
+        r = self.post(url, {'servicios': [{'servicio_id': self.torta.id, 'cantidad': 1}, {'servicio_id': self.descorche.id, 'cantidad': 2}]}, self.mesero)
+        self.assertEqual((r.status_code, r.json()['pedido']['total']), (200, '46.00'))
+        r = self.post(url, {'servicios': [{'servicio_id': self.descorche.id, 'cantidad': 1}]})
+        self.assertEqual(r.json()['pedido']['total'], '25.50')
+        r = self.post(url, {'servicios': []})
+        self.assertEqual((r.json()['pedido']['total'], r.json()['pedido']['servicios']), ('20.00', []))
+        VGPedido.objects.filter(pk=pedido.pk).update(estado='pagado')
+        self.assertEqual(self.post(url, {'servicios': [{'servicio_id': self.torta.id, 'cantidad': 1}]}).status_code, 409)
+
+    def test_editar_el_pedido_sin_mandar_servicios_conserva_los_que_tiene(self):
+        pedido = self.pedido(self.crear_pedido(servicios=[{'servicio_id': self.torta.id, 'cantidad': 1}]))
+        VGPedido.objects.filter(pk=pedido.pk).update(estado='pendiente')
+        r = self.post(f'/api/pedidos/{pedido.id}/actualizar/', {
+            'tipo_pedido': 'llevar', 'cliente_nombre': 'Cliente SV', 'items': [{'product_id': self.plato.id, 'cantidad': 3}],
+        })
+        self.assertEqual(r.status_code, 200, r.content)
+        pedido.refresh_from_db()
+        self.assertEqual((pedido.subtotal, pedido.cargo_servicios, pedido.total), (Decimal('30.00'), Decimal('15.00'), Decimal('45.00')))
+
+    # ---- cobro, cuenta, nota, ticket y reportes
+    def test_la_cuenta_la_nota_y_el_ticket_traen_los_servicios_y_la_factura_no_les_pone_iva(self):
+        from sevens.impresion_lpd import _ticket_recibo
+        pedido = self.pedido(self.crear_pedido(servicios=[{'servicio_id': self.torta.id, 'cantidad': 2}]))
+        # cuenta del cliente: los servicios son lineas propias, sin IVA, y suma lo mismo que el pedido
+        r = self.post('/api/prefacturas/', {'pedido_ids': [pedido.id]})
+        self.assertEqual(r.status_code, 201, r.content)
+        prefactura = r.json()['prefactura']
+        lineas = {l['descripcion']: l for l in prefactura['lineas']}
+        self.assertEqual((Decimal(lineas['Torta de cumpleaños']['cantidad']), Decimal(lineas['Torta de cumpleaños']['subtotal'])), (Decimal('2'), Decimal('30.00')))
+        self.assertEqual(Decimal(lineas['Torta de cumpleaños']['porcentaje_iva']), Decimal('0'))
+        self.assertEqual(Decimal(lineas['Torta de cumpleaños']['monto_iva']), Decimal('0'))
+        self.assertEqual(Decimal(prefactura['total']), Decimal('50.00'))
+        # nota de entrega: el cobro incluye los servicios y los lista
+        r = self.post('/api/pedidos/cobro/', {
+            'pedido_ids': [pedido.id], 'metodo_pago_id': self.efectivo.id, 'cliente_cedula': '98111222', 'cliente_nombre': 'Cliente SV',
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+        nota = r.json()['nota_entrega']
+        self.assertEqual(Decimal(nota['total']), Decimal('50.00'))
+        detalle = self.client.get(f'/api/notas-entrega/{nota["id"]}/').json()['nota_entrega']
+        self.assertEqual((detalle['cargo_servicios'], [(s['nombre'], s['cantidad']) for s in detalle['servicios']]), ('30.00', [('Torta de cumpleaños', 2)]))
+        # ticket: lista los servicios y los suma aparte del subtotal
+        pedido.refresh_from_db()
+        texto = _ticket_recibo([pedido], self.efectivo, 'REF', Decimal('50.00'), Decimal('100'), codigo='X').texto_plano()
+        self.assertIn('SERVICIOS ADICIONALES', texto)
+        self.assertIn('Subtotal: $20.00', texto)
+        self.assertIn('Servicios: $30.00', texto)
+        self.assertIn('TOTAL: $50.00', texto)
+
+    def test_el_descuento_rebaja_el_total_con_los_servicios_y_el_estado_de_resultados_los_cuenta_como_entrada_neta(self):
+        # pedido de 2 platos ($20) + torta ($15) = $35; descuento manual a $28 en el cobro (20 % menos)
+        pedido = self.pedido(self.crear_pedido(servicios=[{'servicio_id': self.torta.id, 'cantidad': 1}]))
+        r = self.post('/api/pedidos/cobro/', {
+            'pedido_ids': [pedido.id], 'metodo_pago_id': self.efectivo.id, 'cliente_cedula': '98111222', 'cliente_nombre': 'Cliente SV',
+            'monto_cobrar': '28.00', 'descuento_motivo': 'Cliente frecuente',
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(Decimal(r.json()['nota_entrega']['total']), Decimal('28.00'))
+        nota = VGNotaEntrega.objects.get(pk=r.json()['nota_entrega']['id'])
+        VGNotaEntrega.objects.filter(pk=nota.pk).update(estado='pagada', saldo_pendiente=0)
+        self.client.force_login(self.admin)
+        hoy = timezone.localdate().isoformat()
+        data = self.client.get(f'/api/admin/reportes/estado-resultados/?desde={hoy}&hasta={hoy}').json()
+        self.assertEqual(Decimal(data['ventas_total']), Decimal('28.00'))
+        servicios = data['servicios_adicionales']
+        # la torta ($15) se reconoce con el mismo descuento de la nota (28/35 = 80 %): $12.00, sin costo
+        self.assertEqual((servicios['total'], [(i['nombre'], i['cantidad'], i['total']) for i in servicios['items']]),
+                         ('12.00', [('Torta de cumpleaños', 1, '12.00')]))
