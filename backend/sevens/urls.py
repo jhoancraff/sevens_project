@@ -170,6 +170,7 @@ from .gastos_views import (
     admin_gastos_view,
     gasto_abono_view,
     gasto_detail_view,
+    gasto_inhabilitar_view,
 )
 
 urlpatterns = [
@@ -254,6 +255,7 @@ urlpatterns = [
     path('admin/categorias-gasto/', admin_categorias_gasto_view, name='admin_categorias_gasto'),
     path('admin/gastos/', admin_gastos_view, name='admin_gastos'),
     path('admin/gastos/<int:gasto_id>/abonos/', gasto_abono_view, name='gasto_abono'),
+    path('admin/gastos/<int:gasto_id>/inhabilitar/', gasto_inhabilitar_view, name='gasto_inhabilitar'),
     path('admin/gastos/<int:gasto_id>/', gasto_detail_view, name='gasto_detail'),
 
     # --- Administracion: metodos de pago e ingresos extra ------------------
