@@ -224,8 +224,9 @@ def _metodo_pago_para_impresion(nota):
 def _ticket_recibo(
     pedidos, metodo_pago, referencia, total, tasa, titulo='RECIBO DE CAJA', codigo=None,
     descuento_manual=None, descuento_manual_motivo='',
-    moneda=None, cliente=None, total_ambas_monedas=False,
+    moneda=None, cliente=None, total_ambas_monedas=False, datos_fiscales=None,
 ):
+    """`datos_fiscales` (VGDatosFiscalesEmisor) pone bajo el logo la razón social, RIF, domicilio y teléfono de la empresa."""
     hora = timezone.localtime().strftime('%d/%m/%Y %H:%M')
     metodo_label = metodo_pago.nombre if metodo_pago is not None else None
     if moneda is None:
@@ -234,6 +235,18 @@ def _ticket_recibo(
     ticket = Ticket()
     ticket.logo()
     ticket.centro('SEVEN', negrita=True, grande=True)
+    if datos_fiscales:
+        lineas_empresa = [
+            datos_fiscales.razon_social,
+            f'RIF: {datos_fiscales.rif}' if datos_fiscales.rif else '',
+            datos_fiscales.domicilio_fiscal,
+            f'Tel: {datos_fiscales.telefono}' if datos_fiscales.telefono else '',
+        ]
+        lineas_empresa = [linea for linea in lineas_empresa if linea]
+        for linea in lineas_empresa:
+            ticket.centro(linea)
+        if lineas_empresa:
+            ticket.separador()
     ticket.centro(titulo, negrita=True)
     if codigo:
         ticket.centro(f'Nº {codigo}')
@@ -356,6 +369,7 @@ def imprimir_nota_entrega_caja(nota, es_reimpresion=False):
             descuento_manual=nota.descuento_monto, descuento_manual_motivo=nota.descuento_motivo,
             moneda=nota.moneda, cliente=nota.cliente,
             total_ambas_monedas=not es_legacy_ves,
+            datos_fiscales=VGDatosFiscalesEmisor.objects.first(),
         ).to_bytes()
         logger.info('Enviando nota de entrega %s a %s (%s bytes)', nota.codigo, destino, len(ticket))
         enviar_trabajo_lpd(
