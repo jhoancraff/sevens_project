@@ -60,6 +60,11 @@ from .api_views import (
     tasa_cambio_view,
 )
 from .delivery_views import pedido_cargo_delivery_view, zonas_delivery_view
+from .servicios_adicionales_views import (
+    pedido_servicios_view,
+    servicio_adicional_detail_view,
+    servicios_adicionales_view,
+)
 from .reportes_pdf_views import (
     comprobante_entrega_activo_pdf_view,
     reporte_cashea_por_cobrar_pdf_view,
@@ -326,6 +331,9 @@ urlpatterns = [
     # --- Facturacion ------------------------------------------------------
     path('clientes/buscar/', clientes_buscar_view, name='clientes_buscar'),
     path('delivery/zonas/', zonas_delivery_view, name='delivery_zonas'),
+    path('servicios-adicionales/', servicios_adicionales_view, name='servicios_adicionales'),
+    path('servicios-adicionales/<int:servicio_id>/', servicio_adicional_detail_view, name='servicio_adicional_detalle'),
+    path('pedidos/<int:pedido_id>/servicios/', pedido_servicios_view, name='pedido_servicios'),
     path('pedidos/<int:pedido_id>/delivery/', pedido_cargo_delivery_view, name='pedido_cargo_delivery'),
     path('admin/datos-fiscales/', datos_fiscales_view, name='datos_fiscales'),
     path('prefacturas/', prefacturas_view, name='prefacturas'),
