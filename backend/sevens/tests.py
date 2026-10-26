@@ -5941,6 +5941,18 @@ class TicketGraficoCajaTests(TestCase):
         self.assertEqual(datos, self._ticket().to_text_bytes())
         self.assertNotIn(b'\x1dv0', datos)
 
+    def test_la_nota_de_entrega_lleva_los_datos_de_la_empresa_bajo_el_logo(self):
+        from types import SimpleNamespace
+        from sevens.impresion_lpd import _ticket_recibo
+        datos = SimpleNamespace(razon_social='SEVENS C.A.', rif='J-12345678-9', domicilio_fiscal='AV PRINCIPAL LOCAL 1', telefono='0412-0000000')
+        ticket = _ticket_recibo([], None, None, Decimal('10.00'), Decimal('100'), codigo='1', moneda='USD',
+                                total_ambas_monedas=True, datos_fiscales=datos)
+        texto = ticket.texto_plano()
+        self.assertEqual(ticket.ops[0], ('logo',))
+        self.assertEqual(texto[:5], ['SEVEN', 'SEVENS C.A.', 'RIF: J-12345678-9', 'AV PRINCIPAL LOCAL 1', 'Tel: 0412-0000000'])
+        # sin datos fiscales cargados el encabezado queda como siempre
+        self.assertEqual(_ticket_recibo([], None, None, Decimal('1'), None, moneda='USD').texto_plano()[0], 'SEVEN')
+
     def test_se_puede_apagar_el_ticket_grafico_por_configuracion(self):
         with self.settings(TICKET_CAJA_GRAFICO=False):
             datos = self._ticket().to_bytes()
