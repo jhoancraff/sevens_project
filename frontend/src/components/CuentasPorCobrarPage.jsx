@@ -27,6 +27,8 @@ function CuentasPorCobrarPage({ isMobile, onBack, embedded = false, refreshToken
   // que ahí esta pantalla se queda mostrando solo facturas, como siempre.
   const [tipoReporte, setTipoReporte] = useState('facturas');
   const [ordenes, setOrdenes] = useState([]);
+  // Lo que Cashea aún no ha pagado: no es la deuda de un cliente, pero sí dinero por cobrar.
+  const [cashea, setCashea] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [metodosPago, setMetodosPago] = useState([]);
@@ -56,6 +58,7 @@ function CuentasPorCobrarPage({ isMobile, onBack, embedded = false, refreshToken
         return;
       }
       setOrdenes(Array.isArray(data.ordenes_cobro) ? data.ordenes_cobro : []);
+      setCashea(data.cashea_por_cobrar || null);
       setError('');
     } catch (requestError) {
       setError('Error de red al cargar las cuentas por cobrar.');
@@ -271,8 +274,14 @@ function CuentasPorCobrarPage({ isMobile, onBack, embedded = false, refreshToken
 
           {loading ? <div style={emptyStateStyle}>Cargando cuentas por cobrar...</div> : null}
           {!loading && error ? <div style={errorStyle}>{error}</div> : null}
+          {!loading && !error && Number(cashea?.total_usd) > 0 ? (
+            <div style={casheaAvisoStyle}>
+              <strong>Cashea nos debe ${Number(cashea.total_usd).toFixed(2)}</strong> ({cashea.cantidad} cobro(s)). No es la deuda de un
+              cliente: el cliente ya pagó su parte y ese dinero llega al banco con la liquidación semanal de Cashea.
+            </div>
+          ) : null}
           {!loading && !error && ordenes.length === 0 ? (
-            <div style={emptyStateStyle}>No hay deudas pendientes por cobrar en este momento.</div>
+            <div style={emptyStateStyle}>No hay deudas de clientes pendientes por cobrar en este momento.</div>
           ) : null}
 
           {!loading && !error && ordenes.length > 0 ? (
@@ -455,6 +464,16 @@ const backButtonStyle = (isMobile) => ({
   cursor: 'pointer',
   width: isMobile ? '100%' : 'auto',
 });
+
+const casheaAvisoStyle = {
+  padding: '12px 14px',
+  borderRadius: 12,
+  border: '1px solid var(--vg-f-ffcf85-a350)',
+  background: 'rgba(255,207,133,0.08)',
+  color: 'var(--vg-f-ffe2b0)',
+  fontSize: 13.5,
+  lineHeight: 1.5,
+};
 
 const emptyStateStyle = {
   minHeight: 100,

@@ -3052,6 +3052,20 @@ class CierreCajaPOSApiTests(LotesPOSBase):
         self.assertEqual(data['pos']['por_acreditar_usd'], '100.000000')
         self.assertEqual(data['pos']['acreditado_hoy_usd'], '0')
         self.assertEqual(Decimal(data['pos']['disponibilidad_real_usd']), Decimal('0'))
+        # los puntos tambien en bolivares, exactos (100 $ a tasa 100 = Bs 10.000,00)
+        self.assertEqual((Decimal(data['pos']['cobrado_dia_bs']), Decimal(data['pos']['por_acreditar_bs'])), (Decimal('10000.00'), Decimal('10000.00')))
+        self.assertEqual(Decimal(data['pos']['acreditado_hoy_bs']), Decimal('0'))
+
+    def test_el_bloque_pos_suma_en_bolivares_lo_que_vale_cada_cobro_y_no_convierte_el_total(self):
+        # tres cobros de $33,333333 a tasa 877,4321: cada uno vale Bs 29.247,74 (redondeado por cobro); el total es la
+        # suma de lo cobrado (Bs 87.743,22), no 99,999999 x tasa (Bs 87.743,21)
+        for _ in range(3):
+            self.pago('33.333333', tasa='877.4321')
+        self.client.force_login(self.admin)
+        data = self.client.get(f'/api/admin/reportes/cuadre-caja/?fecha={self.hoy.isoformat()}').json()
+        self.assertEqual(Decimal(data['pos']['cobrado_dia_bs']), Decimal('87743.22'))
+        self.assertEqual(Decimal(data['pos']['por_acreditar_bs']), Decimal('87743.22'))
+        self.assertEqual(pos_por_cobrar_transitorio(self.hoy)['total_bs'], Decimal('87743.22'))
 
     def test_endpoint_lotes_cierra_y_acredita_con_un_clic(self):
         lote = self.pago('100').lote_pos
@@ -8152,3 +8166,309 @@ class ServiciosAdicionalesTests(TestCase):
         # la torta ($15) se reconoce con el mismo descuento de la nota (28/35 = 80 %): $12.00, sin costo
         self.assertEqual((servicios['total'], [(i['nombre'], i['cantidad'], i['total']) for i in servicios['items']]),
                          ('12.00', [('Torta de cumpleaños', 1, '12.00')]))
+
+
+class CasheaMejorasPruebasTests(TestCase):
+    """
+    Mejoras salidas de la prueba con 5 agentes: orden de Cashea con largo comprobado,
+    corrección de cobros con Cashea sin liquidar, y Cashea visible como «por cobrar»
+    (no como dinero recibido) en el cuadre y en cuentas por cobrar.
+    """
+
+    def setUp(self):
+        self.admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='cashea_mej_admin', password='claveAdmin123', cedula='90000090',
+            email='cashea_mej_admin@sevens.test', id_role=self.admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='cashea_mej_cajera', password='claveCajera123', cedula='90000091',
+            email='cashea_mej_cajera@sevens.test', id_role=self.cajera_role,
+        )
+        self.client.force_login(self.admin)
+        self.efectivo, _ = VGMetodoPago.objects.get_or_create(
+            nombre='Efectivo USD', defaults={'es_efectivo': True, 'moneda': 'USD'},
+        )
+        self.cashea = VGMetodoPago.objects.create(nombre='Cashea', moneda='USD', es_cashea=True)
+        self.pagomovil = VGMetodoPago.objects.create(nombre='Pago movil mej', moneda='VES', cuenta_bancaria='Banesco')
+        self.banesco = VGMetodoPago.objects.create(nombre='Banesco Bs mej', moneda='VES', cuenta_bancaria='Banesco')
+        categoria = VGCategoriaProducto.objects.create(nombre='Cat cashea mej')
+        self.producto = VGProducto.objects.create(
+            nombre='Plato cashea mej', categoria=categoria, precio_venta='20.00', disponible=True,
+        )
+        _set_tasa_actual(250)
+
+    def _post(self, url, cuerpo, cliente=None):
+        return (cliente or self.client).post(url, data=json.dumps(cuerpo), content_type='application/json')
+
+    def _nota(self, precio='20.00'):
+        pedido = VGPedido.objects.create(
+            usuario=self.admin, tipo_pedido='local', estado='entregado', subtotal='0', total='0',
+        )
+        VGDetallePedido.objects.create(
+            pedido=pedido, producto=self.producto, cantidad=1, precio_unitario=precio, estado='entregado',
+        )
+        VGPedido.objects.filter(pk=pedido.pk).update(subtotal=precio, total=precio)
+        r = self._post('/api/pedidos/cobro/', {
+            'pedido_ids': [pedido.id], 'cliente_cedula': '12345678', 'cliente_nombre': 'Ana',
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+        return VGNotaEntrega.objects.order_by('-id').first()
+
+    def _cobrar(self, nota, **cuerpo):
+        return self._post(f'/api/notas-entrega/{nota.id}/abonos/', cuerpo)
+
+    def _corregir(self, nota, cliente=None, **cuerpo):
+        return self._post(f'/api/notas-entrega/{nota.id}/cashea/corregir/', cuerpo, cliente=cliente)
+
+    def _cliente_cajera(self):
+        from django.test import Client
+        cliente = Client()
+        cliente.force_login(self.cajera)
+        return cliente
+
+    # ------------------------------------------------------------ orden de Cashea
+    def test_una_orden_con_otro_largo_pide_confirmacion(self):
+        nota = self._nota('20.00')
+        r = self._cobrar(nota, monto='4', metodo_pago_id=self.efectivo.id, cashea_orden='2096001')
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertTrue(r.json()['requiere_confirmacion_orden'])
+        self.assertIn('7 dígitos', r.json()['message'])
+        self.assertEqual(VGPago.objects.count(), 0)
+
+        r = self._cobrar(
+            nota, monto='4', metodo_pago_id=self.efectivo.id, cashea_orden='2096001', confirmar_orden_atipica=True,
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+
+    def test_el_largo_habitual_se_puede_cambiar_o_desactivar(self):
+        from django.test import override_settings
+        nota = self._nota('20.00')
+        with override_settings(CASHEA_ORDEN_DIGITOS=0):
+            r = self._cobrar(nota, monto='4', metodo_pago_id=self.efectivo.id, cashea_orden='12')
+        self.assertEqual(r.status_code, 201, r.content)
+
+    def test_los_metodos_de_pago_informan_el_largo_habitual(self):
+        r = self.client.get('/api/metodos-pago/')
+        self.assertEqual(r.json()['cashea_orden_digitos'], 9)
+
+    # ------------------------------------------------------------ corregir un cobro
+    def _nota_con_cashea(self, orden='209600101', inicial='8'):
+        nota = self._nota('20.00')
+        r = self._cobrar(nota, monto=inicial, metodo_pago_id=self.efectivo.id, cashea_orden=orden)
+        self.assertEqual(r.status_code, 201, r.content)
+        return nota
+
+    def test_corregir_solo_la_orden_lo_puede_hacer_la_cajera(self):
+        nota = self._nota_con_cashea('209600101')
+        cajera = self._cliente_cajera()
+        r = self._corregir(
+            nota, cliente=cajera, cashea_orden='209600102', monto='8', metodo_pago_id=self.efectivo.id,
+            motivo='Se tecleó mal',
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        pago = VGPago.objects.get(nota_entrega=nota, metodo_pago=self.cashea)
+        self.assertEqual(pago.referencia, '209600102')
+        self.assertEqual(pago.estado, 'completado')
+        self.assertIn('Orden corregida de 209600101 a 209600102', pago.nota_correccion)
+        self.assertIn('Se tecleó mal', pago.nota_correccion)
+        # Nada más cambió: mismos cobros y mismo saldo.
+        self.assertEqual(VGPago.objects.filter(nota_entrega=nota, estado='completado').count(), 2)
+        pagos = {p['id']: p for p in r.json()['nota_entrega']['pagos']}
+        self.assertEqual(pagos[pago.id]['referencia'], '209600102')
+
+    def test_corregir_sin_motivo_o_sin_cambios_se_rechaza(self):
+        nota = self._nota_con_cashea('209600101')
+        r = self._corregir(nota, cashea_orden='209600102', monto='8', metodo_pago_id=self.efectivo.id, motivo='')
+        self.assertEqual(r.status_code, 400)
+        r = self._corregir(nota, cashea_orden='209600101', monto='8', metodo_pago_id=self.efectivo.id, motivo='nada')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('nada que corregir', r.json()['message'])
+
+    def test_la_orden_corregida_no_puede_ser_de_otro_cobro_ni_tener_otro_largo(self):
+        otra = self._nota_con_cashea('209600103')
+        nota = self._nota_con_cashea('209600101')
+        r = self._corregir(nota, cashea_orden='209600103', monto='8', metodo_pago_id=self.efectivo.id, motivo='Motivo uno')
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('Ya hay un cobro', r.json()['message'])
+        r = self._corregir(nota, cashea_orden='2096', monto='8', metodo_pago_id=self.efectivo.id, motivo='Motivo dos')
+        self.assertEqual(r.status_code, 409)
+        self.assertTrue(r.json()['requiere_confirmacion_orden'])
+        r = self._corregir(
+            nota, cashea_orden='2096', monto='8', metodo_pago_id=self.efectivo.id, motivo='Motivo tres', confirmar_orden_atipica=True,
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(VGPago.objects.get(nota_entrega=otra, metodo_pago=self.cashea).referencia, '209600103')
+
+    def test_cambiar_la_inicial_solo_lo_puede_hacer_una_administradora(self):
+        nota = self._nota_con_cashea('209600101', inicial='8')
+        r = self._corregir(
+            nota, cliente=self._cliente_cajera(), cashea_orden='209600101', monto='10',
+            metodo_pago_id=self.efectivo.id, motivo='Era 10',
+        )
+        self.assertEqual(r.status_code, 403, r.content)
+        self.assertEqual(VGPago.objects.filter(estado='anulado').count(), 0)
+
+    def test_corregir_la_inicial_anula_los_cobros_viejos_y_registra_los_nuevos(self):
+        from sevens.reportes import cashea_por_cobrar_total
+        nota = self._nota_con_cashea('209600101', inicial='8')
+        viejos = list(VGPago.objects.filter(nota_entrega=nota).order_by('id'))
+        self.assertEqual(cashea_por_cobrar_total()['total_usd'], Decimal('12.00'))
+
+        r = self._corregir(
+            nota, cashea_orden='209600101', monto='10', metodo_pago_id=self.efectivo.id, motivo='La inicial era 10',
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn('Cobro corregido', r.json()['message'])
+
+        for pago in viejos:
+            pago.refresh_from_db()
+            self.assertEqual(pago.estado, 'anulado')
+            self.assertIn('La inicial era 10', pago.nota_correccion)
+        vigentes = list(VGPago.objects.filter(nota_entrega=nota, estado='completado').order_by('id'))
+        self.assertEqual([(p.metodo_pago_id, p.monto) for p in vigentes],
+                         [(self.efectivo.id, Decimal('10')), (self.cashea.id, Decimal('10'))])
+        self.assertEqual(vigentes[1].referencia, '209600101')
+        self.assertIn('Reemplaza los cobros', vigentes[0].nota_correccion)
+        # Números de cobro nuevos (no se reutilizan los anulados).
+        self.assertTrue(all(v.numero_cobro > max(p.numero_cobro for p in viejos) for v in vigentes))
+
+        nota.refresh_from_db()
+        self.assertEqual((nota.estado, nota.saldo_pendiente), ('pagada', Decimal('0')))
+        # Cashea debe ahora 10, no 12 ni 22: lo viejo no se cuenta.
+        self.assertEqual(cashea_por_cobrar_total()['total_usd'], Decimal('10.00'))
+
+    def test_corregir_con_inicial_en_bolivares_y_pasar_a_sin_inicial(self):
+        nota = self._nota_con_cashea('209600101', inicial='8')
+        # La inicial pasa a pagarse en Bs (1.000 Bs a 250 = $4).
+        r = self._corregir(
+            nota, cashea_orden='209600101', monto='1000', metodo_pago_id=self.pagomovil.id, referencia='PM-9',
+            motivo='Pagó por pago móvil',
+        )
+        self.assertEqual(r.status_code, 200, r.content)
+        vigentes = list(VGPago.objects.filter(nota_entrega=nota, estado='completado').order_by('id'))
+        self.assertEqual([(p.metodo_pago_id, p.monto, p.referencia) for p in vigentes],
+                         [(self.pagomovil.id, Decimal('4'), 'PM-9'), (self.cashea.id, Decimal('16'), '209600101')])
+        # Y después se quita la inicial: todo va a Cashea.
+        r = self._corregir(nota, cashea_orden='209600101', monto='', motivo='No dio inicial')
+        self.assertEqual(r.status_code, 200, r.content)
+        vigentes = list(VGPago.objects.filter(nota_entrega=nota, estado='completado'))
+        self.assertEqual([(p.metodo_pago_id, p.monto) for p in vigentes], [(self.cashea.id, Decimal('20'))])
+
+    def test_una_correccion_invalida_no_cambia_nada(self):
+        nota = self._nota_con_cashea('209600101', inicial='8')
+        antes = list(VGPago.objects.filter(nota_entrega=nota).values_list('id', 'estado', 'monto'))
+        # La inicial cubriría toda la nota: no es válida con Cashea.
+        r = self._corregir(nota, cashea_orden='209600101', monto='20', metodo_pago_id=self.efectivo.id, motivo='Prueba')
+        self.assertEqual(r.status_code, 400, r.content)
+        despues = list(VGPago.objects.filter(nota_entrega=nota).values_list('id', 'estado', 'monto'))
+        self.assertEqual(antes, despues)
+        nota.refresh_from_db()
+        self.assertEqual((nota.estado, nota.saldo_pendiente), ('pagada', Decimal('0')))
+
+    def test_un_cobro_ya_liquidado_no_se_corrige(self):
+        from sevens.models import VGLiquidacionCashea
+        nota = self._nota_con_cashea('209600101', inicial='8')
+        hoy = timezone.localdate()
+        r = self._post('/api/admin/cashea/liquidaciones/', {
+            'periodo_desde': hoy.isoformat(), 'periodo_hasta': hoy.isoformat(), 'fecha_deposito': hoy.isoformat(),
+            'cuenta_destino_id': self.banesco.id, 'deposito_bs': '2760.00',
+            'monto_financiado_reporte': '12.00', 'total_pagar_usd': '11.04',
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+        r = self._corregir(nota, cashea_orden='209600109', monto='8', metodo_pago_id=self.efectivo.id, motivo='Tarde')
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertIn('anula esa liquidación', r.json()['message'])
+        self.assertEqual(VGLiquidacionCashea.objects.count(), 1)
+
+    def test_una_nota_sin_cashea_no_se_corrige(self):
+        nota = self._nota('20.00')
+        r = self._corregir(nota, cashea_orden='209600101', monto='8', metodo_pago_id=self.efectivo.id, motivo='Sin cashea')
+        self.assertEqual(r.status_code, 404)
+
+    # ------------------------------------------------------------ Cashea es «por cobrar»
+    def test_el_cuadre_separa_lo_que_financia_cashea_del_dinero_recibido(self):
+        nota = self._nota_con_cashea('209600101', inicial='8')
+        hoy = timezone.localdate().isoformat()
+        data = self.client.get(f'/api/admin/reportes/cuadre-caja/?fecha={hoy}').json()
+        desglose = data['desglose_caja']
+        self.assertEqual(desglose['cashea']['total_usd'], '12.000000')
+        # Los $8 en efectivo no incluyen lo de Cashea, y «digital» queda en cero.
+        self.assertEqual(desglose['usd_fisico']['total_usd'], '8.000000')
+        self.assertEqual(desglose['usd_digital']['total_usd'], '0')
+        self.assertEqual(data['cashea_por_cobrar'], {'total_usd': '12.00', 'cantidad': 1})
+        por_metodo = {m['nombre']: m for m in data['totales_por_metodo']}
+        self.assertTrue(por_metodo['Cashea']['es_cashea'])
+        self.assertFalse(por_metodo['Efectivo USD']['es_cashea'])
+        # El total general sigue siendo lo vendido (8 + 12).
+        self.assertEqual(Decimal(data['total_general']), Decimal('20'))
+
+        rango = self.client.get(f'/api/admin/reportes/cuadre-caja-rango/?desde={hoy}&hasta={hoy}').json()
+        self.assertEqual(rango['desglose_caja']['cashea']['total_usd'], '12.000000')
+        self.assertEqual(rango['desglose_caja']['usd_digital']['total_usd'], '0')
+        self.assertEqual(rango['cashea_por_cobrar']['total_usd'], '12.00')
+
+    def test_cuentas_por_cobrar_muestra_lo_que_debe_cashea(self):
+        self._nota_con_cashea('209600101', inicial='8')
+        data = self.client.get('/api/cuentas-por-cobrar/').json()
+        self.assertEqual(data['ordenes_cobro'], [])
+        self.assertEqual(data['cashea_por_cobrar'], {'total_usd': '12.00', 'cantidad': 1})
+        # La cajera también lo ve en su pantalla de cobro.
+        data = self._cliente_cajera().get('/api/cuentas-por-cobrar/').json()
+        self.assertEqual(data['cashea_por_cobrar']['total_usd'], '12.00')
+
+        hoy = timezone.localdate().isoformat()
+        data = self.client.get(f'/api/admin/reportes/cuentas-por-cobrar/?desde={hoy}&hasta={hoy}').json()
+        self.assertEqual(data['notas'], [])
+        self.assertEqual(data['cashea_por_cobrar'], {'total_usd': '12.00', 'cantidad': 1})
+
+
+class DisponibilidadDolaresATasaActualTests(TestCase):
+    """Cuentas en Bs: los dolares son los Bs reales entre la tasa de hoy, no la suma historica de dolares."""
+
+    def setUp(self):
+        _set_tasa_actual('100.0000')
+        self.hoy = timezone.localdate()
+        self.bs = VGMetodoPago.objects.create(nombre='Transf Tasa', moneda='VES', cuenta_bancaria='Banco Tasa')
+        self.usd = VGMetodoPago.objects.create(nombre='Zelle Tasa', moneda='USD', cuenta_bancaria='Banco Zelle')
+        cat = VGCategoriaGasto.objects.get_or_create(nombre='Servicios')[0]
+        # gasto de $100 pagado en Bs a tasa 80 = Bs 8.000 que salieron; hoy la tasa es 100
+        gasto = VGGasto.objects.create(
+            categoria=cat, descripcion='Luz', monto=Decimal('100'), saldo_pendiente=0,
+            estado_pago='pagado', fecha_gasto=self.hoy, tasa_cambio_referencia=Decimal('80'),
+        )
+        for metodo in (self.bs, self.usd):
+            VGAbonoGasto.objects.create(
+                gasto=gasto, monto=Decimal('100'), metodo_pago=metodo,
+                tasa_cambio_referencia=Decimal('80') if metodo.moneda == 'VES' else None,
+            )
+
+    def banco(self, nombre):
+        from sevens.reportes import disponibilidad_por_cuenta
+        _cuentas, bancos = disponibilidad_por_cuenta(self.hoy)
+        return next(b for b in bancos if b['nombre'] == nombre)
+
+    def test_cuenta_en_bs_convierte_los_bs_reales_con_la_tasa_de_hoy(self):
+        banco = self.banco('Banco Tasa')
+        self.assertEqual(banco['saldo_disponible_bs'], Decimal('-8000'))
+        self.assertEqual(banco['saldo_disponible'], Decimal('-100.000000'))      # historico, sin tocar
+        self.assertEqual(banco['saldo_usd_tasa_actual'], Decimal('-80'))          # -8000 Bs / 100
+        self.assertEqual(banco['diferencia_cambiaria_usd'], Decimal('20'))
+
+    def test_cuenta_en_usd_no_cambia(self):
+        banco = self.banco('Banco Zelle')
+        self.assertEqual(banco['saldo_usd_tasa_actual'], banco['saldo_disponible'])
+        self.assertEqual(banco['diferencia_cambiaria_usd'], Decimal('0'))
+
+    def test_reporte_expone_los_dolares_a_tasa_actual_y_el_total(self):
+        admin_rol, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        admin = VGUsuario.objects.create_superuser(
+            username='disp_admin', password='claveDisp123', cedula='96000002', email='disp@sevens.test', id_role=admin_rol,
+        )
+        self.client.force_login(admin)
+        data = self.client.get(f'/api/admin/reportes/disponibilidad-cuentas/?fecha={self.hoy.isoformat()}').json()
+        banco = next(b for b in data['bancos'] if b['nombre'] == 'Banco Tasa')
+        self.assertEqual(Decimal(banco['saldo_usd_tasa_actual']), Decimal('-80'))
+        self.assertEqual(banco['saldo_disponible_bs'], '-8000.00')
+        self.assertEqual(Decimal(data['total_disponible']), Decimal('-180'))       # -80 (Bs) + -100 (USD)

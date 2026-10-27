@@ -32,7 +32,7 @@ const ESTADO_LABEL = {
 
 const FILAS_POR_PAGINA = 50;
 
-function ReporteCuentasPorCobrarPage({ isMobile, onBack }) {
+function ReporteCuentasPorCobrarPage({ isMobile, onBack, onVerCashea }) {
   // Ver el mismo comentario en ReporteVentasDiaPage: si viene de un cuadre por
   // rango, esta pantalla consulta desde/hasta en vez de un solo dia.
   const [rango] = useState(() => getRangoSeleccionado());
@@ -159,6 +159,21 @@ function ReporteCuentasPorCobrarPage({ isMobile, onBack }) {
       {message ? <div style={noticeStyle} className="no-print">{message}</div> : null}
 
       {loading ? <div style={emptyStyle}>Cargando cuentas por cobrar...</div> : null}
+
+      {!loading && data && Number(data.cashea_por_cobrar?.total_usd) > 0 ? (
+        <section style={{ ...panelStyle, borderColor: 'var(--vg-f-ffcf85-a350)' }}>
+          <div style={sectionTitleStyle}>Por cobrar a Cashea</div>
+          <div style={{ color: 'var(--vg-f-ffe2b0)', lineHeight: 1.5 }}>
+            <strong>Cashea nos debe ${Number(data.cashea_por_cobrar.total_usd).toFixed(2)}</strong> ({data.cashea_por_cobrar.cantidad} cobro(s) sin liquidar,
+            de cualquier fecha). No es la deuda de un cliente: ese dinero llega al banco con la liquidación semanal de Cashea.
+          </div>
+          {onVerCashea ? (
+            <div className="no-print">
+              <button type="button" onClick={onVerCashea} style={casheaLinkStyle}>Ver Cashea: por cobrar y liquidaciones →</button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       {!loading && data ? (
         <section style={panelStyle}>
@@ -401,6 +416,7 @@ const cxcTableStyle = { display: 'grid', gridTemplateColumns: 'minmax(110px,0.8f
 const headStyle = { padding: '12px 14px', background: 'rgba(var(--vg-ink), 0.06)', color: 'var(--vg-f-ffb0b0)', fontSize: 12, letterSpacing: '0.1em', textTransform: 'uppercase', fontWeight: 800 };
 const cellStyle = { padding: '14px', borderTop: '1px solid rgba(var(--vg-ink), 0.08)', color: 'var(--vg-f-f2e6e6)', display: 'grid', alignContent: 'center' };
 const secondaryAmountStyle = { color: 'var(--vg-f-c8bbbb)', fontSize: 12, marginTop: 2 };
+const casheaLinkStyle = { border: '1px solid var(--vg-f-ffcf85-a350)', borderRadius: 999, padding: '8px 14px', background: 'rgba(255,207,133,0.14)', color: 'var(--vg-f-ffe2b0)', fontWeight: 700, cursor: 'pointer' };
 const noticeStyle = { padding: '12px 14px', borderRadius: 12, border: '1px solid var(--vg-f-ff9191-a220)', background: 'rgba(255,98,98,0.12)', color: 'var(--vg-f-ffd8d8)' };
 const printButtonStyle = { border: '1px solid rgba(var(--vg-ink), 0.14)', borderRadius: 999, padding: '10px 16px', background: 'rgba(var(--vg-ink), 0.04)', color: 'var(--vg-text-strong)', fontWeight: 700, cursor: 'pointer' };
 const backButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', border: 'none', borderRadius: 999, padding: '11px 18px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(37, 99, 235, 0.35)' };

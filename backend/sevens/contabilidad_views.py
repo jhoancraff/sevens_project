@@ -10,6 +10,7 @@ from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -58,6 +59,7 @@ from .models import (
 )
 from .tasa_cambio import tasa_cambio_para_registro
 from .reportes import (
+    cashea_por_cobrar_total,
     desglose_caja_por_moneda,
     detalle_cuentas_cobradas_rango,
     detalle_cuentas_por_cobrar_rango,
@@ -99,7 +101,14 @@ def metodos_pago_activos_view(request):
         return _auth_response({'ok': False, 'message': 'Debes iniciar sesion.'}, status=401)
 
     metodos = VGMetodoPago.objects.filter(activo=True).order_by('nombre')
-    return _auth_response({'ok': True, 'metodos_pago': [_serialize_metodo_pago(metodo) for metodo in metodos]})
+    return _auth_response({
+        'ok': True,
+        'metodos_pago': [_serialize_metodo_pago(metodo) for metodo in metodos],
+        # Largo habitual del número de orden de Cashea (0 = sin comprobación).
+        'cashea_orden_digitos': settings.CASHEA_ORDEN_DIGITOS,
+        # Solo una administradora puede cambiar la inicial de un cobro con Cashea; la cajera solo la orden.
+        'puede_corregir_cashea_dinero': bool(_is_admin_user(request.user)),
+    })
 
 
 def _serialize_ingreso_extra(ingreso):
@@ -458,6 +467,12 @@ def _serialize_consignacion(consignacion):
     }
 
 
+def _serialize_cashea_por_cobrar():
+    """Lo que Cashea nos debe hoy (cobros sin liquidar), para los reportes de «por cobrar»."""
+    datos = cashea_por_cobrar_total()
+    return {'total_usd': str(datos['total_usd']), 'cantidad': datos['cantidad']}
+
+
 def _serialize_desglose_caja(desglose):
     def _serialize_balde(balde):
         data = {'total_usd': str(balde['total_usd'])}
@@ -598,7 +613,7 @@ def reporte_cuadre_caja_view(request):
         cuentas_disp, _bancos_disp = disponibilidad_por_cuenta(fecha)
         # La cuenta "Por cobrar a Cashea" no es dinero disponible.
         disponibilidad_real = sum(
-            (cuenta['saldo_disponible'] for cuenta in cuentas_disp if not cuenta['es_cashea']), Decimal('0'),
+            (cuenta['saldo_usd_tasa_actual'] for cuenta in cuentas_disp if not cuenta['es_cashea']), Decimal('0'),
         )
 
         return _auth_response({
@@ -620,6 +635,7 @@ def reporte_cuadre_caja_view(request):
                 key: str(value) for key, value in resumen_ventas_rango(fecha, fecha).items()
             },
             'desglose_caja': _serialize_desglose_caja(desglose_caja_por_moneda(fecha)),
+            'cashea_por_cobrar': _serialize_cashea_por_cobrar(),
             'consignaciones': [_serialize_consignacion(item) for item in consignaciones],
             'total_consignado': str(total_consignado(fecha)),
             'ingresos_extra_dia': [
@@ -877,6 +893,7 @@ def reporte_cuadre_caja_rango_view(request):
         },
         'ingresos_extra_rango': [_serialize_ingreso_extra(item) for item in ingresos_extra_rango],
         'total_ingresos_extra_rango': str(sum((item.monto for item in ingresos_extra_rango), Decimal('0'))),
+        'cashea_por_cobrar': _serialize_cashea_por_cobrar(),
         'dias': [
             {
                 'fecha': dia['fecha'].isoformat(),
@@ -1134,6 +1151,7 @@ def reporte_cuentas_por_cobrar_view(request):
             for nota in notas
         ],
         'total_pendiente': str(sum((nota['saldo_pendiente'] for nota in notas), Decimal('0'))),
+        'cashea_por_cobrar': _serialize_cashea_por_cobrar(),
     })
 
 
@@ -1237,6 +1255,8 @@ def reporte_disponibilidad_cuentas_view(request):
             'transferencias_salientes_acumuladas': str(cuenta['transferencias_salientes_acumuladas']),
             'transferencias_entrantes_acumuladas': str(cuenta['transferencias_entrantes_acumuladas']),
             'saldo_disponible': str(cuenta['saldo_disponible']),
+            'saldo_usd_tasa_actual': str(cuenta['saldo_usd_tasa_actual']),
+            'diferencia_cambiaria_usd': str(cuenta['diferencia_cambiaria_usd']),
             'saldo_disponible_bs': str(cuenta['saldo_disponible_bs'].quantize(Decimal('0.01'))) if cuenta['saldo_disponible_bs'] is not None else None,
             **_serialize_campos_pos(cuenta),
         }
@@ -1253,6 +1273,8 @@ def reporte_disponibilidad_cuentas_view(request):
                 'moneda': banco['moneda'],
                 'moneda_mixta': banco.get('moneda_mixta', False),
                 'saldo_disponible': str(banco['saldo_disponible']),
+                'saldo_usd_tasa_actual': str(banco['saldo_usd_tasa_actual']),
+                'diferencia_cambiaria_usd': str(banco['diferencia_cambiaria_usd']),
                 'saldo_disponible_bs': str(banco['saldo_disponible_bs'].quantize(Decimal('0.01'))) if banco['saldo_disponible_bs'] is not None else None,
                 'tiene_punto_venta': banco['tiene_punto_venta'],
                 'es_cashea': banco['es_cashea'],
@@ -1264,7 +1286,7 @@ def reporte_disponibilidad_cuentas_view(request):
         # El saldo de la cuenta Cashea es lo que Cashea nos debe: va aparte y
         # nunca suma a la disponibilidad.
         'total_disponible': str(sum(
-            (cuenta['saldo_disponible'] for cuenta in cuentas if not cuenta['es_cashea']), Decimal('0'),
+            (cuenta['saldo_usd_tasa_actual'] for cuenta in cuentas if not cuenta['es_cashea']), Decimal('0'),
         )),
         'por_cobrar_cashea': str(sum(
             (cuenta['saldo_disponible'] for cuenta in cuentas if cuenta['es_cashea']), Decimal('0'),
@@ -2251,18 +2273,21 @@ def _bloque_pos_cuadre(fecha, disponibilidad_total):
     if not (hay_metodos or lotes_dia or abiertos):
         return None
     transitorio = pos_por_cobrar_transitorio(fecha)
-    acreditado_hoy_usd = sum(
-        (lote.monto_bruto_usd for lote in VGLotePOS.objects.filter(estado='acreditado', fecha_abono_real=fecha)),
-        Decimal('0'),
-    )
+    lotes_acreditados_hoy = list(VGLotePOS.objects.filter(estado='acreditado', fecha_abono_real=fecha))
+    acreditado_hoy_usd = sum((lote.monto_bruto_usd for lote in lotes_acreditados_hoy), Decimal('0'))
+    acreditado_hoy_bs = sum((lote.monto_bruto_sistema_bs for lote in lotes_acreditados_hoy), Decimal('0.00'))
     ids_dia = {lote.id for lote in lotes_dia}
     return {
         'hay_metodos_pos': hay_metodos,
         'lotes_dia': [_serialize_lote(lote) for lote in lotes_dia],
         'lotes_abiertos_anteriores': [_serialize_lote(lote) for lote in abiertos if lote.id not in ids_dia],
         'cobrado_dia_usd': str(sum((lote.monto_bruto_usd for lote in lotes_dia), Decimal('0'))),
+        # En bolivares (lo que de verdad cobra el punto): suma exacta de lo que cada cobro valia en Bs.
+        'cobrado_dia_bs': str(sum((lote.monto_bruto_sistema_bs for lote in lotes_dia), Decimal('0.00'))),
         'acreditado_hoy_usd': str(acreditado_hoy_usd),
+        'acreditado_hoy_bs': str(acreditado_hoy_bs),
         'por_acreditar_usd': str(transitorio['total_usd']),
+        'por_acreditar_bs': str(transitorio['total_bs']),
         'disponibilidad_real_usd': str(disponibilidad_total),
     }
 
@@ -2287,12 +2312,14 @@ def _serialize_campos_pos(fila):
 def _serialize_transitorio(transitorio):
     return {
         'total_usd': str(transitorio['total_usd']),
+        'total_bs': str(transitorio['total_bs']),
         'por_banco': [
             {
                 'banco': item['banco'],
                 'lotes_abiertos': item['lotes_abiertos'],
                 'lotes_cerrados': item['lotes_cerrados'],
                 'monto_usd': str(item['monto_usd']),
+                'monto_bs': str(item['monto_bs']),
             }
             for item in transitorio['por_banco']
         ],

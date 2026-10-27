@@ -38,6 +38,29 @@ function esReferenciaAutogenerada(referencia) {
 
 const NOTAS_POR_PAGINA = 30;
 
+const formatoNumero = new Intl.NumberFormat('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmt = (valor) => formatoNumero.format(Number(valor) || 0);
+
+// Lo que implica una inicial para un cobro con Cashea: cuánto es en dólares y cuánto financia Cashea.
+function resumenCobroCashea(nota, metodo, montoAbono) {
+  const inicialNum = Number(montoAbono) > 0 ? Number(montoAbono) : 0;
+  const esBs = metodo ? metodo.moneda === 'VES' : false;
+  const tasa = Number(nota.tasa_cobro_vigente) > 0 ? Number(nota.tasa_cobro_vigente) : null;
+  const inicialUsd = esBs ? (tasa ? inicialNum / tasa : null) : inicialNum;
+  const saldoUsd = Number(nota.saldo_pendiente);
+  return { inicialNum, inicialUsd, esBs, tasa, financiaUsd: inicialUsd === null ? null : saldoUsd - inicialUsd };
+}
+
+// El monto de la inicial de un cobro ya registrado, en la moneda de su método (Bs o $), como texto limpio.
+function montoEnMonedaDelMetodo(pago) {
+  if (!pago) {
+    return '';
+  }
+  const monto = Number(pago.monto);
+  const tasa = Number(pago.tasa_cambio_referencia);
+  return (pago.moneda === 'VES' && tasa > 0 ? monto * tasa : monto).toFixed(2);
+}
+
 function etiquetaMetodo(metodo) {
   return `${metodo.nombre} (${metodo.moneda === 'VES' ? 'Bs' : '$'})`;
 }
@@ -112,6 +135,15 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
   const [paginaActual, setPaginaActual] = useState(1);
   const [savingAbono, setSavingAbono] = useState(false);
   const [confirmCambioMetodo, setConfirmCambioMetodo] = useState(null); // { metodo_anterior, metodo_nuevo, message }
+  // Largo habitual de la orden de Cashea y si esta persona puede cambiar la inicial de un cobro ya registrado.
+  const [ordenDigitos, setOrdenDigitos] = useState(0);
+  const [puedeCorregirDinero, setPuedeCorregirDinero] = useState(false);
+  // Resumen que se confirma antes de registrar un cobro con Cashea.
+  const [confirmCobroCashea, setConfirmCobroCashea] = useState(null);
+  // Corrección de un cobro con Cashea ya registrado (todavía sin liquidar).
+  const [correccion, setCorreccion] = useState(null);
+  const [confirmCorreccion, setConfirmCorreccion] = useState(false);
+  const [savingCorreccion, setSavingCorreccion] = useState(false);
 
   const [devolucionOpen, setDevolucionOpen] = useState(false);
   const [devolucionMotivo, setDevolucionMotivo] = useState(MOTIVOS_DEVOLUCION[0].valor);
@@ -179,6 +211,8 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
         const data = await response.json().catch(() => ({}));
         if (response.ok && data.ok) {
           setMetodosPago(Array.isArray(data.metodos_pago) ? data.metodos_pago : []);
+          setOrdenDigitos(Number(data.cashea_orden_digitos) || 0);
+          setPuedeCorregirDinero(Boolean(data.puede_corregir_cashea_dinero));
         }
       } catch (requestError) {
         // El selector queda vacio si falla.
@@ -274,7 +308,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
     }
   };
 
-  const enviarAbono = async (metodoPagoId, confirmarCambioMetodo = false) => {
+  const enviarAbono = async (metodoPagoId, confirmarCambioMetodo = false, ordenAtipica = false) => {
     const response = await fetch(`/api/notas-entrega/${selectedNotaId}/abonos/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') || '' },
@@ -284,7 +318,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
         metodo_pago_id: metodoPagoId,
         referencia: referenciaAbono.trim(),
         confirmar_cambio_metodo: confirmarCambioMetodo,
-        ...(usarCashea ? { cashea_orden: ordenCashea.trim() } : {}),
+        ...(usarCashea ? { cashea_orden: ordenCashea.trim(), confirmar_orden_atipica: ordenAtipica } : {}),
       }),
     });
     return { response, data: await response.json().catch(() => ({})) };
@@ -367,15 +401,35 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
       return;
     }
 
+    // Un cobro con Cashea compromete dinero de varias semanas: se muestra un resumen para confirmar.
+    if (usarCashea) {
+      const resumen = resumenCobroCashea(notaDetalle, metodo, montoAbono);
+      const orden = ordenCashea.trim();
+      setConfirmCobroCashea({
+        codigo: notaDetalle.codigo,
+        totalUsd: Number(notaDetalle.total),
+        orden,
+        ordenAtipica: ordenDigitos > 0 && orden.length !== ordenDigitos,
+        inicialTexto: hayInicial
+          ? `${resumen.esBs ? 'Bs ' : '$'}${fmt(resumen.inicialNum)}${resumen.esBs && resumen.inicialUsd !== null ? ` (≈ $${fmt(resumen.inicialUsd)})` : ''} con ${metodo.nombre}${referenciaAbono.trim() ? `, ref. ${referenciaAbono.trim()}` : ''}`
+          : 'Sin inicial: todo lo financia Cashea',
+        financiaUsd: resumen.financiaUsd,
+      });
+      return;
+    }
+    await registrarAbono(metodoPagoId);
+  };
+
+  const registrarAbono = async (metodoPagoId, ordenAtipica = false) => {
     setSavingAbono(true);
     setFeedback('');
     try {
-      const { response, data } = await enviarAbono(metodoPagoId, false);
+      const { response, data } = await enviarAbono(metodoPagoId, false, ordenAtipica);
       if (!response.ok || !data.ok) {
         // Ya hay cobros con otra cuenta: el backend pide confirmación explícita
         // antes de mover la plata (ver nota_entrega_abono_view).
         if (data.requiere_confirmacion) {
-          setConfirmCambioMetodo({ metodoPagoId, message: data.message });
+          setConfirmCambioMetodo({ metodoPagoId, message: data.message, ordenAtipica });
           return;
         }
         setFeedbackType('error');
@@ -388,6 +442,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
       setFeedback('Error de red al registrar el cobro.');
     } finally {
       setSavingAbono(false);
+      setConfirmCobroCashea(null);
     }
   };
 
@@ -397,7 +452,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
     }
     setSavingAbono(true);
     try {
-      const { response, data } = await enviarAbono(confirmCambioMetodo.metodoPagoId, true);
+      const { response, data } = await enviarAbono(confirmCambioMetodo.metodoPagoId, true, Boolean(confirmCambioMetodo.ordenAtipica));
       if (!response.ok || !data.ok) {
         setFeedbackType('error');
         setFeedback(data.message || 'No se pudo registrar el cobro.');
@@ -410,6 +465,114 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
     } finally {
       setSavingAbono(false);
       setConfirmCambioMetodo(null);
+    }
+  };
+
+  const abrirCorreccion = (pagoCashea) => {
+    const inicial = pagoCashea.inicial_pago_id
+      ? (notaDetalle?.pagos || []).find((pago) => pago.id === pagoCashea.inicial_pago_id) || null
+      : null;
+    setCorreccion({
+      pagoCashea,
+      inicial,
+      orden: pagoCashea.referencia || '',
+      metodoId: inicial ? inicial.metodo_pago_id : '',
+      monto: montoEnMonedaDelMetodo(inicial),
+      referencia: inicial && !esReferenciaAutogenerada(inicial.referencia) ? inicial.referencia : '',
+      motivo: '',
+      error: '',
+    });
+  };
+
+  const actualizarCorreccion = (cambios) => setCorreccion((actual) => ({ ...actual, ...cambios, error: '' }));
+
+  // Qué cambia respecto al cobro que está registrado: solo la orden, o también el dinero de la inicial.
+  const cambiosDeLaCorreccion = () => {
+    if (!correccion) {
+      return { ordenCambia: false, dineroCambia: false };
+    }
+    const { inicial } = correccion;
+    const montoNuevo = Number(correccion.monto) > 0 ? Number(correccion.monto) : 0;
+    const hayInicialNueva = montoNuevo > 0;
+    let dineroCambia;
+    if (Boolean(inicial) !== hayInicialNueva) {
+      dineroCambia = true;
+    } else if (!inicial) {
+      dineroCambia = false;
+    } else {
+      dineroCambia = Number(correccion.metodoId) !== inicial.metodo_pago_id
+        || Math.abs(montoNuevo - Number(montoEnMonedaDelMetodo(inicial))) > 0.01
+        || Boolean(correccion.referencia.trim() && correccion.referencia.trim() !== (esReferenciaAutogenerada(inicial.referencia) ? '' : inicial.referencia));
+    }
+    return { ordenCambia: correccion.orden.trim() !== (correccion.pagoCashea.referencia || ''), dineroCambia };
+  };
+
+  const handlePedirConfirmacionCorreccion = (event) => {
+    event.preventDefault();
+    const orden = correccion.orden.trim();
+    if (!/^\d+$/.test(orden)) {
+      actualizarCorreccion({ error: 'Indica el número de orden de Cashea (solo números).' });
+      return;
+    }
+    const { ordenCambia, dineroCambia } = cambiosDeLaCorreccion();
+    if (!ordenCambia && !dineroCambia) {
+      actualizarCorreccion({ error: 'No cambiaste nada: modifica la orden o la inicial.' });
+      return;
+    }
+    const metodoInicial = metodosPago.find((item) => item.id === Number(correccion.metodoId));
+    if (Number(correccion.monto) > 0) {
+      if (!metodoInicial) {
+        actualizarCorreccion({ error: 'Selecciona el método donde cayó la inicial.' });
+        return;
+      }
+      if (!metodoInicial.es_efectivo && !correccion.referencia.trim()) {
+        actualizarCorreccion({ error: `Indica el número de referencia del pago por ${metodoInicial.nombre}.` });
+        return;
+      }
+    }
+    if (correccion.motivo.trim().length < 3) {
+      actualizarCorreccion({ error: 'Indica el motivo de la corrección.' });
+      return;
+    }
+    setConfirmCorreccion(true);
+  };
+
+  const handleGuardarCorreccion = async () => {
+    const orden = correccion.orden.trim();
+    setSavingCorreccion(true);
+    try {
+      const response = await fetch(`/api/notas-entrega/${selectedNotaId}/cashea/corregir/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') || '' },
+        credentials: 'include',
+        body: JSON.stringify({
+          cashea_orden: orden,
+          monto: Number(correccion.monto) > 0 ? correccion.monto : '',
+          metodo_pago_id: correccion.metodoId || '',
+          referencia: correccion.referencia.trim(),
+          motivo: correccion.motivo.trim(),
+          // Ya se le mostró el aviso del largo en la confirmación.
+          confirmar_orden_atipica: true,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      setConfirmCorreccion(false);
+      if (!response.ok || !data.ok) {
+        actualizarCorreccion({ error: data.message || 'No se pudo corregir el cobro.' });
+        return;
+      }
+      setCorreccion(null);
+      setFeedbackType('success');
+      setFeedback(data.message || 'Cobro corregido.');
+      if (data.nota_entrega) {
+        setNotaDetalle(data.nota_entrega);
+      }
+      await fetchNotas(desde, hasta);
+    } catch (requestError) {
+      setConfirmCorreccion(false);
+      actualizarCorreccion({ error: 'Error de red al corregir el cobro.' });
+    } finally {
+      setSavingCorreccion(false);
     }
   };
 
@@ -801,6 +964,11 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                                 : 'Por cobrar a Cashea'}
                             </span>
                           ) : null}
+                          {pago.nota_correccion ? (
+                            <span style={{ fontSize: 11.5, color: 'var(--vg-f-a89999)', lineHeight: 1.4 }} title={pago.nota_correccion}>
+                              {pago.nota_correccion.split('\n').slice(-1)[0]}
+                            </span>
+                          ) : null}
                         </div>
                         <div style={{ display: 'grid', gap: 4, justifyItems: 'end' }}>
                           <span style={{ fontWeight: 700 }}>{formatMontoDocumento(pago.monto, pago.moneda, pago.tasa_cambio_referencia || tasaCambio)}</span>
@@ -812,6 +980,15 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                               disabled={reprintingPagoId === pago.id}
                             >
                               {reprintingPagoId === pago.id ? 'Enviando...' : 'Reimprimir'}
+                            </button>
+                          ) : null}
+                          {pago.es_cashea && !pago.liquidacion_cashea && notaDetalle.estado !== 'anulada' ? (
+                            <button
+                              type="button"
+                              onClick={() => abrirCorreccion(pago)}
+                              style={{ ...secondaryButtonStyle, padding: '5px 10px', fontSize: 12 }}
+                            >
+                              Corregir cobro
                             </button>
                           ) : null}
                         </div>
@@ -835,6 +1012,7 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
                     setUsarCashea={setUsarCashea}
                     ordenCashea={ordenCashea}
                     setOrdenCashea={setOrdenCashea}
+                    ordenDigitos={ordenDigitos}
                     saving={savingAbono}
                     onSubmit={handleRegistrarAbono}
                   />
@@ -1059,6 +1237,154 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
       ) : null}
 
       <ConfirmModal
+        open={Boolean(confirmCobroCashea)}
+        title="¿Registrar el cobro con Cashea?"
+        message={confirmCobroCashea ? (
+          <div style={{ display: 'grid', gap: 8 }}>
+            <span>Revisa que los datos estén bien antes de guardar.</span>
+            <div style={resumenModalStyle}>
+              <span>Nota <strong>{confirmCobroCashea.codigo}</strong> · total <strong>${fmt(confirmCobroCashea.totalUsd)}</strong></span>
+              <span>Inicial: <strong>{confirmCobroCashea.inicialTexto}</strong></span>
+              <span>Cashea financia: <strong>{confirmCobroCashea.financiaUsd === null ? '—' : `$${fmt(confirmCobroCashea.financiaUsd)}`}</strong></span>
+              <span>Número de orden de Cashea: <strong style={{ fontSize: 17, letterSpacing: '0.04em' }}>{confirmCobroCashea.orden}</strong></span>
+            </div>
+            {confirmCobroCashea.ordenAtipica ? (
+              <div style={feedbackStyle('warning')}>
+                La orden tiene {confirmCobroCashea.orden.length} dígitos y lo habitual son {ordenDigitos}. Compárala con la que muestra Cashea en el celular del cliente.
+              </div>
+            ) : null}
+          </div>
+        ) : ''}
+        confirmLabel="Sí, registrar"
+        busy={savingAbono}
+        onConfirm={() => registrarAbono(metodoAbono, Boolean(confirmCobroCashea?.ordenAtipica))}
+        onCancel={() => setConfirmCobroCashea(null)}
+      />
+
+      {correccion ? (
+        <div style={backdropStyle} onClick={savingCorreccion ? undefined : () => setCorreccion(null)}>
+          <form onSubmit={handlePedirConfirmacionCorreccion} style={devolucionCardStyle} onClick={(event) => event.stopPropagation()}>
+            <div style={{ color: 'var(--vg-text-strong)', fontSize: 18, fontWeight: 800 }}>Corregir cobro con Cashea</div>
+            <p style={{ margin: 0, color: 'var(--vg-f-d2c3c3)', fontSize: 13, lineHeight: 1.5 }}>
+              Nota {notaDetalle?.codigo}. Solo se puede corregir mientras Cashea no haya liquidado el cobro. Queda anotado quién lo corrigió y por qué.
+            </p>
+
+            <label style={dateFieldStyle}>
+              <span style={dateLabelStyle}>Número de orden de Cashea</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={correccion.orden}
+                onChange={(event) => actualizarCorreccion({ orden: event.target.value.replace(/\D/g, '') })}
+                style={inputStyle}
+              />
+              {ordenDigitos > 0 && correccion.orden && correccion.orden.length !== ordenDigitos ? (
+                <span style={ayudaAmarillaStyle}>Tiene {correccion.orden.length} dígitos; lo habitual son {ordenDigitos}.</span>
+              ) : null}
+            </label>
+
+            {puedeCorregirDinero ? (
+              <>
+                <label style={dateFieldStyle}>
+                  <span style={dateLabelStyle}>Método donde cayó la inicial</span>
+                  <select
+                    value={correccion.metodoId}
+                    onChange={(event) => actualizarCorreccion({ metodoId: event.target.value ? Number(event.target.value) : '', monto: '' })}
+                    style={selectStyle}
+                    className="admin-dark-select"
+                  >
+                    <option value="">Sin inicial</option>
+                    {metodosPago.filter((item) => !item.es_cashea).map((item) => (
+                      <option key={item.id} value={item.id}>{etiquetaMetodo(item)}</option>
+                    ))}
+                  </select>
+                  {correccion.metodoId ? <span style={ayudaAmarillaStyle}>Al cambiar de método, vuelve a escribir el monto en su moneda.</span> : null}
+                </label>
+                {correccion.metodoId ? (
+                  <>
+                    <label style={dateFieldStyle}>
+                      <span style={dateLabelStyle}>
+                        Monto de la inicial ({metodosPago.find((item) => item.id === Number(correccion.metodoId))?.moneda === 'VES' ? 'Bs' : '$'})
+                      </span>
+                      <MoneyInput value={correccion.monto} onChange={(valor) => actualizarCorreccion({ monto: valor })} style={inputStyle} />
+                    </label>
+                    {!metodosPago.find((item) => item.id === Number(correccion.metodoId))?.es_efectivo ? (
+                      <label style={dateFieldStyle}>
+                        <span style={dateLabelStyle}>Número de referencia</span>
+                        <input
+                          type="text"
+                          value={correccion.referencia}
+                          onChange={(event) => actualizarCorreccion({ referencia: event.target.value })}
+                          style={inputStyle}
+                        />
+                      </label>
+                    ) : null}
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <div style={ayudaAmarillaStyle}>
+                Para cambiar el monto o el método de la inicial pídeselo a una administradora. Tú puedes corregir el número de orden.
+              </div>
+            )}
+
+            <label style={dateFieldStyle}>
+              <span style={dateLabelStyle}>Motivo de la corrección</span>
+              <input
+                type="text"
+                value={correccion.motivo}
+                onChange={(event) => actualizarCorreccion({ motivo: event.target.value })}
+                placeholder="Por ejemplo: se tecleó mal la orden"
+                style={inputStyle}
+              />
+            </label>
+
+            {correccion.error ? <div style={feedbackStyle('error')}>{correccion.error}</div> : null}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 4 }}>
+              <button type="button" onClick={() => setCorreccion(null)} style={secondaryButtonStyle} disabled={savingCorreccion}>
+                Cancelar
+              </button>
+              <button type="submit" style={devolucionButtonStyle} disabled={savingCorreccion}>
+                Guardar corrección
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      <ConfirmModal
+        open={confirmCorreccion && Boolean(correccion)}
+        title="¿Corregir este cobro?"
+        message={correccion ? (() => {
+          const { ordenCambia, dineroCambia } = cambiosDeLaCorreccion();
+          const orden = correccion.orden.trim();
+          return (
+            <div style={{ display: 'grid', gap: 8 }}>
+              {dineroCambia ? (
+                <span>
+                  Se <strong>anularán los cobros actuales</strong> de Cashea y de la inicial y se registrarán de nuevo con los datos nuevos
+                  (saldrán notas de cobro nuevas). El motivo queda anotado.
+                </span>
+              ) : (
+                <span>
+                  Solo cambia el número de orden: de <strong>{correccion.pagoCashea.referencia}</strong> a <strong>{orden}</strong>. El motivo queda anotado.
+                </span>
+              )}
+              {ordenCambia && dineroCambia ? <span>La orden pasa de {correccion.pagoCashea.referencia} a <strong>{orden}</strong>.</span> : null}
+              {ordenDigitos > 0 && orden.length !== ordenDigitos ? (
+                <div style={feedbackStyle('warning')}>La orden tiene {orden.length} dígitos y lo habitual son {ordenDigitos}. Revisa que esté bien escrita.</div>
+              ) : null}
+            </div>
+          );
+        })() : ''}
+        confirmLabel="Sí, corregir"
+        busy={savingCorreccion}
+        onConfirm={handleGuardarCorreccion}
+        onCancel={() => setConfirmCorreccion(false)}
+      />
+
+      <ConfirmModal
         open={Boolean(confirmCambioMetodo)}
         title="¿Cambiar la cuenta de esta nota?"
         message={confirmCambioMetodo?.message || ''}
@@ -1074,9 +1400,12 @@ function NotasEntregaHistorialPage({ isMobile, onBack, embedded = false, refresh
 
 function AbonoForm({
   isMobile, nota, metodosPago, metodoAbono, setMetodoAbono, montoAbono, setMontoAbono,
-  referenciaAbono, setReferenciaAbono, usarCashea, setUsarCashea, ordenCashea, setOrdenCashea,
+  referenciaAbono, setReferenciaAbono, usarCashea, setUsarCashea, ordenCashea, setOrdenCashea, ordenDigitos,
   saving, onSubmit,
 }) {
+  // Avisos que acompañan lo que la cajera escribe: monto convertido al cambiar de método y letras quitadas de la orden.
+  const [avisoMonto, setAvisoMonto] = useState('');
+  const [avisoOrden, setAvisoOrden] = useState('');
   // La cuenta Cashea no se elige como método: se activa con «Pago con Cashea»
   // y registra sola lo que la inicial no cubre.
   const hayCashea = metodosPago.some((item) => item.es_cashea);
@@ -1090,6 +1419,31 @@ function AbonoForm({
     ? (nota.saldo_pendiente_bs_vigente ? formatBsRaw(nota.saldo_pendiente_bs_vigente) : '')
     : `$${saldoUsd.toFixed(2)}`;
   const saldoCompleto = esBs ? (nota.saldo_pendiente_bs_vigente || '') : saldoUsd.toFixed(2);
+
+  // Al cambiar de método el monto que ya se escribió NO se borra: si cambia la moneda (de $ a Bs o al revés)
+  // se convierte a la tasa vigente, para que la inicial en dólares siga siendo la misma.
+  const cambiarMetodo = (valor) => {
+    const nuevoId = valor ? Number(valor) : '';
+    const nuevo = metodosElegibles.find((item) => item.id === nuevoId);
+    const antesBs = esBs;
+    const ahoraBs = nuevo ? nuevo.moneda === 'VES' : false;
+    setMetodoAbono(nuevoId);
+    const escrito = Number(montoAbono);
+    if (!(escrito > 0) || antesBs === ahoraBs) {
+      setAvisoMonto('');
+      return;
+    }
+    if (!tasaVigente) {
+      setMontoAbono('');
+      setAvisoMonto('Cambiaste de moneda y no hay tasa para convertir: escribe el monto otra vez.');
+      return;
+    }
+    const convertido = ahoraBs ? escrito * tasaVigente : escrito / tasaVigente;
+    setMontoAbono(convertido.toFixed(2));
+    setAvisoMonto(
+      `Cambió la moneda: ${antesBs ? 'Bs ' : '$'}${fmt(escrito)} ahora son ${ahoraBs ? 'Bs ' : '$'}${fmt(convertido)} a la tasa de Bs ${fmt(tasaVigente)}. Revisa el monto.`,
+    );
+  };
 
   // Lo que financia Cashea = saldo - inicial, siempre en dólares.
   const inicialNum = Number(montoAbono) > 0 ? Number(montoAbono) : 0;
@@ -1111,6 +1465,8 @@ function AbonoForm({
               setMontoAbono('');
               setMetodoAbono('');
               setReferenciaAbono('');
+              setAvisoMonto('');
+              setAvisoOrden('');
             }}
           />
           Pago con Cashea
@@ -1125,9 +1481,19 @@ function AbonoForm({
             inputMode="numeric"
             placeholder="Número de orden que muestra Cashea"
             value={ordenCashea}
-            onChange={(event) => setOrdenCashea(event.target.value.replace(/\D/g, ''))}
+            onChange={(event) => {
+              const escrito = event.target.value;
+              const soloNumeros = escrito.replace(/\D/g, '');
+              // Antes las letras se borraban sin avisar: ahora se dice qué pasó.
+              setAvisoOrden(escrito !== soloNumeros ? 'La orden de Cashea solo lleva números: se quitaron las letras y símbolos.' : '');
+              setOrdenCashea(soloNumeros);
+            }}
             style={inputStyle}
           />
+          {avisoOrden ? <span style={ayudaAmarillaStyle}>{avisoOrden}</span> : null}
+          {!avisoOrden && ordenDigitos > 0 && ordenCashea && ordenCashea.length !== ordenDigitos ? (
+            <span style={ayudaAmarillaStyle}>Tiene {ordenCashea.length} dígitos; lo habitual son {ordenDigitos}. Revísala.</span>
+          ) : null}
         </label>
       ) : null}
 
@@ -1137,10 +1503,7 @@ function AbonoForm({
         </span>
         <select
           value={metodoAbono}
-          onChange={(event) => {
-            setMetodoAbono(event.target.value ? Number(event.target.value) : '');
-            setMontoAbono('');
-          }}
+          onChange={(event) => cambiarMetodo(event.target.value)}
           style={selectStyle}
           className="admin-dark-select"
         >
@@ -1173,7 +1536,7 @@ function AbonoForm({
           <MoneyInput
             placeholder={esBs ? 'Monto en Bs' : 'Monto en $'}
             value={montoAbono}
-            onChange={setMontoAbono}
+            onChange={(valor) => { setMontoAbono(valor); setAvisoMonto(''); }}
             style={{ ...inputStyle, flex: 1 }}
           />
           {!usarCashea ? (
@@ -1188,6 +1551,8 @@ function AbonoForm({
           ) : null}
         </div>
       </label>
+
+      {avisoMonto ? <div style={feedbackStyle('warning')}>{avisoMonto}</div> : null}
 
       {usarCashea ? (
         <div style={saldoBoxStyle}>
@@ -1523,6 +1888,22 @@ const cobroRowStyle = {
   borderRadius: 12,
   border: '1px solid rgba(var(--vg-ink), 0.08)',
   background: 'rgba(var(--vg-ink), 0.02)',
+};
+
+const resumenModalStyle = {
+  display: 'grid',
+  gap: 4,
+  padding: '10px 12px',
+  borderRadius: 12,
+  background: 'rgba(var(--vg-ink), 0.05)',
+  color: 'var(--vg-text-strong)',
+  fontSize: 13.5,
+};
+
+const ayudaAmarillaStyle = {
+  color: 'var(--vg-f-ffcf7d)',
+  fontSize: 12,
+  lineHeight: 1.4,
 };
 
 const selectStyle = {

@@ -71,6 +71,7 @@ def totales_pagos_por_metodo(fecha):
             'es_efectivo': metodo.es_efectivo,
             'moneda': metodo.moneda,
             'cuenta_bancaria': metodo.cuenta_bancaria,
+            'es_cashea': metodo.es_cashea,
             'ventas': Decimal('0'),
             'ingresos_extra': Decimal('0'),
             'ventas_bs': Decimal('0'),
@@ -79,7 +80,7 @@ def totales_pagos_por_metodo(fecha):
         for metodo in VGMetodoPago.objects.filter(activo=True)
     }
 
-    def _metodo_entry(metodo_id, nombre, es_efectivo, moneda, cuenta_bancaria=''):
+    def _metodo_entry(metodo_id, nombre, es_efectivo, moneda, cuenta_bancaria='', es_cashea=False):
         if metodo_id not in metodos_por_id:
             metodos_por_id[metodo_id] = {
                 'id': metodo_id,
@@ -87,6 +88,8 @@ def totales_pagos_por_metodo(fecha):
                 'es_efectivo': es_efectivo,
                 'moneda': moneda,
                 'cuenta_bancaria': cuenta_bancaria,
+                # Cashea no es dinero recibido: es lo que Cashea financió y todavía debe.
+                'es_cashea': es_cashea,
                 'ventas': Decimal('0'),
                 'ingresos_extra': Decimal('0'),
                 'ventas_bs': Decimal('0'),
@@ -101,7 +104,9 @@ def totales_pagos_por_metodo(fecha):
     )
     for pago in pagos:
         metodo = pago.metodo_pago
-        entry = _metodo_entry(metodo.id, metodo.nombre, metodo.es_efectivo, metodo.moneda, metodo.cuenta_bancaria)
+        entry = _metodo_entry(
+            metodo.id, metodo.nombre, metodo.es_efectivo, metodo.moneda, metodo.cuenta_bancaria, metodo.es_cashea,
+        )
         entry['ventas'] += pago.monto
         if metodo.moneda == 'VES':
             tasa_pago = (
@@ -125,7 +130,9 @@ def totales_pagos_por_metodo(fecha):
     )
     for ingreso in ingresos_extra_dia:
         metodo = ingreso.metodo_pago
-        entry = _metodo_entry(metodo.id, metodo.nombre, metodo.es_efectivo, metodo.moneda, metodo.cuenta_bancaria)
+        entry = _metodo_entry(
+            metodo.id, metodo.nombre, metodo.es_efectivo, metodo.moneda, metodo.cuenta_bancaria, metodo.es_cashea,
+        )
         entry['ingresos_extra'] += ingreso.monto
         if metodo.moneda == 'VES':
             # Igual que con los VGPago de arriba: cada ingreso extra congela su
@@ -414,9 +421,14 @@ def desglose_caja_por_moneda(fecha):
         'bs_digital': {'total_usd': Decimal('0'), 'total_bs': Decimal('0'), '_falta_tasa': False},
         'usd_fisico': {'total_usd': Decimal('0')},
         'usd_digital': {'total_usd': Decimal('0')},
+        # Lo que Cashea financió ese día: se vendió, pero NO es dinero recibido todavía.
+        'cashea': {'total_usd': Decimal('0')},
     }
 
     for metodo in totales_pagos_por_metodo(fecha):
+        if metodo.get('es_cashea'):
+            buckets['cashea']['total_usd'] += metodo['total']
+            continue
         if metodo['moneda'] == 'VES':
             clave = 'bs_fisico' if metodo['es_efectivo'] else 'bs_digital'
             buckets[clave]['total_usd'] += metodo['total']
@@ -433,6 +445,19 @@ def desglose_caja_por_moneda(fecha):
             buckets[clave]['total_bs'] = None
 
     return buckets
+
+
+def cashea_por_cobrar_total():
+    """
+    Lo que Cashea nos debe HOY: los cobros con Cashea todavía sin liquidar, de cualquier
+    fecha. No es dinero disponible; los reportes de «por cobrar» lo muestran aparte de
+    las deudas de los clientes para que no parezca que no se debe nada.
+    """
+    pendientes = VGPago.objects.filter(
+        metodo_pago__es_cashea=True, estado='completado', liquidacion_cashea__isnull=True,
+    )
+    total = pendientes.aggregate(total=Sum('monto')).get('total') or Decimal('0')
+    return {'total_usd': total.quantize(Decimal('0.01')), 'cantidad': pendientes.count()}
 
 
 def gastos_efectivo_dia(fecha):
@@ -569,6 +594,7 @@ def resumen_cuadre_caja_rango(desde, hasta):
     bs_digital = {'total_usd': Decimal('0'), 'total_bs': Decimal('0'), '_falta_tasa': False}
     usd_fisico = Decimal('0')
     usd_digital = Decimal('0')
+    cashea_financiado = Decimal('0')
     total_consignado_acum = Decimal('0')
     gastos_efectivo_acum = Decimal('0')
     efectivo_esperado_acum = Decimal('0')
@@ -591,12 +617,15 @@ def resumen_cuadre_caja_rango(desde, hasta):
                 'nombre': item['nombre'],
                 'es_efectivo': item['es_efectivo'],
                 'moneda': item['moneda'],
+                'es_cashea': item.get('es_cashea', False),
                 'total': Decimal('0'),
                 'total_bs': Decimal('0') if item['moneda'] == 'VES' else None,
                 '_falta_tasa': False,
             })
             entry['total'] += item['total']
-            if item['moneda'] == 'VES':
+            if item.get('es_cashea'):
+                cashea_financiado += item['total']
+            elif item['moneda'] == 'VES':
                 if item['total_bs'] is not None:
                     entry['total_bs'] += item['total_bs']
                 else:
@@ -645,6 +674,7 @@ def resumen_cuadre_caja_rango(desde, hasta):
             'bs_digital': bs_digital,
             'usd_fisico': {'total_usd': usd_fisico},
             'usd_digital': {'total_usd': usd_digital},
+            'cashea': {'total_usd': cashea_financiado},
         },
         'total_general': sum((item['total'] for item in metodos_acumulados.values()), Decimal('0')),
         'total_consignado': total_consignado_acum,
@@ -688,22 +718,26 @@ def pos_por_cobrar_transitorio(fecha):
     """
     items = {}
     total = Decimal('0')
+    total_bs = Decimal('0.00')
     for lote in lotes_pos_por_acreditar(fecha):
         metodo = lote.metodo_pago
         clave = metodo.cuenta_bancaria or f'__metodo_{metodo.id}'
         item = items.setdefault(clave, {
             'banco': metodo.cuenta_bancaria or metodo.nombre,
-            'lotes_abiertos': 0, 'lotes_cerrados': 0, 'monto_usd': Decimal('0'),
+            'lotes_abiertos': 0, 'lotes_cerrados': 0, 'monto_usd': Decimal('0'), 'monto_bs': Decimal('0.00'),
         })
         if lote.estado == 'abierto':
             item['lotes_abiertos'] += 1
         else:
             item['lotes_cerrados'] += 1
         item['monto_usd'] += lote.monto_bruto_usd
+        item['monto_bs'] += lote.monto_bruto_sistema_bs
         total += lote.monto_bruto_usd
+        total_bs += lote.monto_bruto_sistema_bs
     return {
         'fecha': fecha,
         'total_usd': total,
+        'total_bs': total_bs,
         'por_banco': sorted(items.values(), key=lambda item: item['banco']),
     }
 
@@ -789,6 +823,14 @@ def disponibilidad_por_cuenta(fecha):
     `por_acreditar_usd`, con el desglose de lotes. Un cobro de metodo POS sin lote
     (historico previo a marcar el metodo como POS) sigue contando como siempre
     hasta que se agrupe en lotes.
+
+    `saldo_disponible` es el saldo en dolares con el valor historico de cada
+    movimiento (cada uno a su propia tasa). Para las cuentas en bolivares eso no
+    es "cuantos dolares hay hoy": los Bs reales se devalúan o revalúan con la
+    tasa. Por eso cada fila trae ademas `saldo_usd_tasa_actual` (los Bs reales
+    de la cuenta entre la tasa de `fecha`) y `diferencia_cambiaria_usd` (cuanto
+    cambia respecto al valor historico). Las cuentas en USD no cambian, y una
+    cuenta en Bs sin tasa o con movimientos sin tasa conserva el valor historico.
 
     Devuelve (cuentas, bancos): `cuentas` es la lista de siempre, una fila por
     metodo de pago; `bancos` agrupa esas mismas filas por VGMetodoPago.cuenta_bancaria
@@ -931,6 +973,8 @@ def disponibilidad_por_cuenta(fecha):
         )
     }
 
+    tasa_actual = tasa_para_fecha(fecha)
+
     resultado = []
     for metodo in metodos:
         ingresos = ingresos_por_metodo.get(metodo.id) or Decimal('0')
@@ -945,6 +989,17 @@ def disponibilidad_por_cuenta(fecha):
             # Metodo POS: los cobros con lote ya se excluyeron arriba; lo disponible
             # es el neto de los lotes que el banco ya acredito.
             ingresos += fila_pos['acreditado_usd']
+        saldo_historico = (
+            ingresos + ingresos_extra + transferencias_entrantes
+            - gastos - compras - transferencias_salientes - consignado
+        )
+        saldo_bs = (
+            None if metodo.id in saldo_bs_incompleto
+            else saldo_bs_por_metodo.get(metodo.id, Decimal('0'))
+        ) if metodo.moneda == 'VES' else None
+        saldo_actual = (
+            saldo_bs / tasa_actual if saldo_bs is not None and tasa_actual else saldo_historico
+        )
         resultado.append({
             'id': metodo.id,
             'nombre': metodo.nombre,
@@ -959,14 +1014,10 @@ def disponibilidad_por_cuenta(fecha):
             'compras_acumuladas': compras,
             'transferencias_salientes_acumuladas': transferencias_salientes,
             'consignado_acumulado': consignado,
-            'saldo_disponible': (
-                ingresos + ingresos_extra + transferencias_entrantes
-                - gastos - compras - transferencias_salientes - consignado
-            ),
-            'saldo_disponible_bs': (
-                None if metodo.id in saldo_bs_incompleto
-                else saldo_bs_por_metodo.get(metodo.id, Decimal('0'))
-            ) if metodo.moneda == 'VES' else None,
+            'saldo_disponible': saldo_historico,
+            'saldo_disponible_bs': saldo_bs,
+            'saldo_usd_tasa_actual': saldo_actual,
+            'diferencia_cambiaria_usd': saldo_actual - saldo_historico,
             'es_punto_venta': metodo.es_punto_venta,
             # Cuenta "Por cobrar a Cashea": su saldo es lo que Cashea nos debe,
             # NO dinero disponible — los totales de disponibilidad la excluyen.
@@ -995,6 +1046,8 @@ def disponibilidad_por_cuenta(fecha):
                 'transferencias_salientes_acumuladas': Decimal('0'),
                 'consignado_acumulado': Decimal('0'),
                 'saldo_disponible': Decimal('0'),
+                'saldo_usd_tasa_actual': Decimal('0'),
+                'diferencia_cambiaria_usd': Decimal('0'),
                 'saldo_disponible_bs': Decimal('0') if cuenta['moneda'] == 'VES' else None,
                 **{campo: Decimal('0') for campo in CAMPOS_POS_SUMABLES},
                 'lotes_por_acreditar': [],
@@ -1012,6 +1065,8 @@ def disponibilidad_por_cuenta(fecha):
         banco['transferencias_salientes_acumuladas'] += cuenta['transferencias_salientes_acumuladas']
         banco['consignado_acumulado'] += cuenta['consignado_acumulado']
         banco['saldo_disponible'] += cuenta['saldo_disponible']
+        banco['saldo_usd_tasa_actual'] += cuenta['saldo_usd_tasa_actual']
+        banco['diferencia_cambiaria_usd'] += cuenta['diferencia_cambiaria_usd']
         for campo in CAMPOS_POS_SUMABLES:
             banco[campo] += cuenta[campo]
         banco['lotes_por_acreditar'].extend(cuenta['lotes_por_acreditar'])
