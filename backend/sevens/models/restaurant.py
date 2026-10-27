@@ -1519,6 +1519,10 @@ class VGPago(models.Model):
         "sevens.VGLiquidacionCashea", on_delete=models.PROTECT, null=True, blank=True, related_name="pagos",
         help_text="Liquidación semanal de Cashea que cobró este pago (solo si su metodo_pago es_cashea). Null = Cashea aún nos lo debe.",
     )
+    nota_correccion = models.TextField(
+        blank=True, default="",
+        help_text="Historial de correcciones de un cobro con Cashea (orden cambiada, cobro anulado y vuelto a registrar): quién, cuándo y por qué.",
+    )
     anulado_por_nota_credito = models.ForeignKey(
         "sevens.VGNotaCredito", on_delete=models.SET_NULL, null=True, blank=True, related_name="pagos_revertidos",
         help_text="Si no es None, este pago quedó en estado 'anulado' porque una devolución revirtió el documento al que pertenecía — así el cuadre de caja (reportes.py) deja de contarlo automáticamente al filtrar estado='completado', sin perder de qué cuenta/método salió originalmente.",

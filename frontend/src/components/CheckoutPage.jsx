@@ -1034,7 +1034,14 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
             role="tab"
             aria-selected={activeTab === tab.id}
             className={`vg-cobro-tab${activeTab === tab.id ? ' is-active' : ''}`}
-            onClick={() => setActiveTab(tab.id)}
+            onClick={() => {
+              setActiveTab(tab.id);
+              // Cuentas por Cobrar queda montada aunque esté oculta: al volver a ella se recarga, para que
+              // muestre lo que Cashea debe tras los cobros hechos desde Notas de Entrega.
+              if (tab.id === 'cuentas') {
+                setCuentasRefreshToken((current) => current + 1);
+              }
+            }}
           >
             <span aria-hidden="true">{tab.icon}</span>
             {tab.label}

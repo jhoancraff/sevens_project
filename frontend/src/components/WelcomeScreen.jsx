@@ -1157,6 +1157,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             onBack={goBackView}
             onNavigate={handleAnalystNavigation}
             backLabel={isCajera ? '← Volver a Cobro' : '← Volver a Contabilidad'}
+            puedeVerCashea={!isCajera}
           />
         ) : activeView === 'contabilidad-cierre-caja' ? (
           <CierreCajaPage
@@ -1182,6 +1183,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           <ReporteCuentasPorCobrarPage
             isMobile={isMobile}
             onBack={goBackView}
+            onVerCashea={isCajera ? undefined : () => goToView('contabilidad-cashea')}
           />
         ) : activeView === 'contabilidad-cuentas-cobradas-dia' ? (
           <ReporteCuentasCobradasPage

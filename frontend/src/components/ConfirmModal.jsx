@@ -1,6 +1,9 @@
 import useMobileBackHandler from '../hooks/useMobileBackHandler';
 
-function ConfirmModal({ open, title, message, confirmLabel = 'Confirmar', cancelLabel = 'Cancelar', onConfirm, onCancel, busy }) {
+function ConfirmModal({
+  open, title, message, confirmLabel = 'Confirmar', cancelLabel = 'Cancelar', onConfirm, onCancel, busy,
+  confirmDisabled = false, children = null,
+}) {
   // Componente compartido por ~30 pantallas — wireando el Atrás móvil UNA vez
   // acá alcanza a todas, sin tocar cada pantalla que lo usa. Mientras esté
   // "busy" (guardando) no se cierra con Atrás, igual que el backdrop no cierra
@@ -15,12 +18,14 @@ function ConfirmModal({ open, title, message, confirmLabel = 'Confirmar', cancel
     <div style={backdropStyle} onClick={busy ? undefined : onCancel}>
       <div style={cardStyle} onClick={(event) => event.stopPropagation()}>
         <div style={titleStyle}>{title}</div>
-        <p style={textStyle}>{message}</p>
+        {/* `message` puede ser texto o un bloque con el resumen de lo que se va a guardar. */}
+        <div style={textStyle}>{message}</div>
+        {children}
         <div style={footerStyle}>
           <button type="button" onClick={onCancel} style={cancelButtonStyle} disabled={busy}>
             {cancelLabel}
           </button>
-          <button type="button" onClick={onConfirm} style={confirmButtonStyle} disabled={busy}>
+          <button type="button" onClick={onConfirm} style={{ ...confirmButtonStyle, opacity: confirmDisabled ? 0.5 : 1 }} disabled={busy || confirmDisabled}>
             {busy ? 'Procesando...' : confirmLabel}
           </button>
         </div>

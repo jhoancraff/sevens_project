@@ -14,6 +14,7 @@ import logging
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from django.conf import settings
 from django.db import models, transaction
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -50,7 +51,8 @@ from .models import (
     VGPreFactura,
     VGPreFacturaLinea,
 )
-from .lotes_pos import asignar_pago_a_lote
+from .lotes_pos import asignar_pago_a_lote, pago_anulado, validar_cambio_metodo_pago
+from .reportes import cashea_por_cobrar_total
 from .tasa_cambio import obtener_tasa_actual
 from .tasa_cuenta import minutos_restantes, prefactura_que_cubre, resolver_tasa_cuenta
 
@@ -410,11 +412,34 @@ def _serialize_pago(pago):
         'codigo_cobro': codigo_cobro(pago.numero_cobro),
         'saldo_posterior': str(pago.saldo_posterior) if pago.saldo_posterior is not None else None,
         'es_cashea': pago.metodo_pago.es_cashea,
+        'nota_correccion': pago.nota_correccion,
         # Solo un cobro con la cuenta Cashea: None = Cashea aún no lo ha pagado.
         'liquidacion_cashea': (
             pago.liquidacion_cashea.codigo if pago.liquidacion_cashea_id else None
         ) if pago.metodo_pago.es_cashea else None,
     }
+
+
+def _pago_inicial_de_cashea(pagos, pago_cashea):
+    """
+    La inicial que se cobró junto con este cobro de Cashea (None si la venta fue sin inicial).
+    Los dos cobros se registran seguidos: la inicial es el cobro que no es de Cashea
+    inmediatamente anterior, cuyo saldo posterior es justo lo que Cashea financió.
+    """
+    if pago_cashea.numero_cobro is None:
+        return None
+    candidatos = sorted(
+        (
+            pago for pago in pagos
+            if pago.id != pago_cashea.id and pago.estado == 'completado' and not pago.metodo_pago.es_cashea
+            and pago.numero_cobro is not None and pago.numero_cobro < pago_cashea.numero_cobro
+        ),
+        key=lambda pago: pago.numero_cobro, reverse=True,
+    )
+    if candidatos and candidatos[0].saldo_posterior is not None \
+            and abs(candidatos[0].saldo_posterior - pago_cashea.monto) <= Decimal('0.01'):
+        return candidatos[0]
+    return None
 
 
 def _serialize_factura(factura, incluir_detalle=True):
@@ -1061,7 +1086,13 @@ def cuentas_por_cobrar_view(request):
         .select_related('factura__cliente', 'responsable')
         .order_by('fecha_creacion')
     )
-    return _auth_response({'ok': True, 'ordenes_cobro': [_serialize_orden_cobro(orden) for orden in ordenes]})
+    cashea = cashea_por_cobrar_total()
+    return _auth_response({
+        'ok': True,
+        'ordenes_cobro': [_serialize_orden_cobro(orden) for orden in ordenes],
+        # Lo que Cashea aún no ha pagado: no es una deuda de un cliente, pero sí dinero por cobrar.
+        'cashea_por_cobrar': {'total_usd': str(cashea['total_usd']), 'cantidad': cashea['cantidad']},
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1131,7 +1162,14 @@ def _serialize_nota_entrega(nota, incluir_detalle=True, tasa_pago_actual=None):
             .select_related('metodo_pago', 'creado_por', 'liquidacion_cashea')
             .order_by('fecha_pago')
         )
-        data['pagos'] = [_serialize_pago(pago) for pago in pagos_completados]
+        data['pagos'] = []
+        for pago in pagos_completados:
+            fila = _serialize_pago(pago)
+            if pago.metodo_pago.es_cashea:
+                # Para poder corregir el cobro con Cashea: cuál fue su inicial (si la hubo).
+                inicial = _pago_inicial_de_cashea(pagos_completados, pago)
+                fila['inicial_pago_id'] = inicial.id if inicial else None
+            data['pagos'].append(fila)
         # Lo que Cashea aún nos debe de esta nota: la nota ya está pagada por el
         # cliente, pero ese dinero no llega a banco hasta la liquidación semanal.
         data['cashea_pendiente_usd'] = str(sum(
@@ -1230,6 +1268,16 @@ def nota_entrega_abono_view(request, nota_id):
     except json.JSONDecodeError:
         return _auth_response({'ok': False, 'message': 'Formato JSON invalido.'}, status=400)
 
+    return _procesar_abono(request, nota_id, data)
+
+
+def _procesar_abono(request, nota_id, data):
+    """
+    Registra un cobro (o un cobro con Cashea: inicial + resto financiado) sobre una
+    nota de entrega. Lo usan nota_entrega_abono_view y la corrección de cobros con
+    Cashea (nota_entrega_cashea_corregir_view), que anula el cobro viejo y lo vuelve
+    a registrar con estas mismas reglas.
+    """
     # Venta con Cashea: la cajera elige el método donde cayó la inicial del
     # cliente (en Bs o en $, según ese método) y lo que falte de la nota se
     # registra solo contra la cuenta Cashea, con el número de orden que escribió.
@@ -1328,6 +1376,18 @@ def nota_entrega_abono_view(request, nota_id):
                     'ok': False,
                     'message': 'El número de orden de Cashea debe contener solo números.',
                 }, status=400)
+            # Un dígito de más o de menos es el error de tecleo típico: se pide
+            # confirmación explícita en vez de guardarlo en silencio.
+            largo_habitual = settings.CASHEA_ORDEN_DIGITOS
+            if largo_habitual and len(orden_cashea) != largo_habitual and not data.get('confirmar_orden_atipica'):
+                return _auth_response({
+                    'ok': False,
+                    'requiere_confirmacion_orden': True,
+                    'message': (
+                        f'La orden de Cashea {orden_cashea} tiene {len(orden_cashea)} dígitos y lo habitual son '
+                        f'{largo_habitual}. Revisa que esté bien escrita.'
+                    ),
+                }, status=409)
             if VGPago.objects.filter(
                 metodo_pago=cuenta_de_la_orden, referencia=orden_cashea, estado='completado',
             ).exists():
@@ -1484,6 +1544,176 @@ def nota_entrega_abono_view(request, nota_id):
         'motivo_no_impreso': motivo_no_impreso or '',
     }
     return _auth_response(respuesta, status=201)
+
+
+@csrf_exempt
+def nota_entrega_cashea_corregir_view(request, nota_id):
+    """
+    Corrige un cobro con Cashea que todavía no se ha liquidado. Recibe lo mismo que al
+    cobrar (cashea_orden, monto + metodo_pago_id + referencia de la inicial) más el
+    `motivo`, que es obligatorio y queda anotado en el cobro.
+
+    - Solo cambia el número de orden: lo pueden hacer la cajera o la administradora; se
+      corrige en el mismo cobro.
+    - Cambia el dinero de la inicial (monto, método o referencia, o se agrega/quita la
+      inicial): solo una administradora. Los dos cobros viejos se anulan y se registran de
+      nuevo (con sus notas de cobro nuevas), así el cuadre y la disponibilidad quedan al día.
+
+    Si Cashea ya liquidó el cobro, primero hay que anular esa liquidación.
+    """
+    if request.method != 'POST':
+        return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
+
+    if not (_is_admin_user(request.user) or _is_cajera_user(request.user)):
+        return _auth_response({'ok': False, 'message': 'No tienes permiso para corregir cobros.'}, status=401)
+
+    try:
+        data = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        return _auth_response({'ok': False, 'message': 'Formato JSON invalido.'}, status=400)
+
+    motivo = str(data.get('motivo', '') or '').strip()
+    if len(motivo) < 3:
+        return _auth_response({'ok': False, 'message': 'Indica el motivo de la corrección.'}, status=400)
+    orden_nueva = str(data.get('cashea_orden', '') or '').strip()
+    if not orden_nueva:
+        return _auth_response({'ok': False, 'message': 'Indica el número de orden de Cashea.'}, status=400)
+    if not orden_nueva.isdigit():
+        return _auth_response({'ok': False, 'message': 'El número de orden de Cashea debe contener solo números.'}, status=400)
+    monto_raw = str(data.get('monto', '') or '').strip()
+    try:
+        monto_nuevo = Decimal(monto_raw) if monto_raw else Decimal('0')
+    except InvalidOperation:
+        return _auth_response({'ok': False, 'message': 'El monto no es valido.'}, status=400)
+    if monto_nuevo < 0:
+        return _auth_response({'ok': False, 'message': 'El monto no puede ser negativo.'}, status=400)
+    referencia_nueva = str(data.get('referencia', '') or '').strip()
+
+    quien = request.user.get_full_name() or request.user.username
+    cuando = timezone.localtime().strftime('%d/%m/%Y %H:%M')
+
+    with transaction.atomic():
+        try:
+            nota = VGNotaEntrega.objects.select_for_update().get(pk=nota_id)
+        except VGNotaEntrega.DoesNotExist:
+            return _auth_response({'ok': False, 'message': 'La nota de entrega no existe.'}, status=404)
+        if nota.estado == 'anulada':
+            return _auth_response({'ok': False, 'message': 'Esta nota de entrega está anulada.'}, status=409)
+
+        pagos = list(nota.pagos.filter(estado='completado').select_related('metodo_pago', 'liquidacion_cashea'))
+        pago_cashea = max(
+            (pago for pago in pagos if pago.metodo_pago.es_cashea), key=lambda pago: pago.id, default=None,
+        )
+        if pago_cashea is None:
+            return _auth_response({'ok': False, 'message': 'Esta nota no tiene un cobro con Cashea.'}, status=404)
+        if pago_cashea.liquidacion_cashea_id:
+            return _auth_response({
+                'ok': False,
+                'message': (
+                    f'Este cobro ya lo liquidó Cashea ({pago_cashea.liquidacion_cashea.codigo}). '
+                    'Para corregirlo, primero anula esa liquidación.'
+                ),
+            }, status=409)
+
+        inicial = _pago_inicial_de_cashea(pagos, pago_cashea)
+        hay_inicial_nueva = monto_nuevo > 0
+        if (inicial is not None) != hay_inicial_nueva:
+            cambia_dinero = True
+        elif inicial is None:
+            cambia_dinero = False
+        else:
+            try:
+                metodo_nuevo_id = int(data.get('metodo_pago_id'))
+            except (TypeError, ValueError):
+                return _auth_response({'ok': False, 'message': 'El metodo de pago es invalido.'}, status=400)
+            monto_actual = (
+                inicial.monto * (inicial.tasa_cambio_referencia or Decimal('1'))
+                if inicial.metodo_pago.moneda == 'VES' else inicial.monto
+            )
+            cambia_dinero = (
+                metodo_nuevo_id != inicial.metodo_pago_id
+                or abs(monto_nuevo - monto_actual) > Decimal('0.01')
+                or bool(referencia_nueva and referencia_nueva != inicial.referencia)
+            )
+
+        if not cambia_dinero:
+            if orden_nueva == pago_cashea.referencia:
+                return _auth_response({'ok': False, 'message': 'No hay nada que corregir: los datos son los mismos.'}, status=400)
+            largo_habitual = settings.CASHEA_ORDEN_DIGITOS
+            if largo_habitual and len(orden_nueva) != largo_habitual and not data.get('confirmar_orden_atipica'):
+                return _auth_response({
+                    'ok': False,
+                    'requiere_confirmacion_orden': True,
+                    'message': (
+                        f'La orden de Cashea {orden_nueva} tiene {len(orden_nueva)} dígitos y lo habitual son '
+                        f'{largo_habitual}. Revisa que esté bien escrita.'
+                    ),
+                }, status=409)
+            if VGPago.objects.filter(
+                metodo_pago=pago_cashea.metodo_pago, referencia=orden_nueva, estado='completado',
+            ).exclude(pk=pago_cashea.pk).exists():
+                return _auth_response({
+                    'ok': False,
+                    'message': f'Ya hay un cobro registrado con la orden de Cashea {orden_nueva}.',
+                }, status=400)
+            anotacion = f'Orden corregida de {pago_cashea.referencia} a {orden_nueva} por {quien} el {cuando}: {motivo}.'
+            pago_cashea.nota_correccion = f'{pago_cashea.nota_correccion}\n{anotacion}'.strip()
+            pago_cashea.referencia = orden_nueva
+            pago_cashea.save(update_fields=['referencia', 'nota_correccion'])
+            return _auth_response({
+                'ok': True,
+                'message': f'Orden de Cashea corregida: ahora es {orden_nueva}.',
+                'nota_entrega': _serialize_nota_entrega(nota, tasa_pago_actual=obtener_tasa_actual()),
+            })
+
+        if not _is_admin_user(request.user):
+            return _auth_response({
+                'ok': False,
+                'message': 'Cambiar la inicial (monto, método o referencia) solo lo puede hacer una administradora. Tú puedes corregir el número de orden.',
+            }, status=403)
+        if inicial is not None:
+            bloqueo = validar_cambio_metodo_pago(inicial)
+            if bloqueo:
+                return _auth_response({'ok': False, 'message': bloqueo}, status=409)
+
+        # Los cobros viejos se anulan y el cobro se registra de nuevo con las mismas
+        # reglas de siempre; si el nuevo no es válido se deshace todo.
+        viejos = [pago_cashea] + ([inicial] if inicial is not None else [])
+        codigos_viejos = ' y '.join(
+            codigo_cobro(pago.numero_cobro) or f'#{pago.id}' for pago in sorted(viejos, key=lambda pago: pago.id)
+        )
+        devuelto = sum((pago.monto for pago in viejos), Decimal('0'))
+        for pago in viejos:
+            pago.estado = 'anulado'
+            pago.nota_correccion = f'{pago.nota_correccion}\nAnulado para corregir el cobro, por {quien} el {cuando}: {motivo}.'.strip()
+            pago.save(update_fields=['estado', 'nota_correccion'])
+            pago_anulado(pago)
+        nota.saldo_pendiente = (nota.saldo_pendiente + devuelto).quantize(Decimal('0.01'))
+        quedan_pagos = nota.pagos.filter(estado='completado').exists()
+        nota.estado = 'abonada_parcial' if quedan_pagos else 'pendiente_pago'
+        nota.save(update_fields=['saldo_pendiente', 'estado'])
+
+        respuesta = _procesar_abono(request, nota_id, {
+            'monto': monto_raw,
+            'metodo_pago_id': data.get('metodo_pago_id'),
+            'referencia': referencia_nueva,
+            'cashea_orden': orden_nueva,
+            'confirmar_cambio_metodo': True,
+            'confirmar_orden_atipica': bool(data.get('confirmar_orden_atipica')),
+        })
+        if respuesta.status_code != 201:
+            transaction.set_rollback(True)
+            return respuesta
+
+        cuerpo = json.loads(respuesta.content)
+        nuevos = [cuerpo['pago']['id']] + ([cuerpo['pago_cashea']['id']] if cuerpo.get('pago_cashea') else [])
+        VGPago.objects.filter(pk__in=nuevos).update(
+            nota_correccion=f'Reemplaza los cobros {codigos_viejos} por corrección de {quien} el {cuando}: {motivo}.',
+        )
+        nota.refresh_from_db()
+        cuerpo['message'] = f'Cobro corregido: se anularon {codigos_viejos} y se registró de nuevo.'
+        cuerpo['nota_entrega'] = _serialize_nota_entrega(nota, tasa_pago_actual=obtener_tasa_actual())
+        return _auth_response(cuerpo, status=200)
 
 
 @csrf_exempt

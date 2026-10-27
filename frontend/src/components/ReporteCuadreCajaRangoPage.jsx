@@ -26,7 +26,7 @@ function formatMonto(value) {
   return number.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function ReporteCuadreCajaRangoPage({ isMobile, onBack, onNavigate }) {
+function ReporteCuadreCajaRangoPage({ isMobile, onBack, onNavigate, puedeVerCashea = true }) {
   const [desde, setDesde] = useState(startOfWeekIso());
   const [hasta, setHasta] = useState(todayIso());
   const [data, setData] = useState(null);
@@ -121,6 +121,7 @@ function ReporteCuadreCajaRangoPage({ isMobile, onBack, onNavigate }) {
               <div style={desgloseTileStyle}>
                 <div style={desgloseLabelStyle}>Pendiente por cobrar</div>
                 <div style={desgloseValueStyle}>${formatMonto(data.resumen_ventas?.total_pendiente)}</div>
+                <div style={desgloseSecondaryStyle}>Deudas de clientes</div>
                 <button
                   type="button"
                   onClick={() => onNavigate && onNavigate('contabilidad-cuentas-por-cobrar-detalle')}
@@ -129,6 +130,25 @@ function ReporteCuadreCajaRangoPage({ isMobile, onBack, onNavigate }) {
                 >
                   Ver detalle →
                 </button>
+              </div>
+              <div style={desgloseTileStyle}>
+                <div style={desgloseLabelStyle}>Por cobrar a Cashea</div>
+                <div style={desgloseValueStyle}>${formatMonto(data.cashea_por_cobrar?.total_usd)}</div>
+                <div style={desgloseSecondaryStyle}>
+                  {Number(data.cashea_por_cobrar?.cantidad) > 0
+                    ? `${data.cashea_por_cobrar.cantidad} cobro(s) que Cashea aún no paga`
+                    : 'Cashea no debe nada'}
+                </div>
+                {puedeVerCashea ? (
+                  <button
+                    type="button"
+                    onClick={() => onNavigate && onNavigate('contabilidad-cashea')}
+                    style={verDetalleLinkStyle}
+                    className="no-print"
+                  >
+                    Ver detalle →
+                  </button>
+                ) : null}
               </div>
               <div style={desgloseTileStyle}>
                 <div style={desgloseLabelStyle}>Cuentas cobradas</div>
@@ -221,6 +241,9 @@ function ReporteCuadreCajaRangoPage({ isMobile, onBack, onNavigate }) {
                   <Fragment key={metodo.id}>
                     <div style={cellStyle}>
                       {metodo.nombre}{metodo.es_efectivo ? ' (efectivo)' : ''}
+                      {metodo.es_cashea ? (
+                        <div style={secondaryAmountStyle}>Lo financió Cashea: todavía no es dinero recibido</div>
+                      ) : null}
                     </div>
                     <div style={cellStyle}>
                       {metodo.moneda === 'VES' ? (
@@ -235,7 +258,14 @@ function ReporteCuadreCajaRangoPage({ isMobile, onBack, onNavigate }) {
                   </Fragment>
                 ))}
                 <div style={{ ...cellStyle, fontWeight: 800 }}>Total general</div>
-                <div style={{ ...cellStyle, fontWeight: 800 }}>${formatMonto(data.total_general)}</div>
+                <div style={{ ...cellStyle, fontWeight: 800 }}>
+                  ${formatMonto(data.total_general)}
+                  {Number(data.desglose_caja?.cashea?.total_usd) > 0 ? (
+                    <div style={{ ...secondaryAmountStyle, fontWeight: 400 }}>
+                      Incluye ${formatMonto(data.desglose_caja.cashea.total_usd)} financiados por Cashea que aún no se reciben
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
           </section>

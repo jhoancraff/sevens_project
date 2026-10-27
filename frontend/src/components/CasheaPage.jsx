@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import BotonDescargarPdf from './BotonDescargarPdf';
+import ConfirmModal from './ConfirmModal';
 import Toast from './Toast';
 import MenuAcciones from './MenuAcciones';
 import MoneyInput from './MoneyInput';
@@ -22,6 +23,12 @@ function rangoSemanaAnterior() {
   const domingo = new Date(lunes);
   domingo.setDate(lunes.getDate() + 6);
   return { desde: isoLocal(lunes), hasta: isoLocal(domingo) };
+}
+
+// El rango que abarca todos los cobros pendientes (del más viejo al más nuevo).
+function rangoQueCubreTodo(pendientes) {
+  const fechas = pendientes.map((item) => item.fecha).filter(Boolean).sort();
+  return fechas.length ? { desde: fechas[0], hasta: fechas[fechas.length - 1] } : null;
 }
 
 async function pedir(url, opciones) {
@@ -47,6 +54,10 @@ function CasheaPage({ isMobile, onBack }) {
   const [rango, setRango] = useState(() => rangoSemanaAnterior());
   const [excluidos, setExcluidos] = useState(() => new Set());
   const [saving, setSaving] = useState(false);
+  const [confirmarRegistro, setConfirmarRegistro] = useState(false);
+  const [anulando, setAnulando] = useState(null); // { liquidacion, motivo }
+  const [anulandoBusy, setAnulandoBusy] = useState(false);
+  const rangoInicialRevisado = useRef(false);
 
   const [cuentaDestinoId, setCuentaDestinoId] = useState('');
   const [fechaDeposito, setFechaDeposito] = useState(isoLocal(new Date()));
@@ -70,6 +81,18 @@ function CasheaPage({ isMobile, onBack }) {
         pedir('/api/metodos-pago/'),
       ]);
       setPendientes(p);
+      // Primera carga: si la semana anterior no tiene cobros pero sí hay pendientes en otras
+      // fechas, se abre con el rango que los cubre en vez de mostrar «no hay cobros».
+      if (!rangoInicialRevisado.current) {
+        rangoInicialRevisado.current = true;
+        const semana = rangoSemanaAnterior();
+        const lista = p.pendientes || [];
+        const hayEnLaSemana = lista.some((item) => item.fecha >= semana.desde && item.fecha <= semana.hasta);
+        const cubreTodo = rangoQueCubreTodo(lista);
+        if (!hayEnLaSemana && cubreTodo) {
+          setRango(cubreTodo);
+        }
+      }
       setLiquidaciones(l);
       setCuentasBs((m.metodos_pago || []).filter((metodo) => metodo.moneda === 'VES' && !metodo.es_cashea));
       setExcluidos(new Set());
@@ -117,7 +140,7 @@ function CasheaPage({ isMobile, onBack }) {
     });
   };
 
-  const registrar = async (event) => {
+  const solicitarRegistro = (event) => {
     event.preventDefault();
     if (!rangoValido) {
       showError('Indica el rango de fechas del reporte de Cashea (desde no puede ser posterior a hasta).');
@@ -143,6 +166,10 @@ function CasheaPage({ isMobile, onBack }) {
       showError('El «Total a pagar» es mayor a lo financiado. Revisa los totales del reporte.');
       return;
     }
+    setConfirmarRegistro(true);
+  };
+
+  const registrar = async () => {
     setSaving(true);
     try {
       const json = await pedir('/api/admin/cashea/liquidaciones/', {
@@ -163,6 +190,7 @@ function CasheaPage({ isMobile, onBack }) {
         }),
       });
       showSuccess(json.message);
+      setConfirmarRegistro(false);
       setDepositoBs('');
       setFinanciadoReporte('');
       setTotalPagar('');
@@ -170,17 +198,16 @@ function CasheaPage({ isMobile, onBack }) {
       setReferencia('');
       await cargar();
     } catch (error) {
+      setConfirmarRegistro(false);
       showError(error.message);
     } finally {
       setSaving(false);
     }
   };
 
-  const anular = async (liquidacion) => {
-    const motivo = window.prompt(`¿Anular la liquidación ${liquidacion.codigo}? Sus cobros vuelven a estar por cobrar. Indica el motivo:`);
-    if (!motivo || !motivo.trim()) {
-      return;
-    }
+  const anular = async () => {
+    const { liquidacion, motivo } = anulando;
+    setAnulandoBusy(true);
     try {
       const json = await pedir('/api/admin/cashea/liquidaciones/', {
         method: 'POST',
@@ -188,9 +215,13 @@ function CasheaPage({ isMobile, onBack }) {
         body: JSON.stringify({ action: 'anular', id: liquidacion.id, motivo: motivo.trim() }),
       });
       showSuccess(json.message);
+      setAnulando(null);
       await cargar();
     } catch (error) {
+      setAnulando(null);
       showError(error.message);
+    } finally {
+      setAnulandoBusy(false);
     }
   };
 
@@ -337,14 +368,21 @@ function CasheaPage({ isMobile, onBack }) {
               </div>
             ) : null}
             {fueraDeLaSemana > 0 ? (
-              <div style={mutedStyle}>
-                Hay {fueraDeLaSemana} cobro(s) sin liquidar fuera de este rango; no entran en este pago.
+              <div style={avisoFueraStyle}>
+                <span>
+                  {deLaSemana.length === 0
+                    ? `Hay ${fueraDeLaSemana} cobro(s) de Cashea sin liquidar en otras fechas, fuera de este rango.`
+                    : `Hay ${fueraDeLaSemana} cobro(s) más sin liquidar fuera de este rango; no entran en este pago.`}
+                </span>
+                <button type="button" style={avisoFueraBotonStyle} onClick={() => { setRango(rangoQueCubreTodo(todos)); setExcluidos(new Set()); }}>
+                  Ver todos los cobros sin liquidar
+                </button>
               </div>
             ) : null}
           </section>
 
           {deLaSemana.length > 0 ? (
-            <form onSubmit={registrar} style={panelStyle}>
+            <form onSubmit={solicitarRegistro} style={panelStyle}>
               <div style={sectionTitleStyle}>Pago de Cashea del {etiquetaRango}</div>
 
               <div style={formGridStyle(isMobile)}>
@@ -372,15 +410,15 @@ function CasheaPage({ isMobile, onBack }) {
                 </label>
                 <label style={fieldStyle}>
                   <span>«Monto financiado» del reporte ($)</span>
-                  <MoneyInput value={financiadoReporte} onChange={setFinanciadoReporte} placeholder="0.00" style={inputStyle} />
+                  <MoneyInput value={financiadoReporte} onChange={setFinanciadoReporte} placeholder="0,00" style={inputStyle} />
                 </label>
                 <label style={fieldStyle}>
                   <span>«Total a pagar» del reporte ($)</span>
-                  <MoneyInput value={totalPagar} onChange={setTotalPagar} placeholder="0.00" style={inputStyle} />
+                  <MoneyInput value={totalPagar} onChange={setTotalPagar} placeholder="0,00" style={inputStyle} />
                 </label>
                 <label style={fieldStyle}>
                   <span>Financiado de órdenes canceladas ($, opcional)</span>
-                  <MoneyInput value={ajuste} onChange={setAjuste} placeholder="0.00" style={inputStyle} />
+                  <MoneyInput value={ajuste} onChange={setAjuste} placeholder="0,00" style={inputStyle} />
                 </label>
                 <label style={fieldStyle}>
                   <span>Referencia del depósito</span>
@@ -468,7 +506,7 @@ function CasheaPage({ isMobile, onBack }) {
                         ) : (
                           <>
                             <span style={{ ...badgeStyle, color: '#bdf0cf', background: 'rgba(70,200,120,0.16)' }}>Registrada</span>
-                            <MenuAcciones items={[{ label: 'Anular liquidación', onClick: () => anular(item), danger: true }]} />
+                            <MenuAcciones items={[{ label: 'Anular liquidación', onClick: () => setAnulando({ liquidacion: item, motivo: '' }), danger: true }]} />
                           </>
                         )}
                       </div>
@@ -480,6 +518,52 @@ function CasheaPage({ isMobile, onBack }) {
           </section>
         </>
       ) : null}
+
+      <ConfirmModal
+        open={confirmarRegistro}
+        title="¿Registrar el pago de Cashea?"
+        message={(
+          <div style={{ display: 'grid', gap: 6 }}>
+            <span>Revisa que todo coincida con el reporte de Cashea. Esto sube el banco y registra la comisión como gasto.</span>
+            <div style={resumenModalStyle}>
+              <span>Del {etiquetaRango}: <strong>{incluidos.length} cobro(s)</strong></span>
+              <span>Financiado: <strong>${formatMonto(sumaSevens)}</strong> (el reporte dice ${formatMonto(reporteNum)})</span>
+              <span>Total a pagar: <strong>${formatMonto(totalNum)}</strong></span>
+              <span>Comisión: <strong>${comision !== null ? formatMonto(comision) : '—'}</strong></span>
+              <span>Depósito: <strong>Bs {formatMonto(depositoNum)}</strong> en {cuentasBs.find((c) => String(c.id) === String(cuentaDestinoId))?.nombre || '—'}</span>
+              <span>Tasa que resulta: <strong>Bs {tasaImplicita !== null ? formatMonto(tasaImplicita) : '—'}</strong>{tasaActual ? ` (la del sistema es Bs ${formatMonto(tasaActual)})` : ''}</span>
+              <span>Fecha del depósito: <strong>{formatFecha(fechaDeposito)}</strong></span>
+            </div>
+          </div>
+        )}
+        confirmLabel="Sí, registrar"
+        busy={saving}
+        onConfirm={registrar}
+        onCancel={() => setConfirmarRegistro(false)}
+      />
+
+      <ConfirmModal
+        open={Boolean(anulando)}
+        title={`¿Anular la liquidación ${anulando?.liquidacion?.codigo || ''}?`}
+        message="Sus cobros vuelven a estar por cobrar a Cashea, se revierte el depósito en el banco y se anula la comisión. Indica el motivo."
+        confirmLabel="Sí, anular"
+        busy={anulandoBusy}
+        confirmDisabled={(anulando?.motivo || '').trim().length < 3}
+        onConfirm={anular}
+        onCancel={() => setAnulando(null)}
+      >
+        <label style={{ ...fieldStyle, marginTop: 12 }}>
+          <span>Motivo</span>
+          <input
+            type="text"
+            value={anulando?.motivo || ''}
+            onChange={(event) => setAnulando((actual) => ({ ...actual, motivo: event.target.value }))}
+            placeholder="Por qué se anula"
+            style={inputStyle}
+            autoFocus
+          />
+        </label>
+      </ConfirmModal>
     </div>
   );
 }
@@ -493,6 +577,9 @@ const noticeStyle = { padding: '12px 14px', borderRadius: 12, border: '1px solid
 const sectionTitleStyle = { color: 'var(--vg-text-strong)', fontSize: 18, fontWeight: 800 };
 const sectionLabelStyle = { color: 'var(--vg-f-ffb0b0)', fontSize: 11.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em' };
 const mutedStyle = { color: 'var(--vg-f-a89999)', fontSize: 12, display: 'block' };
+const avisoFueraStyle = { display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--vg-f-ffcf85-a350)', background: 'rgba(255,207,133,0.08)', color: 'var(--vg-f-ffe2b0)', fontSize: 13.5, fontWeight: 600 };
+const avisoFueraBotonStyle = { border: '1px solid var(--vg-f-ffcf85-a350)', borderRadius: 999, padding: '8px 14px', background: 'rgba(255,207,133,0.14)', color: 'var(--vg-f-ffe2b0)', fontWeight: 700, cursor: 'pointer' };
+const resumenModalStyle = { display: 'grid', gap: 4, padding: '10px 12px', borderRadius: 12, background: 'rgba(var(--vg-ink), 0.05)', color: 'var(--vg-text-strong)', fontSize: 13.5 };
 const resumenGridStyle = (isMobile) => ({ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: 12 });
 const resumenCardStyle = { display: 'grid', gap: 6, padding: 16, borderRadius: 16, border: '1px solid rgba(var(--vg-ink), 0.1)', background: 'rgba(var(--vg-ink), 0.03)' };
 const resumenValorStyle = { color: 'var(--vg-text-strong)', fontSize: 26, fontWeight: 800 };
