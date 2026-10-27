@@ -151,3 +151,8 @@ CORS_ALLOW_CREDENTIALS = True
 # vuelve al ticket de solo texto.
 TICKET_CAJA_ANCHO_PUNTOS = int(os.getenv('TICKET_CAJA_ANCHO_PUNTOS', '576') or 576)
 TICKET_CAJA_GRAFICO = os.getenv('TICKET_CAJA_GRAFICO', 'true').lower() in ('true', '1', 't')
+
+# Largo (en dígitos) del número de orden de Cashea que teclea la cajera. Si escribe
+# otro largo, el cobro pide una confirmación explícita (puede ser un dígito de más
+# o de menos). 0 desactiva la comprobación.
+CASHEA_ORDEN_DIGITOS = int(os.getenv('CASHEA_ORDEN_DIGITOS', '9') or 0)
