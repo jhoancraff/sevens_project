@@ -175,6 +175,13 @@ def _monto_texto_ambas_monedas(valor_usd, tasa):
     return f'${valor_usd:.2f}'
 
 
+def _bs_texto(valor_usd, tasa):
+    """Monto en bolívares de un valor en dólares ('Bs. 1.234,56'), o None si no hay tasa o el monto es 0."""
+    if not tasa or not valor_usd:
+        return None
+    return f'Bs. {_formatear_bs(valor_usd * tasa)}'
+
+
 def _lineas_envueltas(texto):
     """Parte un texto largo en líneas de LINE_WIDTH caracteres (ticket de 32 columnas)."""
     out = bytearray()
@@ -191,23 +198,56 @@ def _producto_label(detalle):
     return nombre or 'Plato eliminado'
 
 
-def _agregar_item_recibo(ticket, detalle, moneda, tasa):
+def _agregar_item_recibo(ticket, detalle, moneda, tasa, con_bs=False):
+    """
+    `con_bs`: cada renglón lleva el monto en dólares y, debajo, el equivalente en bolívares con la tasa
+    del documento (para poder sacar el Bs de cada elemento); sin tasa se imprime solo en dólares.
+    """
+    con_bs = con_bs and bool(tasa)
+    monto_opcional = (lambda valor: _monto_texto_ambas_monedas(valor, tasa)) if con_bs         else (lambda valor: _monto_texto(valor, moneda, tasa))
     ticket.item(
         f'{_cantidad_label(detalle)} {_producto_label(detalle)}',
-        _monto_texto(detalle.subtotal, moneda, tasa),
+        f'${detalle.subtotal:.2f}' if con_bs else _monto_texto(detalle.subtotal, moneda, tasa),
+        _bs_texto(detalle.subtotal, tasa) if con_bs else None,
     )
     if detalle.notas:
         ticket.detalle(f'  - {detalle.notas}')
     for opcion in detalle.opciones.all():
         nombre_opcion = getattr(opcion, 'nombre', None) or 'Opción eliminada'
         if opcion.precio_unitario:
-            ticket.detalle(f'  » {opcion.grupo_nombre}: {nombre_opcion}  {_monto_texto(opcion.subtotal, moneda, tasa)}')
+            ticket.detalle(f'  » {opcion.grupo_nombre}: {nombre_opcion}  {monto_opcional(opcion.subtotal)}')
         else:
             ticket.detalle(f'  » {opcion.grupo_nombre}: {nombre_opcion}')
     for adicional in detalle.adicionales.all():
         preparacion = getattr(adicional, 'preparacion', None)
         nombre_adicional = getattr(preparacion, 'nombre', None) or 'Adicional eliminado'
-        ticket.detalle(f'  + {adicional.cantidad}x {nombre_adicional}  {_monto_texto(adicional.subtotal, moneda, tasa)}')
+        ticket.detalle(f'  + {adicional.cantidad}x {nombre_adicional}  {monto_opcional(adicional.subtotal)}')
+
+
+def _agregar_detalle_pedido(ticket, pedido, moneda, tasa, con_bs=False):
+    """Platos, sueltos y servicios adicionales de un pedido, cada renglón con su monto (y su Bs si `con_bs`)."""
+    con_bs = con_bs and bool(tasa)
+    # Mismo criterio que la comanda de cocina: los ítems de un plato armado se
+    # agrupan bajo "PLATO N" (para no confundir, por ejemplo, dos yucas de
+    # gramajes distintos que vinieron en platos diferentes); lo que no se armó
+    # como plato se lista igual que antes, sin ese título.
+    platos, sueltos = _group_detalles_por_plato(pedido.detalles.all())
+    for numero_plato, (_grupo_id, items) in enumerate(platos, start=1):
+        ticket.izq(f'PLATO {numero_plato}', negrita=True)
+        for detalle in items:
+            _agregar_item_recibo(ticket, detalle, moneda, tasa, con_bs)
+    for detalle in sueltos:
+        _agregar_item_recibo(ticket, detalle, moneda, tasa, con_bs)
+    # Servicios adicionales (no son platos: ver servicios_adicionales.py), cada uno con su cantidad y monto.
+    servicios_pedido = list(pedido.servicios.all())
+    if servicios_pedido:
+        ticket.izq('SERVICIOS ADICIONALES', negrita=True)
+        for servicio in servicios_pedido:
+            ticket.item(
+                f'{servicio.cantidad}x {servicio.nombre}',
+                f'${servicio.subtotal:.2f}' if con_bs else _monto_texto(servicio.subtotal, moneda, tasa),
+                _bs_texto(servicio.subtotal, tasa) if con_bs else None,
+            )
 
 
 def _metodo_pago_para_impresion(nota):
@@ -226,7 +266,10 @@ def _ticket_recibo(
     descuento_manual=None, descuento_manual_motivo='',
     moneda=None, cliente=None, total_ambas_monedas=False, datos_fiscales=None,
 ):
-    """`datos_fiscales` (VGDatosFiscalesEmisor) pone bajo el logo la razón social, RIF, domicilio y teléfono de la empresa."""
+    """
+    `datos_fiscales` (VGDatosFiscalesEmisor) pone bajo el logo la razón social, RIF, domicilio y teléfono de la empresa.
+    Con `total_ambas_monedas` cada producto también sale con su monto en bolívares debajo del de dólares.
+    """
     hora = timezone.localtime().strftime('%d/%m/%Y %H:%M')
     metodo_label = metodo_pago.nombre if metodo_pago is not None else None
     if moneda is None:
@@ -271,23 +314,8 @@ def _ticket_recibo(
         mesa_label = f'Mesa {pedido.mesa.numero}' if pedido.mesa else 'Sin mesa'
         ticket.separador()
         ticket.izq(f'Pedido #{pedido.id} - {mesa_label} - {_tipo_pedido_label(pedido.tipo_pedido)}', negrita=True)
-        # Mismo criterio que la comanda de cocina: los ítems de un plato armado se
-        # agrupan bajo "PLATO N" (para no confundir, por ejemplo, dos yucas de
-        # gramajes distintos que vinieron en platos diferentes); lo que no se armó
-        # como plato se lista igual que antes, sin ese título.
-        platos, sueltos = _group_detalles_por_plato(pedido.detalles.all())
-        for numero_plato, (_grupo_id, items) in enumerate(platos, start=1):
-            ticket.izq(f'PLATO {numero_plato}', negrita=True)
-            for detalle in items:
-                _agregar_item_recibo(ticket, detalle, moneda, tasa)
-        for detalle in sueltos:
-            _agregar_item_recibo(ticket, detalle, moneda, tasa)
-        # Servicios adicionales (no son platos: ver servicios_adicionales.py), cada uno con su cantidad y monto.
-        servicios_pedido = list(pedido.servicios.all())
-        if servicios_pedido:
-            ticket.izq('SERVICIOS ADICIONALES', negrita=True)
-            for servicio in servicios_pedido:
-                ticket.item(f'{servicio.cantidad}x {servicio.nombre}', _monto_texto(servicio.subtotal, moneda, tasa))
+        _agregar_detalle_pedido(ticket, pedido, moneda, tasa, con_bs=total_ambas_monedas)
+        if pedido.servicios.all():
             servicios_total += pedido.cargo_servicios
         subtotal_total += pedido.subtotal
         impuesto_total += pedido.impuesto
@@ -443,6 +471,21 @@ def _ticket_nota_cobro(pago, es_reimpresion=False):
         ticket.campo('Cliente:', cliente.nombre_completo)
         if cliente.numero_documento:
             ticket.campo('Cédula:', f'{cliente.tipo_documento or "V"}-{cliente.numero_documento}')
+    # Detalle de lo que se cobra: cada producto en dólares y en bolívares (con la tasa del cobro) para poder
+    # sacar el Bs de cada elemento sin importar en qué moneda se pague.
+    tasa_detalle = pago.tasa_cambio_referencia or nota.tasa_cambio_referencia
+    pedidos = list(
+        nota.pedidos.select_related('mesa')
+        .prefetch_related('detalles__producto', 'detalles__opciones', 'detalles__adicionales__preparacion', 'servicios')
+        .all()
+    )
+    if pedidos:
+        ticket.separador()
+        ticket.centro('DETALLE DE LA NOTA', negrita=True)
+        for pedido in pedidos:
+            if len(pedidos) > 1:
+                ticket.izq(f'Pedido #{pedido.id}', negrita=True)
+            _agregar_detalle_pedido(ticket, pedido, 'USD', tasa_detalle, con_bs=True)
     ticket.separador()
     ticket.campo('Método:', metodo.nombre)
     ticket.campo('Moneda:', moneda_texto)
@@ -502,9 +545,7 @@ def _agregar_linea_documento(ticket, linea, monto_fn, ambas_monedas, tasa):
     texto = f'{linea.cantidad}x {linea.descripcion}'
     if ambas_monedas:
         # Dólares a la derecha y bolívares debajo: los dos montos juntos no caben en el renglón.
-        ticket.item(texto, f'${linea.subtotal:.2f}')
-        if tasa:
-            ticket.detalle(f'Bs. {_formatear_bs(linea.subtotal * tasa)}')
+        ticket.item(texto, f'${linea.subtotal:.2f}', _bs_texto(linea.subtotal, tasa))
         return
     ticket.item(texto, monto_fn(linea.subtotal))
     if linea.cantidad != 1:
