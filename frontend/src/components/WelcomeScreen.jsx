@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { limpiarFechaSeleccionada, limpiarRangoSeleccionado } from '../utils/fechaContabilidad';
+import useExchangeRate from '../hooks/useExchangeRate';
 import AdminPanelPage from './AdminPanelPage';
 import ComidaEmpleadosPage from './ComidaEmpleadosPage';
 import ContabilidadPanelPage from './ContabilidadPanelPage';
@@ -121,6 +122,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
   // acción que dispara el Atrás físico); replaceView = correcciones
   // automáticas de permisos que no son navegación real del usuario.
   const { activeView, goToView, goBackView, replaceView } = useViewHistory('home');
+  const tasaCambio = useExchangeRate();
   const [mesas, setMesas] = useState([]);
   const [products, setProducts] = useState([]);
   const [adicionales, setAdicionales] = useState([]);
@@ -451,6 +453,19 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             body { background: #fff !important; }
           }`}
       </style>
+      {activeView === 'home' && tasaCambio ? (
+        <div style={exchangeRateBadgeStyle} title="Tasa BCV vigente">
+          <span aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M17 1l4 4-4 4" />
+              <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+              <path d="M7 23l-4-4 4-4" />
+              <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+            </svg>
+          </span>
+          <span>Bs. {tasaCambio.toFixed(2)}</span>
+        </div>
+      ) : null}
       {isSidebarOpen && isSidebarOverlayMode && (
         <button
           type="button"
@@ -1558,6 +1573,26 @@ const pendingBadgeStyle = (isActive) => ({
   boxSizing: 'border-box',
   flexShrink: 0,
 });
+
+const exchangeRateBadgeStyle = {
+  position: 'fixed',
+  top: 18,
+  right: 18,
+  zIndex: 22,
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 7,
+  borderRadius: 999,
+  border: '1px solid rgba(var(--vg-accent-rgb), 0.35)',
+  background: 'var(--vg-bg-card)',
+  color: 'var(--vg-text-strong)',
+  padding: '9px 14px',
+  fontSize: 13,
+  fontWeight: 700,
+  letterSpacing: '0.01em',
+  boxShadow: '0 10px 24px rgba(0, 0, 0, 0.3)',
+  backdropFilter: 'blur(6px)',
+};
 
 const featureCardStyle = {
   background: 'linear-gradient(180deg, var(--vg-s-140a0a-a940) 0%, var(--vg-s-0a0a0a-a960) 100%)',
