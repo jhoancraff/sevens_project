@@ -2933,7 +2933,6 @@ def admin_catalog_view(request):
         ingredient.nombre = nombre
         ingredient.unidad_medida = unidad
         ingredient.ultimo_proveedor = proveedor
-        ingredient.stock_actual = stock_actual_value
         ingredient.stock_minimo = stock_minimo_value
         ingredient.costo_unitario = costo_unitario_value
         ingredient.contenido_envase = contenido_envase_value
@@ -2943,7 +2942,7 @@ def admin_catalog_view(request):
         ingredient.rendimiento_ingrediente_crudo = rendimiento_ingrediente_crudo_value
         ingredient.actualizado_por = request.user
         ingredient.save(update_fields=[
-            'nombre', 'categoria', 'unidad_medida', 'ultimo_proveedor', 'stock_actual', 'stock_minimo', 'costo_unitario',
+            'nombre', 'categoria', 'unidad_medida', 'ultimo_proveedor', 'stock_minimo', 'costo_unitario',
             'contenido_envase', 'peso_real', 'precio_compra', 'ingrediente_crudo_equivalente', 'rendimiento_ingrediente_crudo',
             'actualizado_por', 'fecha_actualizacion',
         ])
