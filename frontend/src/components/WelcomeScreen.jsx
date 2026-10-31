@@ -62,7 +62,6 @@ import CheckoutPage from './CheckoutPage';
 import AnalystComprasBorradorPage from './AnalystComprasBorradorPage';
 import AnalystAjusteInventarioPage from './AnalystAjusteInventarioPage';
 import AnalystAlertasCostosPage from './AnalystAlertasCostosPage';
-import AnalystAlertasCostosPage from './AnalystAlertasCostosPage';
 import CuentasPorCobrarPage from './CuentasPorCobrarPage';
 import CuentasPorPagarPage from './CuentasPorPagarPage';
 import AnalystGastosPage from './AnalystGastosPage';
