@@ -87,6 +87,7 @@ from .ajustes_inventario_views import (
     admin_ajuste_inventario_view,
     admin_cierre_inventario_view,
 )
+from .alertas_costos_views import alerta_costo_revisar_view, alertas_costos_view
 from .compras_views import (
     admin_compra_borrador_agregar_view,
     admin_compra_borrador_confirmar_view,
@@ -229,6 +230,8 @@ urlpatterns = [
     path('admin/activos/entregas/<int:movimiento_id>/comprobante-pdf/', comprobante_entrega_activo_pdf_view,
          name='comprobante_entrega_activo_pdf'),
     path('admin/configuracion-costeo/', admin_configuracion_costeo_view, name='admin_configuracion_costeo'),
+    path('admin/alertas-costos/', alertas_costos_view, name='admin_alertas_costos'),
+    path('admin/alertas-costos/<int:alerta_id>/revisar/', alerta_costo_revisar_view, name='admin_alerta_costo_revisar'),
     path('admin/promociones/', admin_promotions_view, name='admin_promociones'),
     path('admin/recomendaciones-chef/', admin_chef_recommendations_view, name='admin_recomendaciones_chef'),
     path('admin/impresora-caja/', admin_impresora_caja_view, name='admin_impresora_caja'),
