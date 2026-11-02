@@ -4,6 +4,7 @@ import UnsavedChangesModal from './UnsavedChangesModal';
 import Toast from './Toast';
 import useExchangeRate from '../hooks/useExchangeRate';
 import useMobileBackHandler from '../hooks/useMobileBackHandler';
+import { suppressNextPopState } from '../hooks/popStateSuppression';
 import useUnsavedChangesGuard from '../hooks/useUnsavedChangesGuard';
 import useToast from '../hooks/useToast';
 
@@ -238,8 +239,14 @@ function NewOrderPage({
     setSearchTerm('');
   };
 
-  // El botón «Atrás» del celular regresa a la carta en vez de sacar de la pantalla de pedido.
-  useMobileBackHandler(!enCarta, volverALaCarta);
+  // El botón «Atrás» del celular regresa a la carta en vez de sacar de la pantalla de pedido. Ese mismo
+  // «Atrás» también lo recibe el control de navegación de la app, que con productos en el pedido lo tomaría
+  // por un intento de salir y mostraría el aviso de cambios sin guardar; como aquí solo se vuelve a la carta,
+  // se le indica que ignore esta pulsación.
+  useMobileBackHandler(!enCarta, () => {
+    suppressNextPopState();
+    volverALaCarta();
+  });
 
   const cartCount = useMemo(
     () => cartItems.reduce((total, item) => total + item.quantity, 0),
