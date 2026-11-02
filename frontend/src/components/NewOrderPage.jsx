@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import BsAmount from './BsAmount';
 import UnsavedChangesModal from './UnsavedChangesModal';
 import Toast from './Toast';
@@ -19,6 +19,10 @@ function isHiddenMenuCategory(categoriaNombre) {
 }
 
 const TIPO_PEDIDO_LABEL = { llevar: 'Para llevar', delivery: 'Delivery' };
+
+// Cuántos productos se muestran de una vez dentro de una categoría; el resto se pide con «Ver más»,
+// para que la página no se alargue sin fin cuando una categoría trae muchos platos.
+const PRODUCTOS_POR_PAGINA = 12;
 
 function NewOrderPage({
   isMobile,
@@ -63,8 +67,11 @@ function NewOrderPage({
   const [serviciosCatalogo, setServiciosCatalogo] = useState([]);
   const [serviciosElegidos, setServiciosElegidos] = useState([]);
   const { toast, showSuccess, showError, hideToast } = useToast();
-  const [catalogType, setCatalogType] = useState('Todos');
+  // null = se ve la carta (las categorías); con un nombre se ven solo los productos de esa categoría.
+  const [catalogType, setCatalogType] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [visibleCount, setVisibleCount] = useState(PRODUCTOS_POR_PAGINA);
+  const menuTopRef = useRef(null);
   const [isTablet, setIsTablet] = useState(() => window.matchMedia('(max-width: 1100px)').matches);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [queuedCount, setQueuedCount] = useState(() => getQueuedOrders().length);
@@ -167,32 +174,84 @@ function NewOrderPage({
     };
   }, []);
 
-  const categories = useMemo(() => {
-    const names = new Set();
+  // La carta: una tarjeta por categoría, con su cantidad de productos y la foto del primero que tenga.
+  const categoryCards = useMemo(() => {
+    const porNombre = new Map();
     products.forEach((product) => {
-      if (product.categoria_nombre && !isHiddenMenuCategory(product.categoria_nombre)) {
-        names.add(product.categoria_nombre);
+      const nombre = product.categoria_nombre;
+      if (!nombre || isHiddenMenuCategory(nombre)) {
+        return;
+      }
+      if (!porNombre.has(nombre)) {
+        porNombre.set(nombre, { nombre, count: 0, portada: '' });
+      }
+      const tarjeta = porNombre.get(nombre);
+      tarjeta.count += 1;
+      if (!tarjeta.portada && product.imagen_url) {
+        tarjeta.portada = product.imagen_url;
       }
     });
-    return ['Todos', ...Array.from(names).sort((a, b) => a.localeCompare(b))];
+    return Array.from(porNombre.values()).sort((a, b) => a.nombre.localeCompare(b.nombre));
   }, [products]);
 
+  // En la carta no se listan productos; al abrir una categoría (o buscar) sí. Buscar dentro de una
+  // categoría abierta busca solo en ella; desde la carta busca en todas.
+  const searchText = searchTerm.trim().toLowerCase();
+  const enCarta = !catalogType && !searchText;
   const visibleProducts = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
+    if (enCarta) {
+      return [];
+    }
     return products.filter((product) => {
       if (isHiddenMenuCategory(product.categoria_nombre)) {
         return false;
       }
-      const matchesCategory = catalogType === 'Todos' || product.categoria_nombre === catalogType;
-      const matchesSearch = !term || product.nombre.toLowerCase().includes(term);
+      const matchesCategory = !catalogType || product.categoria_nombre === catalogType;
+      const matchesSearch = !searchText || product.nombre.toLowerCase().includes(searchText);
       return matchesCategory && matchesSearch;
     });
-  }, [products, catalogType, searchTerm]);
+  }, [products, catalogType, searchText, enCarta]);
+  const productosMostrados = visibleProducts.slice(0, visibleCount);
+  const productosRestantes = visibleProducts.length - productosMostrados.length;
+
+  useEffect(() => {
+    setVisibleCount(PRODUCTOS_POR_PAGINA);
+  }, [catalogType, searchText]);
+
+  const abrirCategoria = (nombre) => {
+    setCatalogType(nombre);
+    setSearchTerm('');
+    // Que los productos de la categoría queden a la vista sin tener que subir o bajar la página.
+    window.requestAnimationFrame(() => {
+      menuTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  };
+
+  const volverALaCarta = () => {
+    setCatalogType(null);
+    setSearchTerm('');
+  };
+
+  // El botón «Atrás» del celular regresa a la carta en vez de sacar de la pantalla de pedido.
+  useMobileBackHandler(!enCarta, volverALaCarta);
 
   const cartCount = useMemo(
     () => cartItems.reduce((total, item) => total + item.quantity, 0),
     [cartItems],
   );
+
+  // Cuántos platos lleva el pedido de cada categoría: se muestra en su tarjeta de la carta.
+  const cartPorCategoria = useMemo(() => {
+    const categoriaDe = new Map(products.map((product) => [product.id, product.categoria_nombre]));
+    const porCategoria = {};
+    cartItems.forEach((item) => {
+      const categoria = categoriaDe.get(item.productId);
+      if (categoria) {
+        porCategoria[categoria] = (porCategoria[categoria] || 0) + (item.pesoGramos ? 1 : item.quantity);
+      }
+    });
+    return porCategoria;
+  }, [cartItems, products]);
 
   const subtotalProductos = useMemo(
     () => cartItems.reduce((total, item) => total + computeItemTotal(item, products, promotionsByProductId), 0),
@@ -1034,36 +1093,81 @@ function NewOrderPage({
         </div>
 
         <div style={workspaceStyle(isCompact)}>
-          <div style={menuColumnStyle}>
+          <div style={menuColumnStyle} ref={menuTopRef}>
+            <style>{`
+              .vg-carta-card { transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease; }
+              .vg-carta-card:hover { transform: translateY(-2px); border-color: var(--vg-f-ff6a6a-a600) !important; }
+              .vg-carta-card:focus-visible { outline: 2px solid var(--vg-f-ff7d7d); outline-offset: 2px; }
+              @media (prefers-reduced-motion: reduce) {
+                .vg-carta-card { transition: none; }
+                .vg-carta-card:hover { transform: none; }
+              }
+            `}</style>
             <div style={catalogBarStyle}>
+              {!enCarta ? (
+                <div style={categoryHeaderStyle}>
+                  <button type="button" onClick={volverALaCarta} style={backToCartaStyle(isCompact)}>
+                    <span aria-hidden="true">←</span> Carta
+                  </button>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={categoryTitleStyle}>{catalogType || 'Resultados de la búsqueda'}</div>
+                    <div style={categorySubtitleStyle}>
+                      {visibleProducts.length} {visibleProducts.length === 1 ? 'producto' : 'productos'}
+                      {catalogType && searchText ? ` con «${searchTerm.trim()}»` : ''}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               <input
                 type="text"
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Buscar plato o bebida..."
+                placeholder={catalogType ? `Buscar en ${catalogType}...` : 'Buscar plato o bebida...'}
                 style={searchInputStyle(isCompact)}
               />
-              <div style={categoryScrollStyle}>
-                {categories.map((category) => (
-                  <button
-                    key={category}
-                    type="button"
-                    onClick={() => setCatalogType(category)}
-                    style={catalogTypeChipStyle(catalogType === category, isCompact)}
-                  >
-                    {category}
-                  </button>
-                ))}
-              </div>
             </div>
 
+            {enCarta ? (
+              <div style={cartaGridStyle(isCompact)}>
+                {loadingData ? (
+                  <div style={emptyGridStateStyle}>Cargando la carta...</div>
+                ) : categoryCards.length === 0 ? (
+                  <div style={emptyGridStateStyle}>Todavía no hay productos en la carta.</div>
+                ) : (
+                  categoryCards.map((card) => {
+                    const enPedido = cartPorCategoria[card.nombre] || 0;
+                    return (
+                      <button
+                        key={card.nombre}
+                        type="button"
+                        className="vg-carta-card"
+                        onClick={() => abrirCategoria(card.nombre)}
+                        style={cartaCardStyle(card.portada, isCompact)}
+                        aria-label={`${card.nombre}, ${card.count} ${card.count === 1 ? 'producto' : 'productos'}${enPedido ? `, ${enPedido} en el pedido` : ''}`}
+                      >
+                        {!card.portada ? <span style={cartaInicialStyle} aria-hidden="true">{card.nombre.charAt(0).toUpperCase()}</span> : null}
+                        <span style={cartaOverlayStyle} aria-hidden="true" />
+                        {enPedido > 0 ? <span style={cartaEnPedidoStyle}>{enPedido} en el pedido</span> : null}
+                        <span style={cartaTextoStyle}>
+                          <span style={cartaNombreStyle}>{card.nombre}</span>
+                          <span style={cartaConteoStyle}>{card.count} {card.count === 1 ? 'producto' : 'productos'}</span>
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            ) : (
+            <>
             <div style={productGridStyle}>
               {loadingData ? (
                 <div style={emptyGridStateStyle}>Cargando platos...</div>
               ) : visibleProducts.length === 0 ? (
-                <div style={emptyGridStateStyle}>No hay productos en esta categoría.</div>
+                <div style={emptyGridStateStyle}>
+                  {searchText ? 'Ningún producto coincide con la búsqueda.' : 'No hay productos en esta categoría.'}
+                </div>
               ) : (
-                visibleProducts.map((product) => {
+                productosMostrados.map((product) => {
                   const promotion = promotionsByProductId[product.id];
                   const quantityInCart = getCartQuantity(product.id);
 
@@ -1118,6 +1222,17 @@ function NewOrderPage({
                 })
               )}
             </div>
+            {productosRestantes > 0 ? (
+              <button
+                type="button"
+                onClick={() => setVisibleCount((actual) => actual + PRODUCTOS_POR_PAGINA)}
+                style={verMasButtonStyle(isCompact)}
+              >
+                Ver más ({productosRestantes} {productosRestantes === 1 ? 'producto' : 'productos'} más)
+              </button>
+            ) : null}
+            </>
+            )}
           </div>
 
           <aside id="cart-panel" style={cartPanelStyle(isCompact)}>
@@ -1944,6 +2059,132 @@ const catalogBarStyle = {
 const searchInputStyle = (isCompact) => ({
   ...inputStyle(isCompact),
   minHeight: isCompact ? 44 : 38,
+});
+
+const categoryHeaderStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 12,
+};
+
+const backToCartaStyle = (isCompact) => ({
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  flexShrink: 0,
+  border: '1px solid var(--vg-f-ff6a6a-a600)',
+  borderRadius: 999,
+  padding: isCompact ? '10px 16px' : '8px 14px',
+  background: 'rgba(191, 31, 31, 0.22)',
+  color: 'var(--vg-text-strong)',
+  fontSize: 14,
+  fontWeight: 700,
+  cursor: 'pointer',
+  minHeight: 40,
+});
+
+const categoryTitleStyle = {
+  color: 'var(--vg-text-strong)',
+  fontSize: 20,
+  fontWeight: 800,
+  lineHeight: 1.2,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const categorySubtitleStyle = {
+  color: 'var(--vg-f-c8bbbb)',
+  fontSize: 12.5,
+  marginTop: 2,
+};
+
+// --- La carta: una tarjeta grande por categoría ---
+
+const cartaGridStyle = (isCompact) => ({
+  display: 'grid',
+  gridTemplateColumns: isCompact ? 'repeat(2, minmax(0, 1fr))' : 'repeat(auto-fill, minmax(190px, 1fr))',
+  gap: isCompact ? 10 : 12,
+});
+
+const cartaCardStyle = (portada, isCompact) => ({
+  position: 'relative',
+  display: 'flex',
+  alignItems: 'flex-end',
+  minHeight: isCompact ? 118 : 138,
+  padding: 0,
+  overflow: 'hidden',
+  textAlign: 'left',
+  cursor: 'pointer',
+  borderRadius: 18,
+  border: '1px solid rgba(var(--vg-ink), 0.14)',
+  background: portada
+    ? `center / cover no-repeat url(${JSON.stringify(portada)})`
+    : 'linear-gradient(135deg, rgba(191, 31, 31, 0.42) 0%, rgba(40, 12, 12, 0.92) 100%)',
+});
+
+const cartaOverlayStyle = {
+  position: 'absolute',
+  inset: 0,
+  background: 'linear-gradient(180deg, rgba(8, 4, 4, 0.05) 30%, rgba(8, 4, 4, 0.88) 100%)',
+};
+
+const cartaInicialStyle = {
+  position: 'absolute',
+  top: 6,
+  left: 14,
+  fontSize: 64,
+  fontWeight: 800,
+  lineHeight: 1,
+  color: 'rgba(255, 255, 255, 0.12)',
+};
+
+const cartaTextoStyle = {
+  position: 'relative',
+  display: 'grid',
+  gap: 2,
+  padding: '10px 14px 12px',
+  width: '100%',
+  boxSizing: 'border-box',
+};
+
+const cartaNombreStyle = {
+  color: '#fff',
+  fontSize: 17,
+  fontWeight: 800,
+  lineHeight: 1.2,
+  textShadow: '0 1px 6px rgba(0, 0, 0, 0.6)',
+};
+
+const cartaConteoStyle = {
+  color: 'rgba(255, 255, 255, 0.78)',
+  fontSize: 12,
+};
+
+const cartaEnPedidoStyle = {
+  position: 'absolute',
+  top: 10,
+  right: 10,
+  zIndex: 1,
+  padding: '3px 9px',
+  borderRadius: 999,
+  background: 'linear-gradient(90deg, #bf1f1f 0%, var(--vg-accent-primary) 100%)',
+  color: '#fff',
+  fontSize: 11,
+  fontWeight: 800,
+};
+
+const verMasButtonStyle = (isCompact) => ({
+  justifySelf: 'center',
+  border: '1px solid rgba(var(--vg-ink), 0.2)',
+  borderRadius: 999,
+  padding: isCompact ? '12px 22px' : '10px 20px',
+  background: 'rgba(var(--vg-ink), 0.05)',
+  color: 'var(--vg-text-strong)',
+  fontSize: 14,
+  fontWeight: 700,
+  cursor: 'pointer',
+  minHeight: 44,
 });
 
 const categoryScrollStyle = {
