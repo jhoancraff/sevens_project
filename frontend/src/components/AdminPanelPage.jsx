@@ -36,6 +36,14 @@ const ProductsIcon = () => (
   </svg>
 );
 
+const CategoriesIcon = () => (
+  <svg {...iconProps}>
+    <path d="M12 2 2 7l10 5 10-5-10-5Z" />
+    <path d="m2 17 10 5 10-5" />
+    <path d="m2 12 10 5 10-5" />
+  </svg>
+);
+
 const PreparationsIcon = () => (
   <svg {...iconProps}>
     <path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2" />
@@ -135,6 +143,7 @@ const analystSections = [
   { id: 'admin-users', title: 'Usuarios', icon: UsersIcon },
   { id: 'admin-mesas', title: 'Mesas', icon: TablesIcon },
   { id: 'admin-products', title: 'Productos', icon: ProductsIcon },
+  { id: 'admin-categorias-productos', title: 'Categorías de productos', icon: CategoriesIcon },
   { id: 'admin-preparations', title: 'Subrecetas y Preparaciones', icon: PreparationsIcon },
   { id: 'admin-recipes', title: 'Recetas', icon: RecipesIcon },
   { id: 'admin-configuracion-costeo', title: 'Costeo', icon: CosteoConfigIcon },
@@ -160,7 +169,7 @@ const analystGroups = [
   {
     id: 'menu-produccion',
     title: 'Menú & Producción',
-    ids: ['admin-products', 'admin-recipes', 'admin-preparations', 'admin-configuracion-costeo', 'admin-promotions', 'admin-chef-recommendations'],
+    ids: ['admin-products', 'admin-categorias-productos', 'admin-recipes', 'admin-preparations', 'admin-configuracion-costeo', 'admin-promotions', 'admin-chef-recommendations'],
   },
   {
     id: 'operacion-local',
