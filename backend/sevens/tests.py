@@ -9467,3 +9467,132 @@ class AlertaCuentasPorCobrarTests(TestCase):
         self.assertEqual(self.client.get(self.URL).json()['notas_entrega_pendientes'], 1)
         self.client.force_login(self.mesero)
         self.assertEqual(self.client.get(self.URL).status_code, 401)
+
+
+class CategoriasDeProductosTests(TestCase):
+    """Crear, renombrar, desactivar y eliminar las categorias del menu; desactivar las oculta a los meseros."""
+
+    URL = '/api/admin/categorias-productos/'
+
+    def setUp(self):
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        mesero_role, _ = VGRol.objects.get_or_create(nombre_role='Mesero')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='catprod_admin', password='claveAdmin123', cedula='93000001',
+            email='catprod_admin@sevens.test', id_role=admin_role,
+        )
+        self.mesero = VGUsuario.objects.create_user(
+            username='catprod_mesero', password='claveMesero123', cedula='93000002',
+            email='catprod_mesero@sevens.test', id_role=mesero_role,
+        )
+        self.client.force_login(self.admin)
+
+    def _post(self, cuerpo):
+        return self.client.post(self.URL, data=json.dumps(cuerpo), content_type='application/json')
+
+    def _nombres(self, r):
+        return [c['nombre'] for c in r.json()['categorias']]
+
+    def test_crear_y_listar_sin_la_categoria_interna_de_recetas(self):
+        VGCategoriaProducto.objects.create(nombre='Recetas')
+        r = self._post({'action': 'create', 'nombre': '  Pizzas   artesanales ', 'descripcion': 'Al horno de leña'})
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(self._nombres(r), ['Pizzas artesanales'])
+        creada = r.json()['categorias'][0]
+        self.assertEqual((creada['activa'], creada['productos'], creada['protegida'], creada['descripcion']),
+                         (True, 0, False, 'Al horno de leña'))
+        self.assertEqual(self._nombres(self.client.get(self.URL)), ['Pizzas artesanales'])
+
+    def test_no_se_repite_ni_se_crea_la_interna(self):
+        self._post({'action': 'create', 'nombre': 'Bebidas'})
+        self.assertEqual(self._post({'action': 'create', 'nombre': 'bebidas'}).status_code, 400)
+        self.assertEqual(self._post({'action': 'create', 'nombre': 'Recetas'}).status_code, 400)
+        self.assertEqual(self._post({'action': 'create', 'nombre': '   '}).status_code, 400)
+        self.assertEqual(VGCategoriaProducto.objects.filter(nombre__iexact='bebidas').count(), 1)
+
+    def test_renombrar_y_cambiar_descripcion(self):
+        cat = VGCategoriaProducto.objects.create(nombre='Postres')
+        r = self._post({'action': 'update', 'id': cat.id, 'nombre': 'Dulces', 'descripcion': 'Para cerrar'})
+        self.assertEqual(r.status_code, 200, r.content)
+        cat.refresh_from_db()
+        self.assertEqual((cat.nombre, cat.descripcion), ('Dulces', 'Para cerrar'))
+        otra = VGCategoriaProducto.objects.create(nombre='Entradas')
+        r = self._post({'action': 'update', 'id': otra.id, 'nombre': 'dulces'})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('Ya existe', r.json()['message'])
+
+    def test_las_categorias_que_el_sistema_busca_por_nombre_no_se_renombran_ni_eliminan(self):
+        otros = VGCategoriaProducto.objects.create(nombre='Otros')
+        r = self._post({'action': 'update', 'id': otros.id, 'nombre': 'Varios'})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('no se puede renombrar', r.json()['message'])
+        r = self._post({'action': 'delete', 'id': otros.id})
+        self.assertEqual(r.status_code, 400)
+        self.assertTrue(VGCategoriaProducto.objects.filter(pk=otros.pk).exists())
+        # Desactivarla si se puede, y guardar el mismo nombre no cuenta como renombrar.
+        r = self._post({'action': 'update', 'id': otros.id, 'nombre': 'Otros', 'activa': False})
+        self.assertEqual(r.status_code, 200, r.content)
+
+    def test_eliminar_solo_si_no_tiene_productos(self):
+        con_productos = VGCategoriaProducto.objects.create(nombre='Platos')
+        VGProducto.objects.create(nombre='Parrilla', categoria=con_productos, precio_venta='20.00')
+        vacia = VGCategoriaProducto.objects.create(nombre='Vacia')
+        r = self._post({'action': 'delete', 'id': con_productos.id})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('1 producto', r.json()['message'])
+        self.assertTrue(VGCategoriaProducto.objects.filter(pk=con_productos.pk).exists())
+        r = self._post({'action': 'delete', 'id': vacia.id})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertFalse(VGCategoriaProducto.objects.filter(pk=vacia.pk).exists())
+
+    def test_los_conteos_de_productos(self):
+        cat = VGCategoriaProducto.objects.create(nombre='Bebidas')
+        VGProducto.objects.create(nombre='Jugo', categoria=cat, precio_venta='3.00')
+        VGProducto.objects.create(nombre='Agotado', categoria=cat, precio_venta='3.00', disponible=False)
+        fila = self.client.get(self.URL).json()['categorias'][0]
+        self.assertEqual((fila['productos'], fila['productos_disponibles']), (2, 1))
+
+    def test_desactivar_oculta_la_categoria_a_los_meseros_pero_no_a_la_administracion(self):
+        from sevens.models import VGPromocion, VGRecomendacionChef
+        cat = VGCategoriaProducto.objects.create(nombre='Pizzas')
+        otra = VGCategoriaProducto.objects.create(nombre='Platos')
+        pizza = VGProducto.objects.create(nombre='Pizza', categoria=cat, precio_venta='12.00')
+        plato = VGProducto.objects.create(nombre='Plato', categoria=otra, precio_venta='15.00')
+        hoy = timezone.localdate()
+        for producto in (pizza, plato):
+            VGPromocion.objects.create(
+                titulo=f'Promo {producto.nombre}', producto=producto, valor_descuento='10', fecha_inicio=hoy, fecha_fin=hoy,
+            )
+            VGRecomendacionChef.objects.create(producto=producto, fecha=hoy)
+
+        def visibles():
+            self.client.force_login(self.mesero)
+            productos = {p['nombre']: p['categoria_activa'] for p in self.client.get('/api/productos/').json()}
+            promos = [p['producto_nombre'] for p in self.client.get('/api/promociones/').json()['promotions']]
+            recs = [r['producto_nombre'] for r in self.client.get('/api/recomendaciones-chef/').json()['recommendations']]
+            self.client.force_login(self.admin)
+            return productos, sorted(promos), sorted(recs)
+
+        productos, promos, recs = visibles()
+        self.assertEqual(productos, {'Pizza': True, 'Plato': True})
+        self.assertEqual((promos, recs), (['Pizza', 'Plato'], ['Pizza', 'Plato']))
+
+        r = self._post({'action': 'update', 'id': cat.id, 'activa': False})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIn('los meseros ya no la ven', r.json()['message'])
+        productos, promos, recs = visibles()
+        # El producto sigue en la lista (para pedidos viejos), marcado como de categoria inactiva.
+        self.assertEqual(productos, {'Pizza': False, 'Plato': True})
+        self.assertEqual((promos, recs), (['Plato'], ['Plato']))
+        # La administracion sigue viendo la categoria y su producto.
+        self.assertIn('Pizzas', self._nombres(self.client.get(self.URL)))
+        self.assertTrue(VGProducto.objects.filter(pk=pizza.pk, disponible=True).exists())
+
+        self._post({'action': 'update', 'id': cat.id, 'activa': True})
+        self.assertEqual(visibles()[0], {'Pizza': True, 'Plato': True})
+
+    def test_solo_la_administracion_gestiona_las_categorias(self):
+        self.client.force_login(self.mesero)
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+        self.assertEqual(self._post({'action': 'create', 'nombre': 'Intrusa'}).status_code, 401)
+        self.assertFalse(VGCategoriaProducto.objects.filter(nombre='Intrusa').exists())

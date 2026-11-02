@@ -162,6 +162,11 @@ class VGCategoriaProducto(VGAuditoria):
         ),
     )
 
+    activa = models.BooleanField(
+        default=True,
+        help_text="Si está desactivada, sus productos no se le muestran a los meseros al tomar un pedido (siguen existiendo y se pueden volver a activar).",
+    )
+
     class Meta:
         db_table = "vg_categorias_productos"
         verbose_name = "Categoría de producto"

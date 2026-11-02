@@ -110,6 +110,7 @@ from .activos_views import (
     admin_activos_view, admin_categorias_activos_view, admin_inventario_general_view,
 )
 from .categorias_inventario_views import admin_categorias_inventario_view
+from .categorias_productos_views import admin_categorias_productos_view
 from .inventario_movimientos_views import admin_inventario_movimientos_view
 from .conciliacion_bancaria_views import (
     conciliacion_candidatos_view,
@@ -227,6 +228,7 @@ urlpatterns = [
     path('admin/recetas/', admin_recipes_view, name='admin_recetas'),
     path('admin/categorias/', admin_categorias_view, name='admin_categorias'),
     path('admin/categorias-inventario/', admin_categorias_inventario_view, name='admin_categorias_inventario'),
+    path('admin/categorias-productos/', admin_categorias_productos_view, name='admin_categorias_productos'),
     path('admin/activos/', admin_activos_view, name='admin_activos'),
     path('admin/categorias-activos/', admin_categorias_activos_view, name='admin_categorias_activos'),
     path('admin/inventario-general/', admin_inventario_general_view, name='admin_inventario_general'),

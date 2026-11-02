@@ -12,6 +12,9 @@ class ProductoSerializer(serializers.ModelSerializer):
     categoria_nombre = serializers.CharField(source='categoria.nombre', read_only=True)
     categoria_arma_plato_automatico = serializers.BooleanField(source='categoria.arma_plato_automatico', read_only=True)
     categoria_prioridad_comanda = serializers.BooleanField(source='categoria.prioridad_comanda', read_only=True)
+    # Una categoria desactivada no se ofrece al tomar pedidos; el producto sigue en la lista para poder
+    # mostrar los pedidos que ya lo traen.
+    categoria_activa = serializers.BooleanField(source='categoria.activa', read_only=True)
     imagen_url = serializers.SerializerMethodField()
     composicion = serializers.SerializerMethodField()
     grupos_opciones = serializers.SerializerMethodField()
@@ -56,6 +59,6 @@ class ProductoSerializer(serializers.ModelSerializer):
         model = VGProducto
         fields = [
             'id', 'nombre', 'descripcion', 'precio_venta', 'venta_por_peso', 'tiempo_preparacion_min',
-            'categoria_id', 'categoria_nombre', 'categoria_arma_plato_automatico', 'categoria_prioridad_comanda',
+            'categoria_id', 'categoria_nombre', 'categoria_activa', 'categoria_arma_plato_automatico', 'categoria_prioridad_comanda',
             'imagen_url', 'composicion', 'grupos_opciones',
         ]

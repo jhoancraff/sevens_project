@@ -37,6 +37,7 @@ import AnalystActivosPage from './AnalystActivosPage';
 import AnalystInventarioGeneralPage from './AnalystInventarioGeneralPage';
 import AnalystInventarioMovimientosPage from './AnalystInventarioMovimientosPage';
 import AnalystInventoryCategoriesPage from './AnalystInventoryCategoriesPage';
+import AnalystProductCategoriesPage from './AnalystProductCategoriesPage';
 import AnalystInventoryHubPage from './AnalystInventoryHubPage';
 import AnalystMesasPage from './AnalystMesasPage';
 import AnalystNewChefRecommendationPage from './AnalystNewChefRecommendationPage';
@@ -1307,6 +1308,12 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             isAdmin={isAdmin}
             onBack={goBackView}
             onMesasChanged={reloadMesas}
+          />
+        ) : activeView === 'admin-categorias-productos' ? (
+          <AnalystProductCategoriesPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onViewProducts={() => goToView('admin-products')}
           />
         ) : activeView === 'admin-products' ? (
           <AnalystProductsPage
