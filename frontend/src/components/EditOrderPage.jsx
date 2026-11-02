@@ -19,6 +19,11 @@ function isHiddenMenuCategory(categoriaNombre) {
   return HIDDEN_MENU_CATEGORIES.includes((categoriaNombre || '').trim().toLowerCase());
 }
 
+// Tampoco se ofrece un producto cuya categoría la administración desactivó (categoria_activa === false).
+function isHiddenMenuProduct(product) {
+  return isHiddenMenuCategory(product.categoria_nombre) || product.categoria_activa === false;
+}
+
 function EditOrderPage({ isMobile, mesas, products, adicionales = [], loadingData, orderId, onBack, onSubmitSuccess }) {
   const tasaCambio = useExchangeRate();
   const [orderHeader, setOrderHeader] = useState({
@@ -179,7 +184,7 @@ function EditOrderPage({ isMobile, mesas, products, adicionales = [], loadingDat
   const categories = useMemo(() => {
     const names = new Set();
     products.forEach((product) => {
-      if (product.categoria_nombre && !isHiddenMenuCategory(product.categoria_nombre)) {
+      if (product.categoria_nombre && !isHiddenMenuProduct(product)) {
         names.add(product.categoria_nombre);
       }
     });
@@ -189,7 +194,7 @@ function EditOrderPage({ isMobile, mesas, products, adicionales = [], loadingDat
   const visibleProducts = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     return products.filter((product) => {
-      if (isHiddenMenuCategory(product.categoria_nombre)) {
+      if (isHiddenMenuProduct(product)) {
         return false;
       }
       const matchesCategory = catalogType === 'Todos' || product.categoria_nombre === catalogType;

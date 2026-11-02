@@ -18,6 +18,12 @@ function isHiddenMenuCategory(categoriaNombre) {
   return HIDDEN_MENU_CATEGORIES.includes((categoriaNombre || '').trim().toLowerCase());
 }
 
+// Un producto no se ofrece en el menú si su categoría es solo de acompañantes o si la administración la desactivó
+// (categoria_activa === false). Sigue en `products` para poder mostrar pedidos que ya lo traen.
+function isHiddenMenuProduct(product) {
+  return isHiddenMenuCategory(product.categoria_nombre) || product.categoria_activa === false;
+}
+
 const TIPO_PEDIDO_LABEL = { llevar: 'Para llevar', delivery: 'Delivery' };
 
 // Cuántos productos se muestran de una vez dentro de una categoría; el resto se pide con «Ver más»,
@@ -179,7 +185,7 @@ function NewOrderPage({
     const porNombre = new Map();
     products.forEach((product) => {
       const nombre = product.categoria_nombre;
-      if (!nombre || isHiddenMenuCategory(nombre)) {
+      if (!nombre || isHiddenMenuProduct(product)) {
         return;
       }
       if (!porNombre.has(nombre)) {
@@ -203,7 +209,7 @@ function NewOrderPage({
       return [];
     }
     return products.filter((product) => {
-      if (isHiddenMenuCategory(product.categoria_nombre)) {
+      if (isHiddenMenuProduct(product)) {
         return false;
       }
       const matchesCategory = !catalogType || product.categoria_nombre === catalogType;

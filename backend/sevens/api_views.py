@@ -5798,7 +5798,10 @@ def promociones_activas_view(request):
     today = timezone.localdate()
     promotions = (
         VGPromocion.objects
-        .filter(activo=True, fecha_inicio__lte=today, fecha_fin__gte=today, producto__isnull=False)
+        .filter(
+            activo=True, fecha_inicio__lte=today, fecha_fin__gte=today, producto__isnull=False,
+            producto__categoria__activa=True,
+        )
         .select_related('producto', 'producto__categoria')
         .order_by('-fecha_creacion')
     )
@@ -5864,7 +5867,7 @@ def recomendaciones_chef_activas_view(request):
     today = timezone.localdate()
     recommendations = (
         VGRecomendacionChef.objects
-        .filter(activo=True, fecha=today, producto__isnull=False)
+        .filter(activo=True, fecha=today, producto__isnull=False, producto__categoria__activa=True)
         .select_related('producto', 'producto__categoria')
         .order_by('producto__nombre')
     )
