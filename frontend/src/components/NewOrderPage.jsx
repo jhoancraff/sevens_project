@@ -1134,7 +1134,7 @@ function NewOrderPage({
             </div>
 
             {enCarta ? (
-              <div style={cartaGridStyle(isCompact)}>
+              <div style={cartaGridStyle(isCompact, isMobile)}>
                 {loadingData ? (
                   <div style={emptyGridStateStyle}>Cargando la carta...</div>
                 ) : categoryCards.length === 0 ? (
@@ -1148,15 +1148,19 @@ function NewOrderPage({
                         type="button"
                         className="vg-carta-card"
                         onClick={() => abrirCategoria(card.nombre)}
-                        style={cartaCardStyle(card.portada, isCompact)}
+                        style={cartaCardStyle(card.portada, isCompact, isMobile)}
                         aria-label={`${card.nombre}, ${card.count} ${card.count === 1 ? 'producto' : 'productos'}${enPedido ? `, ${enPedido} en el pedido` : ''}`}
                       >
-                        {!card.portada ? <span style={cartaInicialStyle} aria-hidden="true">{card.nombre.charAt(0).toUpperCase()}</span> : null}
+                        {!card.portada ? <span style={cartaInicialStyle(isMobile)} aria-hidden="true">{card.nombre.charAt(0).toUpperCase()}</span> : null}
                         <span style={cartaOverlayStyle} aria-hidden="true" />
-                        {enPedido > 0 ? <span style={cartaEnPedidoStyle}>{enPedido} en el pedido</span> : null}
-                        <span style={cartaTextoStyle}>
-                          <span style={cartaNombreStyle}>{card.nombre}</span>
-                          <span style={cartaConteoStyle}>{card.count} {card.count === 1 ? 'producto' : 'productos'}</span>
+                        {enPedido > 0 ? (
+                          <span style={cartaEnPedidoStyle(isMobile)} title={`${enPedido} en el pedido`}>
+                            {isMobile ? enPedido : `${enPedido} en el pedido`}
+                          </span>
+                        ) : null}
+                        <span style={cartaTextoStyle(isMobile)}>
+                          <span style={cartaNombreStyle(isMobile)}>{card.nombre}</span>
+                          <span style={cartaConteoStyle(isMobile)}>{card.count} {card.count === 1 ? 'producto' : 'productos'}</span>
                         </span>
                       </button>
                     );
@@ -2107,22 +2111,23 @@ const categorySubtitleStyle = {
 
 // --- La carta: una tarjeta grande por categoría ---
 
-const cartaGridStyle = (isCompact) => ({
+const cartaGridStyle = (isCompact, isMobile) => ({
   display: 'grid',
-  gridTemplateColumns: isCompact ? 'repeat(2, minmax(0, 1fr))' : 'repeat(auto-fill, minmax(190px, 1fr))',
-  gap: isCompact ? 10 : 12,
+  // Celular: 3 tarjetas por fila. Tablet y escritorio: tarjetas chicas que se acomodan solas.
+  gridTemplateColumns: isMobile ? 'repeat(3, minmax(0, 1fr))' : 'repeat(auto-fill, minmax(150px, 1fr))',
+  gap: isMobile ? 8 : 10,
 });
 
-const cartaCardStyle = (portada, isCompact) => ({
+const cartaCardStyle = (portada, isCompact, isMobile) => ({
   position: 'relative',
   display: 'flex',
   alignItems: 'flex-end',
-  minHeight: isCompact ? 118 : 138,
+  minHeight: isMobile ? 92 : 104,
   padding: 0,
   overflow: 'hidden',
   textAlign: 'left',
   cursor: 'pointer',
-  borderRadius: 18,
+  borderRadius: isMobile ? 14 : 16,
   border: '1px solid rgba(var(--vg-ink), 0.14)',
   background: portada
     ? `center / cover no-repeat url(${JSON.stringify(portada)})`
@@ -2132,53 +2137,70 @@ const cartaCardStyle = (portada, isCompact) => ({
 const cartaOverlayStyle = {
   position: 'absolute',
   inset: 0,
-  background: 'linear-gradient(180deg, rgba(8, 4, 4, 0.05) 30%, rgba(8, 4, 4, 0.88) 100%)',
+  background: 'linear-gradient(180deg, rgba(8, 4, 4, 0.05) 25%, rgba(8, 4, 4, 0.9) 100%)',
 };
 
-const cartaInicialStyle = {
+const cartaInicialStyle = (isMobile) => ({
   position: 'absolute',
-  top: 6,
-  left: 14,
-  fontSize: 64,
+  top: isMobile ? 2 : 4,
+  left: isMobile ? 8 : 12,
+  fontSize: isMobile ? 40 : 48,
   fontWeight: 800,
   lineHeight: 1,
   color: 'rgba(255, 255, 255, 0.12)',
-};
+});
 
-const cartaTextoStyle = {
+const cartaTextoStyle = (isMobile) => ({
   position: 'relative',
   display: 'grid',
-  gap: 2,
-  padding: '10px 14px 12px',
+  gap: 1,
+  padding: isMobile ? '6px 8px 8px' : '8px 12px 10px',
   width: '100%',
   boxSizing: 'border-box',
-};
+});
 
-const cartaNombreStyle = {
+const cartaNombreStyle = (isMobile) => ({
   color: '#fff',
-  fontSize: 17,
+  fontSize: isMobile ? 12.5 : 15,
   fontWeight: 800,
-  lineHeight: 1.2,
+  lineHeight: 1.15,
+  overflowWrap: 'anywhere',
   textShadow: '0 1px 6px rgba(0, 0, 0, 0.6)',
-};
+});
 
-const cartaConteoStyle = {
+const cartaConteoStyle = (isMobile) => ({
   color: 'rgba(255, 255, 255, 0.78)',
-  fontSize: 12,
-};
+  fontSize: isMobile ? 10.5 : 11.5,
+});
 
-const cartaEnPedidoStyle = {
+const cartaEnPedidoStyle = (isMobile) => (isMobile ? {
   position: 'absolute',
-  top: 10,
-  right: 10,
+  top: 5,
+  right: 5,
   zIndex: 1,
-  padding: '3px 9px',
+  minWidth: 20,
+  height: 20,
+  padding: '0 5px',
+  boxSizing: 'border-box',
+  display: 'grid',
+  placeItems: 'center',
   borderRadius: 999,
   background: 'linear-gradient(90deg, #bf1f1f 0%, var(--vg-accent-primary) 100%)',
   color: '#fff',
   fontSize: 11,
   fontWeight: 800,
-};
+} : {
+  position: 'absolute',
+  top: 8,
+  right: 8,
+  zIndex: 1,
+  padding: '2px 8px',
+  borderRadius: 999,
+  background: 'linear-gradient(90deg, #bf1f1f 0%, var(--vg-accent-primary) 100%)',
+  color: '#fff',
+  fontSize: 10.5,
+  fontWeight: 800,
+});
 
 const verMasButtonStyle = (isCompact) => ({
   justifySelf: 'center',
