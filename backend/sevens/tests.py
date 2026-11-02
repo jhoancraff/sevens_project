@@ -1778,11 +1778,28 @@ class AjusteInventarioTests(TestCase):
         self.queso = VGIngrediente.objects.create(
             nombre='Queso', unidad_medida='g', stock_actual=Decimal('50.00'),
         )
+        # Cada prueba trabaja sobre una hoja de ajuste propia (varias por dia).
+        self.hoja_id = self.client.post(
+            '/api/admin/inventario/ajuste/crear/', data=json.dumps({}), content_type='application/json',
+        ).json()['ajuste']['id']
+
+    def _guardar(self):
+        return self.client.post(
+            '/api/admin/inventario/ajuste/guardar/',
+            data=json.dumps({'ajuste_id': self.hoja_id}), content_type='application/json',
+        )
+
+    def _descartar(self):
+        return self.client.post(
+            '/api/admin/inventario/ajuste/descartar/',
+            data=json.dumps({'ajuste_id': self.hoja_id}), content_type='application/json',
+        )
 
     def _agregar(self, ingrediente, tipo, cantidad, motivo=''):
         return self.client.post(
             '/api/admin/inventario/ajuste/agregar/',
             data=json.dumps({
+                'ajuste_id': self.hoja_id,
                 'ingrediente_id': ingrediente.id, 'tipo': tipo, 'cantidad': cantidad, 'motivo': motivo,
             }),
             content_type='application/json',
@@ -1792,7 +1809,7 @@ class AjusteInventarioTests(TestCase):
         self._agregar(self.harina, 'suma', '30.00')
         self._agregar(self.queso, 'resta', '10.00')
 
-        response = self.client.post('/api/admin/inventario/ajuste/guardar/')
+        response = self._guardar()
         self.assertEqual(response.status_code, 200, response.content)
         payload = response.json()
         self.assertTrue(payload['ok'])
@@ -1816,10 +1833,10 @@ class AjusteInventarioTests(TestCase):
 
     def test_guardar_de_nuevo_solo_procesa_la_linea_nueva(self):
         self._agregar(self.harina, 'suma', '30.00')
-        self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self._guardar()
 
         self._agregar(self.queso, 'resta', '5.00')
-        response = self.client.post('/api/admin/inventario/ajuste/guardar/')
+        response = self._guardar()
         self.assertEqual(response.status_code, 200, response.content)
 
         self.harina.refresh_from_db()
@@ -1837,7 +1854,7 @@ class AjusteInventarioTests(TestCase):
 
     def test_editar_linea_aplicada_mueve_solo_el_delta(self):
         self._agregar(self.harina, 'suma', '30.00')
-        self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self._guardar()
 
         detalle_id = VGDetalleAjusteInventario.objects.get(ingrediente=self.harina).id
         response = self.client.post(
@@ -1857,7 +1874,7 @@ class AjusteInventarioTests(TestCase):
 
     def test_quitar_linea_aplicada_revierte_exactamente_lo_aplicado(self):
         self._agregar(self.queso, 'resta', '10.00')
-        self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self._guardar()
         self.queso.refresh_from_db()
         self.assertEqual(self.queso.stock_actual, Decimal('40.00'))
 
@@ -1898,7 +1915,7 @@ class AjusteInventarioTests(TestCase):
         rechazo = self.client.post('/api/admin/inventario/cierre/', data=json.dumps({}), content_type='application/json')
         self.assertEqual(rechazo.status_code, 400)
 
-        self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self._guardar()
         cierre = self.client.post('/api/admin/inventario/cierre/', data=json.dumps({}), content_type='application/json')
         self.assertEqual(cierre.status_code, 201, cierre.content)
 
@@ -1912,18 +1929,183 @@ class AjusteInventarioTests(TestCase):
 
     def test_descartar_ajuste_sin_lineas_aplicadas(self):
         self._agregar(self.harina, 'suma', '30.00')
-        response = self.client.post('/api/admin/inventario/ajuste/descartar/')
+        response = self._descartar()
         self.assertEqual(response.status_code, 200, response.content)
-        self.assertIsNone(response.json()['ajuste'])
+        self.assertTrue(response.json()['ok'])
         self.assertFalse(VGAjusteInventario.objects.exists())
 
     def test_descartar_rechazado_si_ya_tiene_lineas_aplicadas(self):
         self._agregar(self.harina, 'suma', '30.00')
-        self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self._guardar()
 
-        response = self.client.post('/api/admin/inventario/ajuste/descartar/')
+        response = self._descartar()
         self.assertEqual(response.status_code, 400)
         self.assertTrue(VGAjusteInventario.objects.exists())
+
+
+class AjusteInventarioHojasTests(TestCase):
+    """Ajuste de inventario por hojas: varias por dia, cada una con su borrador y su confirmacion."""
+
+    BASE = '/api/admin/inventario/ajuste/'
+
+    def setUp(self):
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='aj_admin', password='claveAdmin123', cedula='98000001', email='aj_admin@varagrill.test', id_role=admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='aj_cajera', password='claveCajera123', cedula='98000002', email='aj_cajera@varagrill.test', id_role=cajera_role,
+        )
+        self.pork = VGIngrediente.objects.create(nombre='Pork belly AJ', unidad_medida='g', stock_actual=Decimal('1000'), costo_unitario=Decimal('0.02'))
+        self.sal = VGIngrediente.objects.create(nombre='Sal AJ', unidad_medida='g', stock_actual=Decimal('500'), costo_unitario=Decimal('0.01'))
+        self.client.force_login(self.admin)
+
+    def post(self, ruta, datos):
+        return self.client.post(self.BASE + ruta, data=json.dumps(datos), content_type='application/json')
+
+    def crear(self, titulo=''):
+        r = self.post('crear/', {'titulo': titulo})
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.json()['ajuste']
+
+    def agregar(self, hoja, ingrediente, tipo='resta', cantidad='10', motivo=''):
+        r = self.post('agregar/', {'ajuste_id': hoja['id'], 'ingrediente_id': ingrediente.id, 'tipo': tipo, 'cantidad': cantidad, 'motivo': motivo})
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.json()['ajuste']
+
+    def stock(self, ingrediente):
+        ingrediente.refresh_from_db()
+        return ingrediente.stock_actual
+
+    def test_un_mismo_dia_puede_tener_varias_hojas_independientes(self):
+        a = self.crear('Conteo cocina')
+        b = self.crear('Merma pork belly')
+        self.assertNotEqual(a['id'], b['id'])
+        self.agregar(a, self.sal, 'suma', '50')
+        self.agregar(b, self.pork, 'resta', '200')
+        self.assertEqual(len(self.client.get(f"{self.BASE}{a['id']}/").json()['ajuste']['detalles']), 1)
+        self.assertEqual(self.client.get(f"{self.BASE}{b['id']}/").json()['ajuste']['detalles'][0]['ingrediente_nombre'], 'Pork belly AJ')
+        # confirmar una hoja no aplica las lineas de la otra
+        self.assertEqual(self.post('guardar/', {'ajuste_id': a['id']}).status_code, 200)
+        self.assertEqual(self.stock(self.sal), Decimal('550'))
+        self.assertEqual(self.stock(self.pork), Decimal('1000'))
+        self.assertEqual(self.post('guardar/', {'ajuste_id': b['id']}).status_code, 200)
+        self.assertEqual(self.stock(self.pork), Decimal('800'))
+        movimientos = VGMovimientoInventario.objects.filter(tipo_movimiento='ajuste')
+        self.assertEqual({m.id_referencia for m in movimientos}, {a['id'], b['id']})
+
+    def test_el_borrador_no_toca_el_stock_hasta_confirmar_y_no_se_aplica_dos_veces(self):
+        hoja = self.crear()
+        self.agregar(hoja, self.pork, 'resta', '100')
+        self.assertEqual(self.stock(self.pork), Decimal('1000'))
+        self.assertEqual(self.post('guardar/', {'ajuste_id': hoja['id']}).status_code, 200)
+        self.assertEqual(self.stock(self.pork), Decimal('900'))
+        # nada pendiente: un segundo guardado no vuelve a aplicar
+        self.assertEqual(self.post('guardar/', {'ajuste_id': hoja['id']}).status_code, 400)
+        self.assertEqual(self.stock(self.pork), Decimal('900'))
+        self.assertEqual(self.client.get(f"{self.BASE}{hoja['id']}/").json()['ajuste']['estado'], 'confirmado')
+
+    def test_una_hoja_confirmada_sigue_editable_y_solo_mueve_la_diferencia(self):
+        hoja = self.crear()
+        hoja = self.agregar(hoja, self.pork, 'resta', '100')
+        self.post('guardar/', {'ajuste_id': hoja['id']})
+        detalle_id = self.client.get(f"{self.BASE}{hoja['id']}/").json()['ajuste']['detalles'][0]['id']
+        r = self.post('editar/', {'detalle_id': detalle_id, 'cantidad': '150'})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self.stock(self.pork), Decimal('850'))
+        r = self.post('quitar/', {'detalle_id': detalle_id})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self.stock(self.pork), Decimal('1000'))
+
+    def test_el_listado_filtra_por_titulo_ingrediente_numero_y_fecha(self):
+        a = self.crear('Conteo cocina')
+        b = self.crear('Merma')
+        self.agregar(b, self.pork)
+
+        def ids(**params):
+            return {h['id'] for h in self.client.get(self.BASE, params).json()['hojas']}
+
+        self.assertEqual(ids(), {a['id'], b['id']})
+        self.assertEqual(ids(q='conteo'), {a['id']})
+        self.assertEqual(ids(q='pork'), {b['id']})
+        self.assertEqual(ids(q=f"#{b['id']}"), {b['id']})
+        ayer_fecha = timezone.localdate() - timedelta(days=1)
+        ayer = ayer_fecha.isoformat()
+        self.assertEqual(ids(desde=ayer, hasta=ayer), set())
+        VGAjusteInventario.objects.filter(pk=a['id']).update(
+            fecha_creacion=timezone.make_aware(datetime(ayer_fecha.year, ayer_fecha.month, ayer_fecha.day, 12, 0)),
+        )
+        self.assertEqual(ids(desde=ayer, hasta=ayer), {a['id']})
+        self.assertEqual(self.client.get(self.BASE, {'desde': 'x'}).status_code, 400)
+
+    def test_el_listado_informa_lineas_y_pendientes(self):
+        hoja = self.crear('Con pendientes')
+        self.agregar(hoja, self.pork)
+        self.post('guardar/', {'ajuste_id': hoja['id']})
+        self.agregar(hoja, self.sal)
+        item = next(h for h in self.client.get(self.BASE).json()['hojas'] if h['id'] == hoja['id'])
+        self.assertEqual((item['total_lineas'], item['lineas_pendientes'], item['estado']), (2, 1, 'confirmado'))
+
+    def test_descartar_solo_si_ninguna_linea_fue_aplicada(self):
+        sin_aplicar = self.crear()
+        self.agregar(sin_aplicar, self.pork)
+        self.assertEqual(self.post('descartar/', {'ajuste_id': sin_aplicar['id']}).status_code, 200)
+        self.assertFalse(VGAjusteInventario.objects.filter(pk=sin_aplicar['id']).exists())
+        aplicada = self.crear()
+        self.agregar(aplicada, self.pork)
+        self.post('guardar/', {'ajuste_id': aplicada['id']})
+        self.assertEqual(self.post('descartar/', {'ajuste_id': aplicada['id']}).status_code, 400)
+
+    def test_titulo_se_puede_cambiar_y_tiene_limite(self):
+        hoja = self.crear('Viejo')
+        r = self.post('actualizar/', {'ajuste_id': hoja['id'], 'titulo': 'Nuevo', 'notas': 'algo'})
+        self.assertEqual((r.status_code, r.json()['ajuste']['titulo'], r.json()['ajuste']['notas']), (200, 'Nuevo', 'algo'))
+        self.assertEqual(self.post('actualizar/', {'ajuste_id': hoja['id'], 'titulo': 'x' * 121}).status_code, 400)
+        self.assertEqual(self.post('crear/', {'titulo': 'x' * 121}).status_code, 400)
+
+    def cerrar_mes(self):
+        return self.client.post('/api/admin/inventario/cierre/', data='{}', content_type='application/json')
+
+    def test_el_cierre_del_mes_bloquea_todas_las_hojas(self):
+        hoja = self.crear()
+        self.agregar(hoja, self.pork)
+        # linea sin guardar: no deja cerrar
+        self.assertEqual(self.cerrar_mes().status_code, 400)
+        self.post('guardar/', {'ajuste_id': hoja['id']})
+        self.assertEqual(self.cerrar_mes().status_code, 201)
+        ajuste = self.client.get(f"{self.BASE}{hoja['id']}/").json()['ajuste']
+        self.assertTrue(ajuste['mes_cerrado'])
+        detalle_id = ajuste['detalles'][0]['id']
+        for ruta, datos in [
+            ('crear/', {}),
+            ('agregar/', {'ajuste_id': hoja['id'], 'ingrediente_id': self.pork.id, 'tipo': 'suma', 'cantidad': '1'}),
+            ('editar/', {'detalle_id': detalle_id, 'cantidad': '5'}),
+            ('quitar/', {'detalle_id': detalle_id}),
+            ('guardar/', {'ajuste_id': hoja['id']}),
+            ('descartar/', {'ajuste_id': hoja['id']}),
+            ('actualizar/', {'ajuste_id': hoja['id'], 'titulo': 'x'}),
+        ]:
+            self.assertEqual(self.post(ruta, datos).status_code, 400, ruta)
+        self.assertEqual(self.stock(self.pork), Decimal('990'))
+
+    def test_el_cierre_tambien_se_bloquea_con_una_linea_aplicada_y_editada_sin_guardar(self):
+        hoja = self.crear()
+        self.agregar(hoja, self.pork)
+        self.post('guardar/', {'ajuste_id': hoja['id']})
+        VGDetalleAjusteInventario.objects.filter(ajuste_id=hoja['id']).update(cantidad=Decimal('20'))
+        self.assertEqual(self.cerrar_mes().status_code, 400)
+
+    def test_solo_un_administrador_y_metodos_correctos(self):
+        hoja = self.crear()
+        self.assertEqual(self.client.post(self.BASE).status_code, 405)
+        self.assertEqual(self.client.get(self.BASE + 'crear/').status_code, 405)
+        self.assertEqual(self.client.get(f"{self.BASE}999999/").status_code, 404)
+        self.assertEqual(self.post('agregar/', {'ajuste_id': 999999, 'ingrediente_id': self.pork.id, 'tipo': 'suma', 'cantidad': '1'}).status_code, 400)
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.client.get(self.BASE).status_code, 401)
+        self.assertEqual(self.client.get(f"{self.BASE}{hoja['id']}/").status_code, 401)
+        self.assertEqual(self.post('crear/', {}).status_code, 401)
 
 
 class TransferenciaCuentasTests(TestCase):
