@@ -966,8 +966,10 @@ function NewOrderPage({
       <form onSubmit={handleSubmit} style={{ display: 'grid', gap: isCompact ? 14 : 16, marginTop: 18 }}>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: isMobile ? '1fr' : isTablet ? 'repeat(2, minmax(0, 1fr))' : 'repeat(3, minmax(0, 1fr))',
-          gap: 12,
+          // Celular: de a dos por fila (Mesa y Tipo, Cliente y Cédula...) para que los datos del cliente
+          // ocupen poco alto y no haya que hacer scroll antes de llegar a la carta.
+          gridTemplateColumns: isMobile || isTablet ? 'repeat(2, minmax(0, 1fr))' : 'repeat(3, minmax(0, 1fr))',
+          gap: isMobile ? 10 : 12,
         }}>
           {/* Mesa/Cliente: sin `required` a propósito — handleSubmit ya valida ambos con un
               mensaje propio (showError/Toast). El `required` nativo del navegador intercepta
@@ -997,7 +999,9 @@ function NewOrderPage({
           ) : (
             <div style={fieldWrapStyle}>
               <span style={labelStyle}>Mesa</span>
-              <div style={noAplicaMesaStyle(isCompact)}>No aplica para este tipo de pedido</div>
+              <div style={noAplicaMesaStyle(isCompact)} title="La mesa no aplica para este tipo de pedido">
+                {isMobile ? 'No aplica' : 'No aplica para este tipo de pedido'}
+              </div>
             </div>
           )}
 
@@ -1042,7 +1046,8 @@ function NewOrderPage({
             />
           </label>
 
-          <label style={fieldWrapStyle}>
+          {/* En celular, sin delivery, el teléfono queda solo en su fila: ocupa todo el ancho en vez de dejar un hueco. */}
+          <label style={{ ...fieldWrapStyle, ...(isMobile && !cobraDelivery ? { gridColumn: '1 / -1' } : {}) }}>
             <span style={labelStyle}>Teléfono</span>
             <input
               type="text"
