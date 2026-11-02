@@ -382,6 +382,7 @@ def _registrar_liquidacion(request, data):
             )
             _registrar_abono_gasto(
                 gasto, comision, cuenta_cashea, referencia or codigo, request.user, tasa_cambio_referencia=tasa,
+                fecha_abono=fecha_deposito,
             )
 
         liquidacion = VGLiquidacionCashea.objects.create(

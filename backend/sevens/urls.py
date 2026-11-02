@@ -176,6 +176,7 @@ from .comida_empleados_views import (
     comida_empleados_previsualizar_view,
     comida_empleados_view,
 )
+from .correcciones_fecha_views import admin_correcciones_fecha_view
 from .gastos_views import (
     admin_categorias_gasto_view,
     admin_gastos_view,
@@ -269,6 +270,7 @@ urlpatterns = [
 
     # --- Administracion: gastos --------------------------------------------
     path('admin/categorias-gasto/', admin_categorias_gasto_view, name='admin_categorias_gasto'),
+    path('admin/correcciones-fecha/', admin_correcciones_fecha_view, name='admin_correcciones_fecha'),
     path('admin/gastos/', admin_gastos_view, name='admin_gastos'),
     path('admin/gastos/<int:gasto_id>/abonos/', gasto_abono_view, name='gasto_abono'),
     path('admin/gastos/<int:gasto_id>/inhabilitar/', gasto_inhabilitar_view, name='gasto_inhabilitar'),

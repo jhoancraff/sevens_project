@@ -149,6 +149,7 @@ const reportSections = [
   { id: 'gastos-operativos', title: 'Gastos operativos', icon: ExpensesIcon },
   { id: 'estado-resultados', title: 'Estado de resultados', icon: ResultsIcon },
   { id: 'facturas-historial', title: 'Historial de facturas', icon: HistoryIcon },
+  { id: 'correcciones-fecha', title: 'Corregir fechas', icon: HistoryIcon },
   { id: 'margen-ganancia', title: 'Margen de ganancia por plato', icon: MarginIcon },
   { id: 'movimiento-productos', title: 'Movimiento de productos', icon: MovementIcon },
   { id: 'admin-ingredients', title: 'Inventario', icon: IngredientsIcon },
@@ -179,7 +180,7 @@ const reportGroups = [
   {
     id: 'auditoria-inventario',
     title: 'Auditoría & Inventario',
-    ids: ['facturas-historial', 'margen-ganancia', 'movimiento-productos', 'admin-ingredients'],
+    ids: ['facturas-historial', 'correcciones-fecha', 'margen-ganancia', 'movimiento-productos', 'admin-ingredients'],
   },
 ];
 
