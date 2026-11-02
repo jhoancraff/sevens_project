@@ -4,6 +4,7 @@ import UnsavedChangesModal from './UnsavedChangesModal';
 import Toast from './Toast';
 import useExchangeRate from '../hooks/useExchangeRate';
 import useMobileBackHandler from '../hooks/useMobileBackHandler';
+import { suppressNextPopState } from '../hooks/popStateSuppression';
 import useUnsavedChangesGuard from '../hooks/useUnsavedChangesGuard';
 import useToast from '../hooks/useToast';
 
@@ -238,8 +239,14 @@ function NewOrderPage({
     setSearchTerm('');
   };
 
-  // El botón «Atrás» del celular regresa a la carta en vez de sacar de la pantalla de pedido.
-  useMobileBackHandler(!enCarta, volverALaCarta);
+  // El botón «Atrás» del celular regresa a la carta en vez de sacar de la pantalla de pedido. Ese mismo
+  // «Atrás» también lo recibe el control de navegación de la app, que con productos en el pedido lo tomaría
+  // por un intento de salir y mostraría el aviso de cambios sin guardar; como aquí solo se vuelve a la carta,
+  // se le indica que ignore esta pulsación.
+  useMobileBackHandler(!enCarta, () => {
+    suppressNextPopState();
+    volverALaCarta();
+  });
 
   const cartCount = useMemo(
     () => cartItems.reduce((total, item) => total + item.quantity, 0),
@@ -966,8 +973,10 @@ function NewOrderPage({
       <form onSubmit={handleSubmit} style={{ display: 'grid', gap: isCompact ? 14 : 16, marginTop: 18 }}>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: isMobile ? '1fr' : isTablet ? 'repeat(2, minmax(0, 1fr))' : 'repeat(3, minmax(0, 1fr))',
-          gap: 12,
+          // Celular: de a dos por fila (Mesa y Tipo, Cliente y Cédula...) para que los datos del cliente
+          // ocupen poco alto y no haya que hacer scroll antes de llegar a la carta.
+          gridTemplateColumns: isMobile || isTablet ? 'repeat(2, minmax(0, 1fr))' : 'repeat(3, minmax(0, 1fr))',
+          gap: isMobile ? 10 : 12,
         }}>
           {/* Mesa/Cliente: sin `required` a propósito — handleSubmit ya valida ambos con un
               mensaje propio (showError/Toast). El `required` nativo del navegador intercepta
@@ -997,7 +1006,9 @@ function NewOrderPage({
           ) : (
             <div style={fieldWrapStyle}>
               <span style={labelStyle}>Mesa</span>
-              <div style={noAplicaMesaStyle(isCompact)}>No aplica para este tipo de pedido</div>
+              <div style={noAplicaMesaStyle(isCompact)} title="La mesa no aplica para este tipo de pedido">
+                {isMobile ? 'No aplica' : 'No aplica para este tipo de pedido'}
+              </div>
             </div>
           )}
 
@@ -1042,7 +1053,8 @@ function NewOrderPage({
             />
           </label>
 
-          <label style={fieldWrapStyle}>
+          {/* En celular, sin delivery, el teléfono queda solo en su fila: ocupa todo el ancho en vez de dejar un hueco. */}
+          <label style={{ ...fieldWrapStyle, ...(isMobile && !cobraDelivery ? { gridColumn: '1 / -1' } : {}) }}>
             <span style={labelStyle}>Teléfono</span>
             <input
               type="text"
