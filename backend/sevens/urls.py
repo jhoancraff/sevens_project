@@ -79,8 +79,11 @@ from .reportes_pdf_views import (
     reporte_inventario_pdf_view,
 )
 from .ajustes_inventario_views import (
+    admin_ajuste_inventario_actualizar_view,
     admin_ajuste_inventario_agregar_view,
+    admin_ajuste_inventario_crear_view,
     admin_ajuste_inventario_descartar_view,
+    admin_ajuste_inventario_detalle_view,
     admin_ajuste_inventario_editar_view,
     admin_ajuste_inventario_guardar_view,
     admin_ajuste_inventario_quitar_view,
@@ -253,6 +256,9 @@ urlpatterns = [
     path('admin/compras/<int:compra_id>/', compra_detail_view, name='compra_detail'),
 
     # --- Administracion: ajuste de inventario ------------------------------
+    path('admin/inventario/ajuste/crear/', admin_ajuste_inventario_crear_view, name='admin_ajuste_inventario_crear'),
+    path('admin/inventario/ajuste/actualizar/', admin_ajuste_inventario_actualizar_view, name='admin_ajuste_inventario_actualizar'),
+    path('admin/inventario/ajuste/<int:ajuste_id>/', admin_ajuste_inventario_detalle_view, name='admin_ajuste_inventario_detalle'),
     path('admin/inventario/ajuste/agregar/', admin_ajuste_inventario_agregar_view, name='admin_ajuste_inventario_agregar'),
     path('admin/inventario/ajuste/editar/', admin_ajuste_inventario_editar_view, name='admin_ajuste_inventario_editar'),
     path('admin/inventario/ajuste/quitar/', admin_ajuste_inventario_quitar_view, name='admin_ajuste_inventario_quitar'),
