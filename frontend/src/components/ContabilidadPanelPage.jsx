@@ -149,6 +149,7 @@ const reportSections = [
   { id: 'gastos-operativos', title: 'Gastos operativos', icon: ExpensesIcon },
   { id: 'estado-resultados', title: 'Estado de resultados', icon: ResultsIcon },
   { id: 'facturas-historial', title: 'Historial de facturas', icon: HistoryIcon },
+  { id: 'correcciones-fecha', title: 'Corregir fechas', icon: HistoryIcon },
   { id: 'margen-ganancia', title: 'Margen de ganancia por plato', icon: MarginIcon },
   { id: 'movimiento-productos', title: 'Movimiento de productos', icon: MovementIcon },
   { id: 'admin-ingredients', title: 'Inventario', icon: IngredientsIcon },
@@ -179,7 +180,7 @@ const reportGroups = [
   {
     id: 'auditoria-inventario',
     title: 'Auditoría & Inventario',
-    ids: ['facturas-historial', 'margen-ganancia', 'movimiento-productos', 'admin-ingredients'],
+    ids: ['facturas-historial', 'correcciones-fecha', 'margen-ganancia', 'movimiento-productos', 'admin-ingredients'],
   },
 ];
 
@@ -213,7 +214,12 @@ function ContabilidadPanelPage({ isMobile, onBack, onNavigate, onlyCardIds }) {
         const response = await fetch('/api/cuentas-por-cobrar/', { credentials: 'include', cache: 'no-store' });
         const data = await response.json().catch(() => ({}));
         if (response.ok && data.ok) {
-          setCuentasPorCobrarCount(Array.isArray(data.ordenes_cobro) ? data.ordenes_cobro.length : 0);
+          // La alerta es solo para lo que sigue en estado pendiente (sin ningun cobro): las ordenes de cobro
+          // 'pendiente' y las notas de entrega 'pendiente_pago'. Lo abonado ya tiene un pago en curso.
+          const ordenesPendientes = Array.isArray(data.ordenes_cobro)
+            ? data.ordenes_cobro.filter((orden) => orden.estado === 'pendiente').length
+            : 0;
+          setCuentasPorCobrarCount(ordenesPendientes + (Number(data.notas_entrega_pendientes) || 0));
         }
       } catch (error) {
         // El badge simplemente no aparece si falla.

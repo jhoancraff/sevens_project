@@ -23,7 +23,8 @@ from .api_views import (
     _serialize_compra,
     _serialize_nota_credito_compra,
 )
-from . import compras_anulacion
+from . import compras_anulacion, fechas_registro
+from .costos_historial import costo_efectivo, origen_costo, supera_umbral, umbral_alerta, variacion_pct
 from .auth_helpers import _auth_response, _is_admin_user
 from .gastos_views import _serialize_gasto
 from .models import (
@@ -54,8 +55,19 @@ def _get_borrador_abierto():
     return VGCompraBorrador.objects.filter(estado='abierto').order_by('-fecha_creacion').first()
 
 
-def _serialize_detalle_borrador(detalle):
+def _serialize_detalle_borrador(detalle, umbral=None):
+    # Vista previa del costo que quedara al confirmar (mismo calculo que la confirmacion, con la merma si el
+    # ingrediente tiene envase y peso real) frente al costo que tiene hoy: si cambia mas que el umbral de
+    # alertas, la linea sale marcada para revisarla ANTES de confirmar (ver costos_historial.py).
+    ingrediente = detalle.ingrediente
+    costo_actual = costo_efectivo(ingrediente.costo_unitario, ingrediente.precio_compra, ingrediente.peso_real)
+    costo_final = _costo_unitario_por_compra(detalle.precio_total, detalle.cantidad, ingrediente)
+    variacion = variacion_pct(costo_actual, costo_final) if detalle.cantidad else None
     return {
+        'costo_actual': str(costo_actual.quantize(Decimal('0.000001'))),
+        'costo_final': str(costo_final),
+        'variacion_pct': str(variacion) if variacion is not None else None,
+        'alerta_variacion': bool(detalle.cantidad) and supera_umbral(variacion, umbral),
         'id': detalle.id,
         'ingrediente_id': detalle.ingrediente_id,
         'ingrediente_nombre': detalle.ingrediente.nombre,
@@ -76,9 +88,11 @@ def _serialize_borrador(borrador):
         return {'id': None, 'detalles': [], 'total': '0'}
     detalles = list(borrador.detalles.select_related('ingrediente').order_by('fecha_creacion'))
     total = sum((detalle.precio_total for detalle in detalles), Decimal('0'))
+    umbral = umbral_alerta()
     return {
         'id': borrador.id,
-        'detalles': [_serialize_detalle_borrador(detalle) for detalle in detalles],
+        'umbral_alerta_pct': str(umbral),
+        'detalles': [_serialize_detalle_borrador(detalle, umbral) for detalle in detalles],
         'total': str(total),
     }
 
@@ -321,6 +335,12 @@ def admin_compra_borrador_confirmar_view(request):
     if not proveedor_nombre:
         return _auth_response({'ok': False, 'message': 'El proveedor es obligatorio para confirmar la carga.'}, status=400)
     numero_factura_proveedor = str(data.get('numero_factura_proveedor', '') or '').strip()
+    # Dia en que de verdad se hizo la compra (hoy por defecto, nunca futuro); el momento exacto del
+    # registro queda aparte en fecha_compra/fecha_creacion.
+    try:
+        fecha_factura = fechas_registro.parse_fecha_real(data.get('fecha_factura'), 'fecha de la factura')
+    except fechas_registro.FechaInvalida as exc:
+        return _auth_response({'ok': False, 'message': str(exc)}, status=400)
 
     # El total a pagar YA NO se calcula solo (nunca se asume la suma de las
     # líneas): el analista tiene que escribirlo a mano, en dólares o en
@@ -369,20 +389,32 @@ def admin_compra_borrador_confirmar_view(request):
         compra = VGCompra.objects.create(
             proveedor_nombre=proveedor_nombre,
             numero_factura_proveedor=numero_factura_proveedor,
+            fecha_factura=fecha_factura,
             estado='recibido',
             tasa_cambio_referencia=tasa_cambio_para_registro(data.get('tasa_cambio_referencia')),
             creado_por=request.user,
             actualizado_por=request.user,
         )
 
-        for detalle in borrador.detalles.select_related('ingrediente'):
-            ingrediente = detalle.ingrediente
+        for detalle in borrador.detalles.all():
+            # Se relee y bloquea el ingrediente en cada linea: si el mismo ingrediente viene en dos lineas del
+            # lote, la segunda parte del stock y del costo que dejo la primera (no de una copia vieja).
+            ingrediente = VGIngrediente.objects.select_for_update().get(pk=detalle.ingrediente_id)
             costo_unitario = _costo_unitario_por_compra(detalle.precio_total, detalle.cantidad, ingrediente)
             ingrediente.stock_actual = Decimal(str(ingrediente.stock_actual)) + detalle.cantidad
             ingrediente.costo_unitario = costo_unitario
             ingrediente.ultimo_proveedor = proveedor_nombre
             ingrediente.actualizado_por = request.user
-            ingrediente.save(update_fields=['stock_actual', 'costo_unitario', 'ultimo_proveedor', 'actualizado_por', 'fecha_actualizacion'])
+            campos = ['stock_actual', 'costo_unitario', 'ultimo_proveedor', 'actualizado_por', 'fecha_actualizacion']
+            if ingrediente.contenido_envase and ingrediente.peso_real:
+                # Los reportes de costos y las recetas toman precio_compra / peso_real cuando el ingrediente los
+                # tiene cargados (ver _costo_unitario_efectivo) e ignoran costo_unitario. Para que esta compra
+                # cambie de verdad el costo, el precio del envase se deja en lo que esta factura implica:
+                # costo por unidad util x peso real (= precio pagado por cada envase de contenido_envase).
+                ingrediente.precio_compra = (costo_unitario * ingrediente.peso_real).quantize(Decimal('0.01'))
+                campos.append('precio_compra')
+            with origen_costo('Carga de lote manual', compra=compra):
+                ingrediente.save(update_fields=campos)
 
             VGDetalleCompra.objects.create(
                 compra=compra, ingrediente=ingrediente, cantidad=detalle.cantidad, costo_unitario=costo_unitario,
@@ -525,6 +557,17 @@ def compra_abono_view(request, compra_id):
     except (TypeError, ValueError, VGMetodoPago.DoesNotExist):
         return _auth_response({'ok': False, 'message': 'El metodo de pago es invalido.'}, status=400)
 
+    # Dia en que de verdad se pago (hoy por defecto); el momento exacto del registro queda aparte.
+    try:
+        fecha_abono = fechas_registro.parse_fecha_real(data.get('fecha_abono'), 'fecha del pago')
+        fechas_registro.exigir_aceptadas(
+            fechas_registro.advertencias_dias_cerrados([fecha_abono], metodo_pago), data.get('aceptadas'),
+        )
+    except fechas_registro.FechaInvalida as exc:
+        return _auth_response({'ok': False, 'message': str(exc)}, status=400)
+    except fechas_registro.RequiereConfirmacion as exc:
+        return fechas_registro.respuesta_confirmacion(exc)
+
     # Tasa propia de quien paga (opcional): los proveedores cobran a tasas distintas a la
     # de la factura/BCV y lo que importa es que los Bs registrados sean los que de verdad
     # salieron del banco. Con ella, los Bs del abono son monto * esta tasa y la deuda en
@@ -614,6 +657,7 @@ def compra_abono_view(request, compra_id):
             referencia=referencia,
             tasa_cambio_referencia=tasa_abono,
             tasa_manual=tasa_manual is not None,
+            fecha_abono=fecha_abono,
             creado_por=request.user,
         )
 

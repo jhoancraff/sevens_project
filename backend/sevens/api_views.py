@@ -62,7 +62,8 @@ from .auth_helpers import (
     _is_owner_or_contador_user,
     _is_owner_user,
 )
-from . import compras_anulacion
+from . import compras_anulacion, fechas_registro
+from .costos_historial import con_origen
 from .delivery import CargoDeliveryInvalido, aplicar_cargo, resolver_cargo_delivery
 from .servicios_adicionales import ServiciosInvalidos, aplicar_servicios, resolver_servicios, serializar_lineas
 from .impresion_lpd import imprimir_nota_entrega_caja
@@ -2496,8 +2497,13 @@ def _costo_unitario_por_compra(precio_total, cantidad, ingrediente):
     rinde 85% por envase cuesta lo mismo por gramo útil que una de 1000g (ver
     VGIngrediente.contenido_envase/peso_real). Sin esos dos datos, se divide por la
     cantidad comprada tal cual, igual que antes de que existiera este ajuste.
+
+    Un ingrediente medido por "unidad" (una lata, una botella) NUNCA se ajusta por merma: su contenido
+    de envase / peso real describen el contenido de UNA unidad (ej. 355 ml, 1 lata), no un rendimiento
+    — dividir por peso_real / contenido_envase multiplicaba el costo por ese contenido (20 latas por $25
+    daban $443.75 la lata en vez de $1.25). Es el mismo criterio de la importacion por Excel.
     """
-    if ingrediente.contenido_envase and ingrediente.peso_real:
+    if ingrediente.unidad_medida != 'unidad' and ingrediente.contenido_envase and ingrediente.peso_real:
         cantidad_utilizable = cantidad * (ingrediente.peso_real / ingrediente.contenido_envase)
     else:
         cantidad_utilizable = cantidad
@@ -2557,7 +2563,21 @@ def _resolver_categoria_ingrediente(valor):
     return categoria, None
 
 
+def _origen_costo_catalogo(request):
+    """Texto de origen del cambio de costo segun la accion del catalogo (ver costos_historial.py)."""
+    try:
+        tipo = str(json.loads(request.body.decode('utf-8')).get('tipo', '')).strip().lower() if request.body else ''
+    except (ValueError, AttributeError):
+        tipo = ''
+    return {
+        'actualizar_ingrediente': 'Edición del ingrediente',
+        'crear_ingrediente': 'Alta del ingrediente',
+        'inventario': 'Ingreso administrativo',
+    }.get(tipo, 'Catálogo')
+
+
 @csrf_exempt
+@con_origen(_origen_costo_catalogo)
 def admin_catalog_view(request):
     if request.method not in ['GET', 'POST']:
         return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
@@ -2928,7 +2948,6 @@ def admin_catalog_view(request):
         ingredient.nombre = nombre
         ingredient.unidad_medida = unidad
         ingredient.ultimo_proveedor = proveedor
-        ingredient.stock_actual = stock_actual_value
         ingredient.stock_minimo = stock_minimo_value
         ingredient.costo_unitario = costo_unitario_value
         ingredient.contenido_envase = contenido_envase_value
@@ -2938,7 +2957,7 @@ def admin_catalog_view(request):
         ingredient.rendimiento_ingrediente_crudo = rendimiento_ingrediente_crudo_value
         ingredient.actualizado_por = request.user
         ingredient.save(update_fields=[
-            'nombre', 'categoria', 'unidad_medida', 'ultimo_proveedor', 'stock_actual', 'stock_minimo', 'costo_unitario',
+            'nombre', 'categoria', 'unidad_medida', 'ultimo_proveedor', 'stock_minimo', 'costo_unitario',
             'contenido_envase', 'peso_real', 'precio_compra', 'ingrediente_crudo_equivalente', 'rendimiento_ingrediente_crudo',
             'actualizado_por', 'fecha_actualizacion',
         ])
@@ -3182,13 +3201,12 @@ def admin_catalog_view(request):
         unidad = str(data.get('unidad', '')).strip() or 'unidad'
         proveedor = str(data.get('proveedor', '')).strip() or 'Sin proveedor'
         numero_factura_proveedor = str(data.get('numero_factura_proveedor', '') or '').strip()
-        fecha_factura_raw = str(data.get('fecha_factura', '') or '').strip()
-        fecha_factura = None
-        if fecha_factura_raw:
-            try:
-                fecha_factura = date.fromisoformat(fecha_factura_raw)
-            except ValueError:
-                return _auth_response({'ok': False, 'message': 'La fecha de la factura no es valida.'}, status=400)
+        # Dia en que de verdad se hizo la compra (hoy por defecto, nunca futuro); el momento exacto del
+        # registro queda aparte en fecha_compra/fecha_creacion.
+        try:
+            fecha_factura = fechas_registro.parse_fecha_real(data.get('fecha_factura'), 'fecha de la factura')
+        except fechas_registro.FechaInvalida as exc:
+            return _auth_response({'ok': False, 'message': str(exc)}, status=400)
         cantidad = data.get('cantidad', 0)
         stock_minimo = data.get('stock_minimo', 0)
         precio_total = data.get('precio_total', 0)
@@ -3612,7 +3630,7 @@ def _importar_ingredientes(
             compra = VGCompra.objects.create(
                 proveedor_nombre=proveedor_nombre or 'Sin proveedor',
                 numero_factura_proveedor=numero_factura_proveedor,
-                fecha_factura=fecha_factura,
+                fecha_factura=fecha_factura or timezone.localdate(),
                 estado='recibido',
                 tasa_cambio_referencia=tasa_cambio_para_registro(),
                 creado_por=operator,
@@ -3803,6 +3821,7 @@ def _importar_ingredientes(
 
 
 @csrf_exempt
+@con_origen('Importación por Excel')
 def admin_ingredientes_import_view(request):
     if request.method != 'POST':
         return _auth_response({'ok': False, 'message': 'Metodo no permitido.'}, status=405)
@@ -3845,13 +3864,12 @@ def admin_ingredientes_import_view(request):
 
         proveedor_nombre = str(data.get('proveedor_nombre', '') or '').strip()
         numero_factura_proveedor = str(data.get('numero_factura_proveedor', '') or '').strip()
-        fecha_factura_raw = str(data.get('fecha_factura', '') or '').strip()
-        fecha_factura = None
-        if fecha_factura_raw:
-            try:
-                fecha_factura = date.fromisoformat(fecha_factura_raw)
-            except ValueError:
-                return _auth_response({'ok': False, 'message': 'La fecha de la factura no es valida.'}, status=400)
+        # Dia en que de verdad se hizo la compra (hoy por defecto, nunca futuro); el momento exacto del
+        # registro queda aparte en fecha_compra/fecha_creacion.
+        try:
+            fecha_factura = fechas_registro.parse_fecha_real(data.get('fecha_factura'), 'fecha de la factura')
+        except fechas_registro.FechaInvalida as exc:
+            return _auth_response({'ok': False, 'message': str(exc)}, status=400)
 
         # El total ya no se calcula sumando líneas (ver el docstring de
         # _importar_ingredientes): el analista tiene que escribir a mano lo que dice
@@ -4043,6 +4061,7 @@ def _serialize_abono_compra(abono):
         'metodo_pago_id': abono.metodo_pago_id,
         'referencia': abono.referencia,
         'fecha_pago': abono.fecha_pago.isoformat(),
+        'fecha_abono': abono.fecha_abono.isoformat(),
         'tasa_cambio_referencia': str(abono.tasa_cambio_referencia) if abono.tasa_cambio_referencia is not None else None,
         'tasa_manual': abono.tasa_manual,
         'monto_bs': (
@@ -5476,12 +5495,23 @@ def admin_configuracion_costeo_view(request):
             'ok': True,
             'rendimiento_receta_pct': str(config.rendimiento_receta_pct),
             'margen_ganancia_defecto_pct': str(config.margen_ganancia_defecto_pct),
+            'alerta_variacion_costo_pct': str(config.alerta_variacion_costo_pct),
         })
 
     try:
         data = json.loads(request.body.decode('utf-8')) if request.body else {}
     except json.JSONDecodeError:
         return _auth_response({'ok': False, 'message': 'Formato JSON invalido.'}, status=400)
+
+    # Umbral de las alertas de precio de ingredientes (opcional: si no viene se conserva el actual).
+    alerta_variacion_costo_pct = config.alerta_variacion_costo_pct
+    if data.get('alerta_variacion_costo_pct') not in (None, ''):
+        try:
+            alerta_variacion_costo_pct = Decimal(str(data.get('alerta_variacion_costo_pct')))
+            if alerta_variacion_costo_pct < 0:
+                raise InvalidOperation
+        except InvalidOperation:
+            return _auth_response({'ok': False, 'message': 'El porcentaje de la alerta de precios no es válido.'}, status=400)
 
     try:
         rendimiento_receta_pct = Decimal(str(data.get('rendimiento_receta_pct', '0')))
@@ -5499,6 +5529,7 @@ def admin_configuracion_costeo_view(request):
 
     config.rendimiento_receta_pct = rendimiento_receta_pct
     config.margen_ganancia_defecto_pct = margen_ganancia_defecto_pct
+    config.alerta_variacion_costo_pct = alerta_variacion_costo_pct
     config.actualizado_por = request.user
     config.save()
 
@@ -5507,6 +5538,7 @@ def admin_configuracion_costeo_view(request):
         'message': 'Configuración de costeo actualizada correctamente.',
         'rendimiento_receta_pct': str(config.rendimiento_receta_pct),
         'margen_ganancia_defecto_pct': str(config.margen_ganancia_defecto_pct),
+        'alerta_variacion_costo_pct': str(config.alerta_variacion_costo_pct),
     })
 
 

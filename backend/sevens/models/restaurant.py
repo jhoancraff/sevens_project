@@ -5,7 +5,7 @@ from django.contrib.auth.models import AbstractUser
 from django.core.validators import MinValueValidator
 from django.db import models
 
-from .base import VGAuditoria
+from .base import VGAuditoria, hoy_local
 from .contabilidad import VGMetodoPago
 
 
@@ -700,6 +700,9 @@ class VGCompra(VGAuditoria):
         max_length=100, blank=True,
         help_text="Número de la factura física del proveedor, para poder rastrear de dónde vino este lote.",
     )
+    # Dia en que de verdad se hizo la compra (lo elige quien la registra; se corrige con auditoria
+    # desde correcciones_fecha_views.py). Siempre viene con valor al registrar; null solo en datos
+    # muy viejos. El momento exacto del registro es fecha_compra/fecha_creacion (automaticos).
     fecha_factura = models.DateField(
         null=True, blank=True,
         help_text="Fecha real de la factura del proveedor (puede ser distinta a cuándo se cargó al sistema).",
@@ -836,7 +839,11 @@ class VGAbonoCompra(models.Model):
         VGMetodoPago, on_delete=models.PROTECT, related_name="abonos_compra",
     )
     referencia = models.CharField(max_length=100, blank=True)
+    # Momento EXACTO en que se registro el abono en el sistema (automatico, no se edita).
     fecha_pago = models.DateTimeField(auto_now_add=True)
+    # Dia en que de verdad se pago (lo elige quien lo registra); es la fecha que usan la caja, el
+    # banco y la conciliacion. Ver VGAbonoGasto.fecha_abono.
+    fecha_abono = models.DateField(default=hoy_local)
     creado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
     )
@@ -925,6 +932,43 @@ class VGAnulacionCompra(VGAuditoria):
 
     def __str__(self):
         return f"Anulación compra #{self.compra_id}: {self.motivo[:40]}"
+
+
+class VGHistorialCostoIngrediente(VGAuditoria):
+    """
+    Cada vez que cambia el costo de un ingrediente (el que ven los reportes y las recetas, ver
+    api_views._costo_unitario_efectivo) queda una fila: costo anterior y nuevo, de donde vino el cambio y
+    quien lo hizo (ver costos_historial.py, que lo registra desde una senal de VGIngrediente, asi que cubre
+    cualquier via: lote manual, Excel, edicion del ingrediente...). Si la variacion supera el umbral de
+    VGConfiguracionCosteo.alerta_variacion_costo_pct la fila es una ALERTA que alguien debe revisar: es la
+    forma de notar a tiempo un precio mal cargado antes de que dane el costo de las recetas.
+    """
+    ingrediente = models.ForeignKey(VGIngrediente, on_delete=models.CASCADE, related_name="historial_costos")
+    costo_anterior = models.DecimalField(max_digits=16, decimal_places=6)
+    costo_nuevo = models.DecimalField(max_digits=16, decimal_places=6)
+    # (nuevo - anterior) / anterior x 100; null cuando no habia costo anterior (ingrediente nuevo).
+    variacion_pct = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    origen = models.CharField(max_length=80, blank=True)
+    compra = models.ForeignKey(
+        VGCompra, on_delete=models.SET_NULL, null=True, blank=True, related_name="historial_costos",
+    )
+    es_alerta = models.BooleanField(default=False)
+    revisada = models.BooleanField(default=False)
+    revisada_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="costos_revisados",
+    )
+    fecha_revision = models.DateTimeField(null=True, blank=True)
+    nota_revision = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        db_table = "vg_historial_costos_ingrediente"
+        verbose_name = "Cambio de costo de ingrediente"
+        verbose_name_plural = "Cambios de costo de ingredientes"
+        ordering = ["-fecha_creacion", "-id"]
+        indexes = [models.Index(fields=["es_alerta", "revisada"])]
+
+    def __str__(self):
+        return f"{self.ingrediente_id}: {self.costo_anterior} -> {self.costo_nuevo}"
 
 
 class VGMovimientoInventario(models.Model):
@@ -1032,11 +1076,14 @@ class VGCierreInventario(VGAuditoria):
 
 class VGAjusteInventario(VGAuditoria):
     """
-    Cabecera de una nota de ajuste de inventario — el `id` de este registro ES
-    el "numero de nota" que ve el analista. `estado='confirmado'` no significa
-    que el ajuste este cerrado a mas ediciones dentro del mismo mes: solo
-    indica que ya tiene al menos una linea aplicada al stock (ver
-    VGDetalleAjusteInventario.aplicado) — el ajuste sigue disponible para
+    Cabecera de una "hoja" de ajuste de inventario — el `id` de este registro ES
+    el "numero de nota" que ve el analista. Cada hoja agrupa los ajustes de una
+    misma tarea (ej. "Conteo cocina"); un mismo dia puede tener varias. El
+    `titulo` es opcional: sin el, la pantalla muestra "Ajuste #id".
+
+    `estado='confirmado'` no significa que la hoja este cerrada a mas ediciones:
+    solo indica que ya tiene al menos una linea aplicada al stock (ver
+    VGDetalleAjusteInventario.aplicado) — la hoja sigue disponible para
     agregarle mas lineas despues, hasta que se cierre el mes completo (ver
     VGCierreInventario).
     """
@@ -1044,6 +1091,7 @@ class VGAjusteInventario(VGAuditoria):
     estado = models.CharField(max_length=20, choices=ESTADOS, default="abierto")
     anio = models.PositiveIntegerField()
     mes = models.PositiveSmallIntegerField()
+    titulo = models.CharField(max_length=120, blank=True)
     notas = models.TextField(blank=True)
 
     class Meta:
@@ -1648,6 +1696,13 @@ class VGConfiguracionCosteo(VGAuditoria):
     margen_ganancia_defecto_pct = models.DecimalField(
         max_digits=6, decimal_places=2, default=Decimal('50'),
         help_text="Porcentaje de ganancia sugerido por defecto para productos nuevos que no definen su propio margen.",
+    )
+    alerta_variacion_costo_pct = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal('30'),
+        help_text=(
+            "Si el costo de un ingrediente sube o baja mas que este porcentaje respecto al anterior, el cambio se "
+            "marca como alerta de precio para que alguien lo revise (ver VGHistorialCostoIngrediente)."
+        ),
     )
 
     class Meta:

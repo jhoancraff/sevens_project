@@ -79,14 +79,18 @@ from .reportes_pdf_views import (
     reporte_inventario_pdf_view,
 )
 from .ajustes_inventario_views import (
+    admin_ajuste_inventario_actualizar_view,
     admin_ajuste_inventario_agregar_view,
+    admin_ajuste_inventario_crear_view,
     admin_ajuste_inventario_descartar_view,
+    admin_ajuste_inventario_detalle_view,
     admin_ajuste_inventario_editar_view,
     admin_ajuste_inventario_guardar_view,
     admin_ajuste_inventario_quitar_view,
     admin_ajuste_inventario_view,
     admin_cierre_inventario_view,
 )
+from .alertas_costos_views import alerta_costo_revisar_view, alertas_costos_view
 from .compras_views import (
     admin_compra_borrador_agregar_view,
     admin_compra_borrador_confirmar_view,
@@ -172,6 +176,7 @@ from .comida_empleados_views import (
     comida_empleados_previsualizar_view,
     comida_empleados_view,
 )
+from .correcciones_fecha_views import admin_correcciones_fecha_view
 from .gastos_views import (
     admin_categorias_gasto_view,
     admin_gastos_view,
@@ -229,6 +234,8 @@ urlpatterns = [
     path('admin/activos/entregas/<int:movimiento_id>/comprobante-pdf/', comprobante_entrega_activo_pdf_view,
          name='comprobante_entrega_activo_pdf'),
     path('admin/configuracion-costeo/', admin_configuracion_costeo_view, name='admin_configuracion_costeo'),
+    path('admin/alertas-costos/', alertas_costos_view, name='admin_alertas_costos'),
+    path('admin/alertas-costos/<int:alerta_id>/revisar/', alerta_costo_revisar_view, name='admin_alerta_costo_revisar'),
     path('admin/promociones/', admin_promotions_view, name='admin_promociones'),
     path('admin/recomendaciones-chef/', admin_chef_recommendations_view, name='admin_recomendaciones_chef'),
     path('admin/impresora-caja/', admin_impresora_caja_view, name='admin_impresora_caja'),
@@ -250,6 +257,9 @@ urlpatterns = [
     path('admin/compras/<int:compra_id>/', compra_detail_view, name='compra_detail'),
 
     # --- Administracion: ajuste de inventario ------------------------------
+    path('admin/inventario/ajuste/crear/', admin_ajuste_inventario_crear_view, name='admin_ajuste_inventario_crear'),
+    path('admin/inventario/ajuste/actualizar/', admin_ajuste_inventario_actualizar_view, name='admin_ajuste_inventario_actualizar'),
+    path('admin/inventario/ajuste/<int:ajuste_id>/', admin_ajuste_inventario_detalle_view, name='admin_ajuste_inventario_detalle'),
     path('admin/inventario/ajuste/agregar/', admin_ajuste_inventario_agregar_view, name='admin_ajuste_inventario_agregar'),
     path('admin/inventario/ajuste/editar/', admin_ajuste_inventario_editar_view, name='admin_ajuste_inventario_editar'),
     path('admin/inventario/ajuste/quitar/', admin_ajuste_inventario_quitar_view, name='admin_ajuste_inventario_quitar'),
@@ -260,6 +270,7 @@ urlpatterns = [
 
     # --- Administracion: gastos --------------------------------------------
     path('admin/categorias-gasto/', admin_categorias_gasto_view, name='admin_categorias_gasto'),
+    path('admin/correcciones-fecha/', admin_correcciones_fecha_view, name='admin_correcciones_fecha'),
     path('admin/gastos/', admin_gastos_view, name='admin_gastos'),
     path('admin/gastos/<int:gasto_id>/abonos/', gasto_abono_view, name='gasto_abono'),
     path('admin/gastos/<int:gasto_id>/inhabilitar/', gasto_inhabilitar_view, name='gasto_inhabilitar'),

@@ -503,6 +503,35 @@ class AdminCatalogApiTests(TestCase):
         ingredient.refresh_from_db()
         self.assertIsNone(ingredient.contenido_envase)
 
+    def _editar_ingrediente(self, ingredient, **extra):
+        cuerpo = {'tipo': 'actualizar_ingrediente', 'id': ingredient.id, 'nombre': ingredient.nombre, 'unidad': 'g', **extra}
+        return self.client.post('/api/admin/catalogo/', data=json.dumps(cuerpo), content_type='application/json')
+
+    def test_editar_un_ingrediente_no_permite_cambiar_el_stock(self):
+        ingredient = VGIngrediente.objects.create(nombre='Carbon stock', unidad_medida='g', stock_actual='2000', costo_unitario='0.01')
+
+        response = self._editar_ingrediente(ingredient, stock_actual='5000')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Ajuste de inventario', response.json()['message'])
+        ingredient.refresh_from_db()
+        self.assertEqual(ingredient.stock_actual, Decimal('2000'))
+
+        # otros campos siguen editandose, y mandar el mismo stock que ya hay no es un cambio
+        response = self._editar_ingrediente(ingredient, stock_actual='2000', stock_minimo='300')
+        self.assertEqual(response.status_code, 200, response.content)
+        ingredient.refresh_from_db()
+        self.assertEqual((ingredient.stock_actual, ingredient.stock_minimo), (Decimal('2000'), Decimal('300')))
+
+    def test_guardar_la_edicion_no_pisa_el_stock_que_cambio_mientras_tanto(self):
+        ingredient = VGIngrediente.objects.create(nombre='Pollo stock', unidad_medida='g', stock_actual='2000', costo_unitario='0.01')
+        # una venta o un ajuste baja el stock mientras la pantalla de edicion estaba abierta
+        VGIngrediente.objects.filter(pk=ingredient.pk).update(stock_actual=Decimal('1500'))
+
+        response = self._editar_ingrediente(ingredient, stock_minimo='100')    # la pantalla ya no manda el stock
+        self.assertEqual(response.status_code, 200, response.content)
+        ingredient.refresh_from_db()
+        self.assertEqual(ingredient.stock_actual, Decimal('1500'))
+
     def test_ingreso_administrativo_no_desincroniza_costo_unitario_existente(self):
         """
         Ver _costo_unitario_por_compra vs. la división simple: reponer stock desde
@@ -1749,11 +1778,28 @@ class AjusteInventarioTests(TestCase):
         self.queso = VGIngrediente.objects.create(
             nombre='Queso', unidad_medida='g', stock_actual=Decimal('50.00'),
         )
+        # Cada prueba trabaja sobre una hoja de ajuste propia (varias por dia).
+        self.hoja_id = self.client.post(
+            '/api/admin/inventario/ajuste/crear/', data=json.dumps({}), content_type='application/json',
+        ).json()['ajuste']['id']
+
+    def _guardar(self):
+        return self.client.post(
+            '/api/admin/inventario/ajuste/guardar/',
+            data=json.dumps({'ajuste_id': self.hoja_id}), content_type='application/json',
+        )
+
+    def _descartar(self):
+        return self.client.post(
+            '/api/admin/inventario/ajuste/descartar/',
+            data=json.dumps({'ajuste_id': self.hoja_id}), content_type='application/json',
+        )
 
     def _agregar(self, ingrediente, tipo, cantidad, motivo=''):
         return self.client.post(
             '/api/admin/inventario/ajuste/agregar/',
             data=json.dumps({
+                'ajuste_id': self.hoja_id,
                 'ingrediente_id': ingrediente.id, 'tipo': tipo, 'cantidad': cantidad, 'motivo': motivo,
             }),
             content_type='application/json',
@@ -1763,7 +1809,7 @@ class AjusteInventarioTests(TestCase):
         self._agregar(self.harina, 'suma', '30.00')
         self._agregar(self.queso, 'resta', '10.00')
 
-        response = self.client.post('/api/admin/inventario/ajuste/guardar/')
+        response = self._guardar()
         self.assertEqual(response.status_code, 200, response.content)
         payload = response.json()
         self.assertTrue(payload['ok'])
@@ -1787,10 +1833,10 @@ class AjusteInventarioTests(TestCase):
 
     def test_guardar_de_nuevo_solo_procesa_la_linea_nueva(self):
         self._agregar(self.harina, 'suma', '30.00')
-        self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self._guardar()
 
         self._agregar(self.queso, 'resta', '5.00')
-        response = self.client.post('/api/admin/inventario/ajuste/guardar/')
+        response = self._guardar()
         self.assertEqual(response.status_code, 200, response.content)
 
         self.harina.refresh_from_db()
@@ -1808,7 +1854,7 @@ class AjusteInventarioTests(TestCase):
 
     def test_editar_linea_aplicada_mueve_solo_el_delta(self):
         self._agregar(self.harina, 'suma', '30.00')
-        self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self._guardar()
 
         detalle_id = VGDetalleAjusteInventario.objects.get(ingrediente=self.harina).id
         response = self.client.post(
@@ -1828,7 +1874,7 @@ class AjusteInventarioTests(TestCase):
 
     def test_quitar_linea_aplicada_revierte_exactamente_lo_aplicado(self):
         self._agregar(self.queso, 'resta', '10.00')
-        self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self._guardar()
         self.queso.refresh_from_db()
         self.assertEqual(self.queso.stock_actual, Decimal('40.00'))
 
@@ -1869,7 +1915,7 @@ class AjusteInventarioTests(TestCase):
         rechazo = self.client.post('/api/admin/inventario/cierre/', data=json.dumps({}), content_type='application/json')
         self.assertEqual(rechazo.status_code, 400)
 
-        self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self._guardar()
         cierre = self.client.post('/api/admin/inventario/cierre/', data=json.dumps({}), content_type='application/json')
         self.assertEqual(cierre.status_code, 201, cierre.content)
 
@@ -1883,18 +1929,183 @@ class AjusteInventarioTests(TestCase):
 
     def test_descartar_ajuste_sin_lineas_aplicadas(self):
         self._agregar(self.harina, 'suma', '30.00')
-        response = self.client.post('/api/admin/inventario/ajuste/descartar/')
+        response = self._descartar()
         self.assertEqual(response.status_code, 200, response.content)
-        self.assertIsNone(response.json()['ajuste'])
+        self.assertTrue(response.json()['ok'])
         self.assertFalse(VGAjusteInventario.objects.exists())
 
     def test_descartar_rechazado_si_ya_tiene_lineas_aplicadas(self):
         self._agregar(self.harina, 'suma', '30.00')
-        self.client.post('/api/admin/inventario/ajuste/guardar/')
+        self._guardar()
 
-        response = self.client.post('/api/admin/inventario/ajuste/descartar/')
+        response = self._descartar()
         self.assertEqual(response.status_code, 400)
         self.assertTrue(VGAjusteInventario.objects.exists())
+
+
+class AjusteInventarioHojasTests(TestCase):
+    """Ajuste de inventario por hojas: varias por dia, cada una con su borrador y su confirmacion."""
+
+    BASE = '/api/admin/inventario/ajuste/'
+
+    def setUp(self):
+        admin_role, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_role, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='aj_admin', password='claveAdmin123', cedula='98000001', email='aj_admin@varagrill.test', id_role=admin_role,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='aj_cajera', password='claveCajera123', cedula='98000002', email='aj_cajera@varagrill.test', id_role=cajera_role,
+        )
+        self.pork = VGIngrediente.objects.create(nombre='Pork belly AJ', unidad_medida='g', stock_actual=Decimal('1000'), costo_unitario=Decimal('0.02'))
+        self.sal = VGIngrediente.objects.create(nombre='Sal AJ', unidad_medida='g', stock_actual=Decimal('500'), costo_unitario=Decimal('0.01'))
+        self.client.force_login(self.admin)
+
+    def post(self, ruta, datos):
+        return self.client.post(self.BASE + ruta, data=json.dumps(datos), content_type='application/json')
+
+    def crear(self, titulo=''):
+        r = self.post('crear/', {'titulo': titulo})
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.json()['ajuste']
+
+    def agregar(self, hoja, ingrediente, tipo='resta', cantidad='10', motivo=''):
+        r = self.post('agregar/', {'ajuste_id': hoja['id'], 'ingrediente_id': ingrediente.id, 'tipo': tipo, 'cantidad': cantidad, 'motivo': motivo})
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.json()['ajuste']
+
+    def stock(self, ingrediente):
+        ingrediente.refresh_from_db()
+        return ingrediente.stock_actual
+
+    def test_un_mismo_dia_puede_tener_varias_hojas_independientes(self):
+        a = self.crear('Conteo cocina')
+        b = self.crear('Merma pork belly')
+        self.assertNotEqual(a['id'], b['id'])
+        self.agregar(a, self.sal, 'suma', '50')
+        self.agregar(b, self.pork, 'resta', '200')
+        self.assertEqual(len(self.client.get(f"{self.BASE}{a['id']}/").json()['ajuste']['detalles']), 1)
+        self.assertEqual(self.client.get(f"{self.BASE}{b['id']}/").json()['ajuste']['detalles'][0]['ingrediente_nombre'], 'Pork belly AJ')
+        # confirmar una hoja no aplica las lineas de la otra
+        self.assertEqual(self.post('guardar/', {'ajuste_id': a['id']}).status_code, 200)
+        self.assertEqual(self.stock(self.sal), Decimal('550'))
+        self.assertEqual(self.stock(self.pork), Decimal('1000'))
+        self.assertEqual(self.post('guardar/', {'ajuste_id': b['id']}).status_code, 200)
+        self.assertEqual(self.stock(self.pork), Decimal('800'))
+        movimientos = VGMovimientoInventario.objects.filter(tipo_movimiento='ajuste')
+        self.assertEqual({m.id_referencia for m in movimientos}, {a['id'], b['id']})
+
+    def test_el_borrador_no_toca_el_stock_hasta_confirmar_y_no_se_aplica_dos_veces(self):
+        hoja = self.crear()
+        self.agregar(hoja, self.pork, 'resta', '100')
+        self.assertEqual(self.stock(self.pork), Decimal('1000'))
+        self.assertEqual(self.post('guardar/', {'ajuste_id': hoja['id']}).status_code, 200)
+        self.assertEqual(self.stock(self.pork), Decimal('900'))
+        # nada pendiente: un segundo guardado no vuelve a aplicar
+        self.assertEqual(self.post('guardar/', {'ajuste_id': hoja['id']}).status_code, 400)
+        self.assertEqual(self.stock(self.pork), Decimal('900'))
+        self.assertEqual(self.client.get(f"{self.BASE}{hoja['id']}/").json()['ajuste']['estado'], 'confirmado')
+
+    def test_una_hoja_confirmada_sigue_editable_y_solo_mueve_la_diferencia(self):
+        hoja = self.crear()
+        hoja = self.agregar(hoja, self.pork, 'resta', '100')
+        self.post('guardar/', {'ajuste_id': hoja['id']})
+        detalle_id = self.client.get(f"{self.BASE}{hoja['id']}/").json()['ajuste']['detalles'][0]['id']
+        r = self.post('editar/', {'detalle_id': detalle_id, 'cantidad': '150'})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self.stock(self.pork), Decimal('850'))
+        r = self.post('quitar/', {'detalle_id': detalle_id})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(self.stock(self.pork), Decimal('1000'))
+
+    def test_el_listado_filtra_por_titulo_ingrediente_numero_y_fecha(self):
+        a = self.crear('Conteo cocina')
+        b = self.crear('Merma')
+        self.agregar(b, self.pork)
+
+        def ids(**params):
+            return {h['id'] for h in self.client.get(self.BASE, params).json()['hojas']}
+
+        self.assertEqual(ids(), {a['id'], b['id']})
+        self.assertEqual(ids(q='conteo'), {a['id']})
+        self.assertEqual(ids(q='pork'), {b['id']})
+        self.assertEqual(ids(q=f"#{b['id']}"), {b['id']})
+        ayer_fecha = timezone.localdate() - timedelta(days=1)
+        ayer = ayer_fecha.isoformat()
+        self.assertEqual(ids(desde=ayer, hasta=ayer), set())
+        VGAjusteInventario.objects.filter(pk=a['id']).update(
+            fecha_creacion=timezone.make_aware(datetime(ayer_fecha.year, ayer_fecha.month, ayer_fecha.day, 12, 0)),
+        )
+        self.assertEqual(ids(desde=ayer, hasta=ayer), {a['id']})
+        self.assertEqual(self.client.get(self.BASE, {'desde': 'x'}).status_code, 400)
+
+    def test_el_listado_informa_lineas_y_pendientes(self):
+        hoja = self.crear('Con pendientes')
+        self.agregar(hoja, self.pork)
+        self.post('guardar/', {'ajuste_id': hoja['id']})
+        self.agregar(hoja, self.sal)
+        item = next(h for h in self.client.get(self.BASE).json()['hojas'] if h['id'] == hoja['id'])
+        self.assertEqual((item['total_lineas'], item['lineas_pendientes'], item['estado']), (2, 1, 'confirmado'))
+
+    def test_descartar_solo_si_ninguna_linea_fue_aplicada(self):
+        sin_aplicar = self.crear()
+        self.agregar(sin_aplicar, self.pork)
+        self.assertEqual(self.post('descartar/', {'ajuste_id': sin_aplicar['id']}).status_code, 200)
+        self.assertFalse(VGAjusteInventario.objects.filter(pk=sin_aplicar['id']).exists())
+        aplicada = self.crear()
+        self.agregar(aplicada, self.pork)
+        self.post('guardar/', {'ajuste_id': aplicada['id']})
+        self.assertEqual(self.post('descartar/', {'ajuste_id': aplicada['id']}).status_code, 400)
+
+    def test_titulo_se_puede_cambiar_y_tiene_limite(self):
+        hoja = self.crear('Viejo')
+        r = self.post('actualizar/', {'ajuste_id': hoja['id'], 'titulo': 'Nuevo', 'notas': 'algo'})
+        self.assertEqual((r.status_code, r.json()['ajuste']['titulo'], r.json()['ajuste']['notas']), (200, 'Nuevo', 'algo'))
+        self.assertEqual(self.post('actualizar/', {'ajuste_id': hoja['id'], 'titulo': 'x' * 121}).status_code, 400)
+        self.assertEqual(self.post('crear/', {'titulo': 'x' * 121}).status_code, 400)
+
+    def cerrar_mes(self):
+        return self.client.post('/api/admin/inventario/cierre/', data='{}', content_type='application/json')
+
+    def test_el_cierre_del_mes_bloquea_todas_las_hojas(self):
+        hoja = self.crear()
+        self.agregar(hoja, self.pork)
+        # linea sin guardar: no deja cerrar
+        self.assertEqual(self.cerrar_mes().status_code, 400)
+        self.post('guardar/', {'ajuste_id': hoja['id']})
+        self.assertEqual(self.cerrar_mes().status_code, 201)
+        ajuste = self.client.get(f"{self.BASE}{hoja['id']}/").json()['ajuste']
+        self.assertTrue(ajuste['mes_cerrado'])
+        detalle_id = ajuste['detalles'][0]['id']
+        for ruta, datos in [
+            ('crear/', {}),
+            ('agregar/', {'ajuste_id': hoja['id'], 'ingrediente_id': self.pork.id, 'tipo': 'suma', 'cantidad': '1'}),
+            ('editar/', {'detalle_id': detalle_id, 'cantidad': '5'}),
+            ('quitar/', {'detalle_id': detalle_id}),
+            ('guardar/', {'ajuste_id': hoja['id']}),
+            ('descartar/', {'ajuste_id': hoja['id']}),
+            ('actualizar/', {'ajuste_id': hoja['id'], 'titulo': 'x'}),
+        ]:
+            self.assertEqual(self.post(ruta, datos).status_code, 400, ruta)
+        self.assertEqual(self.stock(self.pork), Decimal('990'))
+
+    def test_el_cierre_tambien_se_bloquea_con_una_linea_aplicada_y_editada_sin_guardar(self):
+        hoja = self.crear()
+        self.agregar(hoja, self.pork)
+        self.post('guardar/', {'ajuste_id': hoja['id']})
+        VGDetalleAjusteInventario.objects.filter(ajuste_id=hoja['id']).update(cantidad=Decimal('20'))
+        self.assertEqual(self.cerrar_mes().status_code, 400)
+
+    def test_solo_un_administrador_y_metodos_correctos(self):
+        hoja = self.crear()
+        self.assertEqual(self.client.post(self.BASE).status_code, 405)
+        self.assertEqual(self.client.get(self.BASE + 'crear/').status_code, 405)
+        self.assertEqual(self.client.get(f"{self.BASE}999999/").status_code, 404)
+        self.assertEqual(self.post('agregar/', {'ajuste_id': 999999, 'ingrediente_id': self.pork.id, 'tipo': 'suma', 'cantidad': '1'}).status_code, 400)
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.client.get(self.BASE).status_code, 401)
+        self.assertEqual(self.client.get(f"{self.BASE}{hoja['id']}/").status_code, 401)
+        self.assertEqual(self.post('crear/', {}).status_code, 401)
 
 
 class TransferenciaCuentasTests(TestCase):
@@ -2355,9 +2566,10 @@ class ReporteFlujoBancoTests(TestCase):
             categoria=self.categoria_gasto, descripcion='Luz atrasada', monto=Decimal('80.00'),
             saldo_pendiente=Decimal('80.00'), fecha_gasto=fecha_real,
         )
-        # El abono se "crea" HOY (auto_now_add) — simula al analista cargando
-        # un gasto atrasado varios dias despues de que paso de verdad.
-        VGAbonoGasto.objects.create(gasto=gasto, monto=Decimal('80.00'), metodo_pago=self.banco)
+        # El abono se registra HOY (fecha_pago, automatica) pero el analista eligio
+        # como fecha del pago el dia real (fecha_abono) — simula cargar un gasto
+        # atrasado varios dias despues de que paso de verdad.
+        VGAbonoGasto.objects.create(gasto=gasto, monto=Decimal('80.00'), metodo_pago=self.banco, fecha_abono=fecha_real)
 
         payload = self._reporte()
         dia = next(d for d in payload['dias'] if d['fecha'] == fecha_real.isoformat())
@@ -2379,9 +2591,11 @@ class ReporteFlujoBancoTests(TestCase):
         # (fecha_pago es auto_now_add, normalmente no editable a mano).
         VGAbonoCompra.objects.filter(pk=abono1.pk).update(
             fecha_pago=timezone.make_aware(datetime(self.anio, self.mes, 5, 10, 0)),
+            fecha_abono=date(self.anio, self.mes, 5),
         )
         VGAbonoCompra.objects.filter(pk=abono2.pk).update(
             fecha_pago=timezone.make_aware(datetime(self.anio, self.mes, 12, 15, 0)),
+            fecha_abono=date(self.anio, self.mes, 12),
         )
 
         payload = self._reporte()
@@ -7234,7 +7448,7 @@ class ConciliacionBancariaMotorTests(TestCase):
             fecha_gasto=date(2026, 10, dia), tasa_cambio_referencia=Decimal('100'),
         )
         a = self.M.AbonoGasto.objects.create(gasto=g, monto=g.monto, metodo_pago=self.pm, tasa_cambio_referencia=Decimal('100'))
-        self.M.AbonoGasto.objects.filter(pk=a.pk).update(fecha_pago=self.dt(dia))
+        self.M.AbonoGasto.objects.filter(pk=a.pk).update(fecha_pago=self.dt(dia), fecha_abono=self.dt(dia).date())
         return g, a
 
     def conciliar(self, desde=1, hasta=31):
@@ -7317,7 +7531,7 @@ class ConciliacionBancariaMotorTests(TestCase):
     def test_debito_sin_referencia_se_sugiere_por_monto_y_nombre_del_proveedor(self):
         c = self.M.Compra.objects.create(proveedor_nombre='Despacho Alfredo', estado='recibido', total=Decimal('80'), saldo_pendiente=0)
         a = self.M.AbonoCompra.objects.create(compra=c, monto=Decimal('80'), metodo_pago=self.pm, tasa_cambio_referencia=Decimal('100'))
-        self.M.AbonoCompra.objects.filter(pk=a.pk).update(fecha_pago=self.dt(5))
+        self.M.AbonoCompra.objects.filter(pk=a.pk).update(fecha_pago=self.dt(5), fecha_abono=self.dt(5).date())
         m = self.mov('debito', '8000.00', ref='555', desc='TRF VZLA V030067809 X', obs='Despacho alfredo')
         self.assertEqual(self.conciliar()['por_revisar'], 1)
         v = m.vinculos.get()
@@ -7388,7 +7602,7 @@ class ConciliacionBancariaMotorTests(TestCase):
         a = self.M.AbonoCompra.objects.create(
             compra=c, monto=c.total, metodo_pago=self.pm, referencia=referencia, tasa_cambio_referencia=Decimal('100'),
         )
-        self.M.AbonoCompra.objects.filter(pk=a.pk).update(fecha_pago=self.dt(dia))
+        self.M.AbonoCompra.objects.filter(pk=a.pk).update(fecha_pago=self.dt(dia), fecha_abono=self.dt(dia).date())
         return c, a
 
     def test_una_transferencia_que_paga_una_compra_y_un_gasto_con_la_misma_referencia_se_concilia_sola(self):
@@ -7613,9 +7827,9 @@ class ConciliacionBancariaViewsTests(TestCase):
             categoria=VGCategoriaGasto.objects.get_or_create(nombre='Servicios')[0], descripcion='Hielo', monto=D('0.40'),
             saldo_pendiente=0, estado_pago='pagado', fecha_gasto=date(2026, 10, 1), tasa_cambio_referencia=tasa,
         )
-        ag = VGAbonoGasto.objects.create(gasto=g, monto=g.monto, metodo_pago=metodo, tasa_cambio_referencia=tasa)
+        ag = VGAbonoGasto.objects.create(gasto=g, monto=g.monto, metodo_pago=metodo, tasa_cambio_referencia=tasa, fecha_abono=date(2026, 10, 1))
         c = VGCompra.objects.create(proveedor_nombre='Prov', estado='recibido', total=D('0.60'), saldo_pendiente=0)
-        ac = VGAbonoCompra.objects.create(compra=c, monto=c.total, metodo_pago=metodo, tasa_cambio_referencia=tasa)
+        ac = VGAbonoCompra.objects.create(compra=c, monto=c.total, metodo_pago=metodo, tasa_cambio_referencia=tasa, fecha_abono=date(2026, 10, 1))
         self.client.force_login(self.admin)
         url = self.BASE + f'movimientos/{debito.id}/accion/'
         r = self.client.post(url, data=json.dumps({'accion': 'elegir', 'registros': 'basura'}), content_type='application/json')
@@ -8717,3 +8931,539 @@ class AnularCompraTests(TestCase):
         ids = [c['id'] for c in self.client.get('/api/cuentas-por-pagar/').json()['compras'] if c['tipo'] == 'compra']
         self.assertNotIn(self.compra.id, ids)
         self.assertIn(self.compra_vieja.id, ids)
+
+
+class LoteActualizaCostoIngredienteTests(TestCase):
+    """Cargar un lote manual cambia el costo que ven los reportes y las recetas, no solo el costo guardado."""
+
+    def setUp(self):
+        rol, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='lote_admin', password='claveLote123', cedula='96000030', email='lote@test.test', id_role=rol,
+        )
+        self.client.force_login(self.admin)
+        _set_tasa_actual('100.0000')
+
+    def post(self, url, cuerpo):
+        return self.client.post(url, data=json.dumps(cuerpo), content_type='application/json')
+
+    def cargar_lote(self, lineas, total='100'):
+        for linea in lineas:
+            r = self.post('/api/admin/compras/borrador/agregar/', linea)
+            self.assertEqual(r.status_code, 201, r.content)
+        r = self.post('/api/admin/compras/borrador/confirmar/', {'proveedor_nombre': 'Proveedor lote', 'total_a_pagar': total})
+        self.assertEqual(r.status_code, 201, r.content)
+
+    def costo_en_reportes(self, ingrediente):
+        from sevens.api_views import _costo_unitario_efectivo
+        ingrediente.refresh_from_db()
+        return _costo_unitario_efectivo(ingrediente.costo_unitario, ingrediente.precio_compra, ingrediente.peso_real)
+
+    def test_con_envase_y_peso_real_el_costo_de_los_reportes_sigue_a_la_compra(self):
+        # envase de 1000 g que rinde 850 g utiles, comprado antes a $10 el envase
+        carne = VGIngrediente.objects.create(
+            nombre='Carne lote', unidad_medida='g', stock_actual=Decimal('0'), costo_unitario=Decimal('0.011765'),
+            contenido_envase=Decimal('1000'), peso_real=Decimal('850'), precio_compra=Decimal('10'),
+        )
+        self.assertEqual(self.costo_en_reportes(carne), Decimal('0.011765'))
+
+        # ahora 5000 g por $60: 4250 g utiles -> $0.014118 el gramo util
+        self.cargar_lote([{'ingrediente_id': carne.id, 'cantidad': '5000', 'precio_total': '60'}])
+        carne.refresh_from_db()
+        self.assertEqual(carne.costo_unitario, Decimal('0.014118'))
+        self.assertEqual(carne.precio_compra, Decimal('12.00'))        # $12 por cada envase de 1000 g
+        self.assertEqual(carne.stock_actual, Decimal('5000'))
+        # los reportes y recetas usan precio_compra / peso_real: ya NO siguen en el costo viejo
+        self.assertEqual(self.costo_en_reportes(carne), Decimal('0.014118'))
+
+    def test_un_ingrediente_por_unidad_no_se_ajusta_por_el_contenido_del_envase(self):
+        # La Polar Light: se mide por unidad (lata), con el envase cargado como 355 ml y peso real 1.
+        lata = VGIngrediente.objects.create(
+            nombre='Polar lata lote', unidad_medida='unidad', stock_actual=Decimal('41'), costo_unitario=Decimal('1'),
+            contenido_envase=Decimal('355'), peso_real=Decimal('1'), precio_compra=Decimal('1'),
+        )
+        self.cargar_lote([{'ingrediente_id': lata.id, 'cantidad': '20', 'precio_total': '25'}], total='25')
+        lata.refresh_from_db()
+        self.assertEqual(lata.costo_unitario, Decimal('1.250000'))       # 25 / 20 latas, no 443.75
+        self.assertEqual(lata.precio_compra, Decimal('1.25'))
+        self.assertEqual(self.costo_en_reportes(lata), Decimal('1.250000'))
+        self.assertEqual(lata.stock_actual, Decimal('61'))
+
+    def test_un_ingrediente_nuevo_sin_peso_real_usa_precio_entre_cantidad(self):
+        self.cargar_lote([{'nombre': 'Aji nuevo lote', 'unidad': 'g', 'cantidad': '2000', 'precio_total': '10'}])
+        aji = VGIngrediente.objects.get(nombre='Aji nuevo lote')
+        self.assertEqual(aji.costo_unitario, Decimal('0.005000'))
+        self.assertIsNone(aji.precio_compra)            # no se inventan envase ni peso que nadie cargo
+        self.assertEqual(self.costo_en_reportes(aji), Decimal('0.005000'))
+
+    def test_el_mismo_ingrediente_en_dos_lineas_suma_las_dos_y_deja_el_costo_de_la_ultima(self):
+        sal = VGIngrediente.objects.create(nombre='Sal lote', unidad_medida='g', stock_actual=Decimal('100'), costo_unitario=Decimal('0.001'))
+        self.cargar_lote([
+            {'ingrediente_id': sal.id, 'cantidad': '1000', 'precio_total': '2'},
+            {'ingrediente_id': sal.id, 'cantidad': '500', 'precio_total': '3'},
+        ])
+        sal.refresh_from_db()
+        self.assertEqual(sal.stock_actual, Decimal('1600'))             # 100 + 1000 + 500
+        self.assertEqual(sal.costo_unitario, Decimal('0.006000'))       # la ultima linea: 3 / 500
+
+
+class AlertasCostosIngredientesTests(TestCase):
+    """Cada cambio de costo de un ingrediente queda en el historial y, si pasa el umbral, genera una alerta."""
+
+    def setUp(self):
+        from sevens.models import VGConfiguracionCosteo
+        rol, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='alc_admin', password='claveAlc123', cedula='96000040', email='alc@test.test', id_role=rol,
+        )
+        self.client.force_login(self.admin)
+        _set_tasa_actual('100.0000')
+        config = VGConfiguracionCosteo.obtener_config()
+        config.alerta_variacion_costo_pct = Decimal('30')
+        config.save()
+        self.pollo = VGIngrediente.objects.create(
+            nombre='Pollo alerta', unidad_medida='g', stock_actual=Decimal('1000'), costo_unitario=Decimal('0.004'),
+        )
+        categoria = VGCategoriaProducto.objects.create(nombre='Platos alerta')
+        self.plato = VGProducto.objects.create(nombre='Churrasco alerta', categoria=categoria, precio_venta=Decimal('13'))
+        VGRecetaProducto.objects.create(producto=self.plato, ingrediente=self.pollo, cantidad_requerida=Decimal('300'))
+
+    def post(self, url, cuerpo):
+        return self.client.post(url, data=json.dumps(cuerpo), content_type='application/json')
+
+    def historial(self, ingrediente=None):
+        from sevens.models import VGHistorialCostoIngrediente
+        return list(VGHistorialCostoIngrediente.objects.filter(ingrediente=ingrediente or self.pollo).order_by('id'))
+
+    def editar_costo(self, costo):
+        r = self.post('/api/admin/catalogo/', {
+            'tipo': 'actualizar_ingrediente', 'id': self.pollo.id, 'nombre': self.pollo.nombre, 'unidad': 'g', 'costo_unitario': costo,
+        })
+        self.assertEqual(r.status_code, 200, r.content)
+
+    def test_un_ingrediente_nuevo_deja_su_primer_costo_sin_alerta(self):
+        filas = self.historial()
+        self.assertEqual(len(filas), 1)
+        self.assertEqual((filas[0].costo_anterior, filas[0].costo_nuevo, filas[0].es_alerta), (Decimal('0'), Decimal('0.004000'), False))
+        self.assertIsNone(filas[0].variacion_pct)
+        # un ingrediente creado sin costo no deja nada
+        vacio = VGIngrediente.objects.create(nombre='Agua alerta', unidad_medida='ml', costo_unitario=Decimal('0'))
+        self.assertEqual(self.historial(vacio), [])
+
+    def test_un_cambio_grande_por_edicion_es_alerta_y_uno_chico_solo_historial(self):
+        self.editar_costo('0.005')                    # +25 %: bajo el umbral de 30
+        self.editar_costo('0.0125')                   # +150 %
+        _inicial, chico, grande = self.historial()
+        self.assertEqual((chico.variacion_pct, chico.es_alerta, chico.origen), (Decimal('25.00'), False, 'Edición del ingrediente'))
+        self.assertEqual((grande.variacion_pct, grande.es_alerta, grande.revisada), (Decimal('150.00'), True, False))
+        self.assertEqual(grande.creado_por_id, self.admin.id)
+        self.assertEqual(grande.costo_anterior, Decimal('0.005000'))
+
+    def test_una_baja_fuerte_tambien_es_alerta_y_el_mismo_costo_no_deja_fila(self):
+        self.editar_costo('0.004')                    # igual: no hay cambio
+        self.assertEqual(len(self.historial()), 1)
+        self.editar_costo('0.001')                    # -75 %
+        self.assertEqual((self.historial()[-1].variacion_pct, self.historial()[-1].es_alerta), (Decimal('-75.00'), True))
+
+    def test_guardar_solo_el_stock_no_registra_ni_consulta_el_costo(self):
+        self.pollo.stock_actual = Decimal('500')
+        with self.assertNumQueries(1):
+            self.pollo.save(update_fields=['stock_actual'])
+        self.assertEqual(len(self.historial()), 1)
+
+    def test_el_lote_manual_queda_con_su_origen_y_su_compra(self):
+        r = self.post('/api/admin/compras/borrador/agregar/', {'ingrediente_id': self.pollo.id, 'cantidad': '1000', 'precio_total': '40'})
+        self.assertEqual(r.status_code, 201, r.content)
+        r = self.post('/api/admin/compras/borrador/confirmar/', {'proveedor_nombre': 'Proveedor alerta', 'total_a_pagar': '40'})
+        self.assertEqual(r.status_code, 201, r.content)
+        fila = self.historial()[-1]
+        self.assertEqual((fila.origen, fila.costo_nuevo, fila.es_alerta), ('Carga de lote manual', Decimal('0.040000'), True))     # x10
+        self.assertEqual(fila.compra_id, r.json()['compra']['id'])
+
+    def test_el_borrador_avisa_antes_de_confirmar(self):
+        r = self.post('/api/admin/compras/borrador/agregar/', {'ingrediente_id': self.pollo.id, 'cantidad': '1000', 'precio_total': '40'})
+        linea = r.json()['borrador']['detalles'][0]
+        self.assertEqual((linea['costo_actual'], linea['costo_final'], linea['variacion_pct'], linea['alerta_variacion']),
+                         ('0.004000', '0.040000', '900.00', True))
+        r = self.post('/api/admin/compras/borrador/agregar/', {'ingrediente_id': self.pollo.id, 'cantidad': '1000', 'precio_total': '4.2'})
+        self.assertFalse(r.json()['borrador']['detalles'][1]['alerta_variacion'])             # +5 %
+
+    def test_la_lista_de_alertas_trae_las_recetas_afectadas_y_se_puede_revisar(self):
+        from sevens.models import VGPreparacion, VGRecetaPreparacion
+        # un plato que usa el pollo a traves de una subreceta tambien se ve afectado
+        sub = VGPreparacion.objects.create(nombre='Marinado alerta', rendimiento_cantidad='1000', rendimiento_unidad='g')
+        VGRecetaPreparacion.objects.create(preparacion=sub, ingrediente=self.pollo, cantidad_requerida='500')
+        indirecto = VGProducto.objects.create(
+            nombre='Plato con marinado alerta', categoria=self.plato.categoria, precio_venta=Decimal('9'), subreceta_vinculada=sub,
+        )
+        self.editar_costo('0.04')                     # x10
+        datos = self.client.get('/api/admin/alertas-costos/').json()
+        self.assertEqual((datos['ok'], datos['umbral_pct'], datos['pendientes'], len(datos['items'])), (True, '30.00', 1, 1))
+        alerta = datos['items'][0]
+        self.assertEqual((alerta['ingrediente']['nombre'], alerta['costo_anterior'], alerta['costo_nuevo']), ('Pollo alerta', '0.004000', '0.040000'))
+        recetas = {r['nombre']: (r['costo_antes'], r['costo_despues']) for r in alerta['recetas_afectadas']}
+        self.assertEqual(recetas['Churrasco alerta'], ('1.20', '12.00'))                      # 300 g
+        self.assertIn('Plato con marinado alerta', recetas)                                    # por la subreceta
+        self.assertNotIn('Recetas', [r['nombre'] for r in alerta['recetas_afectadas']])
+
+        r = self.post(f'/api/admin/alertas-costos/{alerta["id"]}/revisar/', {'nota': 'Era un error, ya lo corregi'})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual((r.json()['pendientes'], r.json()['alerta']['revisada'], r.json()['alerta']['nota_revision']), (0, True, 'Era un error, ya lo corregi'))
+        self.assertEqual(self.post(f'/api/admin/alertas-costos/{alerta["id"]}/revisar/', {}).status_code, 409)
+        self.assertEqual(self.client.get('/api/admin/alertas-costos/').json()['items'], [])
+        self.assertEqual(len(self.client.get('/api/admin/alertas-costos/?estado=revisadas').json()['items']), 1)
+        historial = self.client.get(f'/api/admin/alertas-costos/?vista=historial&ingrediente_id={self.pollo.id}').json()['items']
+        self.assertEqual(len(historial), 2)                                                    # alta + el cambio
+
+    def test_solo_un_administrador_ve_las_alertas(self):
+        cajera_rol, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        cajera = VGUsuario.objects.create_user(username='alc_cajera', password='claveCaj123', cedula='96000041', email='alcc@test.test', id_role=cajera_rol)
+        self.client.force_login(cajera)
+        self.assertEqual(self.client.get('/api/admin/alertas-costos/').status_code, 401)
+
+    def test_el_umbral_se_configura(self):
+        self.assertEqual(self.client.get('/api/admin/configuracion-costeo/').json()['alerta_variacion_costo_pct'], '30.00')
+        r = self.post('/api/admin/configuracion-costeo/', {'rendimiento_receta_pct': '0', 'margen_ganancia_defecto_pct': '50', 'alerta_variacion_costo_pct': '10'})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.editar_costo('0.0045')                   # +12.5 %: ahora si pasa el umbral de 10
+        self.assertTrue(self.historial()[-1].es_alerta)
+        self.assertEqual(self.post('/api/admin/configuracion-costeo/', {'rendimiento_receta_pct': '0', 'margen_ganancia_defecto_pct': '50', 'alerta_variacion_costo_pct': '-5'}).status_code, 400)
+
+
+class FechasRealesTests(TestCase):
+    """
+    Fecha real elegida al registrar un gasto, una compra o un abono (fechas_registro.py) y su correccion con
+    auditoria (correcciones_fecha_views.py): el momento exacto del registro no cambia, pero la caja, el banco y
+    la conciliacion cuentan la fecha elegida.
+    """
+
+    def setUp(self):
+        from sevens.models import VGCategoriaGasto
+        rol, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_rol, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='fr_admin', password='claveFr123', cedula='96000050', email='fr@test.test', id_role=rol,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='fr_cajera', password='claveFr123', cedula='96000051', email='frc@test.test', id_role=cajera_rol,
+        )
+        self.client.force_login(self.admin)
+        _set_tasa_actual('100.0000')
+        self.hoy = timezone.localdate()
+        self.ayer = self.hoy - timedelta(days=1)
+        self.anteayer = self.hoy - timedelta(days=2)
+        self.efectivo = VGMetodoPago.objects.create(nombre='Efectivo FR', moneda='USD', es_efectivo=True)
+        self.banco = VGMetodoPago.objects.create(nombre='Pago movil FR', moneda='VES', cuenta_bancaria='Banco FR')
+        self.categoria = VGCategoriaGasto.objects.create(nombre='Servicios FR')
+
+    def post(self, url, cuerpo):
+        return self.client.post(url, data=json.dumps(cuerpo), content_type='application/json')
+
+    def crear_gasto(self, fecha=None, pagado=True, metodo=None, monto='40', **extra):
+        cuerpo = {
+            'categoria_id': self.categoria.id, 'descripcion': 'Luz FR', 'monto': monto,
+            'pagado_de_una_vez': pagado, **extra,
+        }
+        if fecha is not None:
+            cuerpo['fecha_gasto'] = fecha.isoformat()
+        if pagado:
+            cuerpo['metodo_pago_id'] = (metodo or self.efectivo).id
+        return self.post('/api/admin/gastos/', cuerpo)
+
+    def crear_compra(self, total='100'):
+        compra = VGCompra.objects.create(
+            proveedor_nombre='Proveedor FR', estado='recibido', total=Decimal(total), saldo_pendiente=Decimal(total),
+            tasa_cambio_referencia=Decimal('100.0000'), fecha_factura=self.ayer,
+        )
+        return compra
+
+    def test_un_gasto_pagado_cargado_hoy_con_fecha_de_ayer_cuenta_en_la_caja_de_ayer(self):
+        from sevens.reportes import gastos_efectivo_dia
+        r = self.crear_gasto(fecha=self.ayer)
+        self.assertEqual(r.status_code, 201, r.content)
+        abono = VGAbonoGasto.objects.get()
+        self.assertEqual(abono.fecha_abono, self.ayer)
+        # el momento exacto del registro sigue siendo ahora
+        self.assertEqual(timezone.localtime(abono.fecha_pago).date(), self.hoy)
+        self.assertEqual(r.json()['gasto']['abonos'][0]['fecha_abono'], self.ayer.isoformat())
+        self.assertEqual(gastos_efectivo_dia(self.ayer), Decimal('40'))
+        self.assertEqual(gastos_efectivo_dia(self.hoy), Decimal('0'))
+
+    def test_sin_fecha_el_gasto_y_su_pago_son_de_hoy(self):
+        r = self.crear_gasto()
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(VGGasto.objects.get().fecha_gasto, self.hoy)
+        self.assertEqual(VGAbonoGasto.objects.get().fecha_abono, self.hoy)
+
+    def test_una_fecha_futura_o_invalida_se_rechaza(self):
+        manana = self.hoy + timedelta(days=1)
+        self.assertEqual(self.crear_gasto(fecha=manana).status_code, 400)
+        self.assertEqual(self.crear_gasto(fecha_gasto='no-es-fecha').status_code, 400)
+        self.assertFalse(VGGasto.objects.exists())
+
+    def test_abono_posterior_de_un_gasto_pendiente_lleva_su_propia_fecha(self):
+        self.crear_gasto(fecha=self.anteayer, pagado=False)
+        gasto = VGGasto.objects.get()
+        url = f'/api/admin/gastos/{gasto.id}/abonos/'
+        r = self.post(url, {'monto': '10', 'metodo_pago_id': self.efectivo.id, 'fecha_abono': self.ayer.isoformat()})
+        self.assertEqual(r.status_code, 201, r.content)
+        r = self.post(url, {'monto': '5', 'metodo_pago_id': self.efectivo.id})  # sin fecha: hoy
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(sorted(a.fecha_abono for a in gasto.abonos.all()), [self.ayer, self.hoy])
+        manana = (self.hoy + timedelta(days=1)).isoformat()
+        r = self.post(url, {'monto': '5', 'metodo_pago_id': self.efectivo.id, 'fecha_abono': manana})
+        self.assertEqual(r.status_code, 400)
+
+    def test_pagar_en_efectivo_en_un_dia_con_la_caja_cerrada_pide_confirmacion(self):
+        from sevens.models import VGCierreCaja
+        VGCierreCaja.objects.create(fecha=self.ayer)
+        r = self.crear_gasto(fecha=self.ayer)
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertTrue(r.json()['requiere_confirmacion'])
+        codigos = [a['codigo'] for a in r.json()['advertencias']]
+        self.assertEqual(codigos, [f'caja_cerrada_{self.ayer.isoformat()}'])
+        self.assertFalse(VGGasto.objects.exists())
+        r = self.crear_gasto(fecha=self.ayer, aceptadas=codigos)
+        self.assertEqual(r.status_code, 201, r.content)
+
+    def test_pagar_a_una_cuenta_con_conciliacion_cerrada_pide_confirmacion(self):
+        from sevens.models import VGCierreConciliacion
+        VGCierreConciliacion.objects.create(cuenta_bancaria='Banco FR', fecha=self.ayer, estado='vigente')
+        r = self.crear_gasto(fecha=self.ayer, metodo=self.banco)
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertEqual([a['codigo'] for a in r.json()['advertencias']], [f'conciliacion_cerrada_{self.ayer.isoformat()}'])
+
+    def test_abono_de_compra_con_fecha_elegida(self):
+        compra = self.crear_compra()
+        r = self.post(
+            f'/api/admin/compras/{compra.id}/abonos/',
+            {'monto': '30', 'metodo_pago_id': self.efectivo.id, 'fecha_abono': self.ayer.isoformat()},
+        )
+        self.assertEqual(r.status_code, 201, r.content)
+        abono = VGAbonoCompra.objects.get()
+        self.assertEqual(abono.fecha_abono, self.ayer)
+        self.assertEqual(r.json()['abono']['fecha_abono'], self.ayer.isoformat())
+
+    def test_el_flujo_bancario_agrupa_los_pagos_por_su_fecha_real(self):
+        from sevens.reportes import detalle_flujo_banco_dia
+        gasto = self.crear_gasto(fecha=self.ayer, metodo=self.banco, monto='25')
+        self.assertEqual(gasto.status_code, 201, gasto.content)
+        compra = self.crear_compra()
+        r = self.post(f'/api/admin/compras/{compra.id}/abonos/', {
+            'monto': '10', 'metodo_pago_id': self.banco.id, 'fecha_abono': self.anteayer.isoformat(),
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+
+        def salidas(dia):
+            filas = detalle_flujo_banco_dia(dia.year, dia.month, dia.day, 'salida', [self.banco.id])
+            return [fila['documento_codigo'].split(' ')[0] for fila in filas]
+
+        # ambos se cargaron hoy, pero salieron del banco en la fecha que se eligio
+        self.assertEqual(salidas(self.ayer), ['Gasto'])
+        self.assertEqual(salidas(self.anteayer), ['Lote'])
+        self.assertEqual(salidas(self.hoy), [])
+
+    def test_confirmar_el_borrador_de_compra_usa_la_fecha_elegida(self):
+        ingrediente = VGIngrediente.objects.create(nombre='Harina FR', unidad_medida='g', stock_actual=Decimal('0'), costo_unitario=Decimal('0.01'))
+        r = self.post('/api/admin/compras/borrador/agregar/', {'ingrediente_id': ingrediente.id, 'cantidad': '100', 'precio_total': '10'})
+        self.assertEqual(r.status_code, 201, r.content)
+        r = self.post('/api/admin/compras/borrador/confirmar/', {
+            'proveedor_nombre': 'Proveedor FR', 'total_a_pagar': '10', 'fecha_factura': self.ayer.isoformat(),
+        })
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(VGCompra.objects.get().fecha_factura, self.ayer)
+
+    def test_una_compra_sin_fecha_queda_con_la_de_hoy_y_una_futura_se_rechaza(self):
+        ingrediente = VGIngrediente.objects.create(nombre='Sal FR', unidad_medida='g', stock_actual=Decimal('0'), costo_unitario=Decimal('0.01'))
+        self.post('/api/admin/compras/borrador/agregar/', {'ingrediente_id': ingrediente.id, 'cantidad': '100', 'precio_total': '10'})
+        manana = (self.hoy + timedelta(days=1)).isoformat()
+        r = self.post('/api/admin/compras/borrador/confirmar/', {'proveedor_nombre': 'P', 'total_a_pagar': '10', 'fecha_factura': manana})
+        self.assertEqual(r.status_code, 400)
+        r = self.post('/api/admin/compras/borrador/confirmar/', {'proveedor_nombre': 'P', 'total_a_pagar': '10'})
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(VGCompra.objects.get().fecha_factura, self.hoy)
+
+    def test_corregir_la_fecha_del_gasto_mueve_su_pago_del_mismo_dia(self):
+        self.crear_gasto(fecha=self.ayer)
+        gasto = VGGasto.objects.get()
+        r = self.post(f'/api/admin/gastos/{gasto.id}/', {'action': 'editar', 'fecha_gasto': self.anteayer.isoformat(), 'motivo': 'Fecha equivocada'})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(VGAbonoGasto.objects.get().fecha_abono, self.anteayer)
+
+    # ---- seccion "Corregir fechas" ---------------------------------------------------------------------------
+    URL = '/api/admin/correcciones-fecha/'
+
+    def corregir(self, tipo, objeto_id, fecha, motivo='Se registro con la fecha equivocada', **extra):
+        return self.post(self.URL, {'tipo': tipo, 'objeto_id': objeto_id, 'fecha_nueva': fecha.isoformat(), 'motivo': motivo, **extra})
+
+    def corregir_ok(self, tipo, objeto_id, fecha, **extra):
+        # Igual que la interfaz: si el servidor pide confirmar advertencias, las acepta y reenvia.
+        r = self.corregir(tipo, objeto_id, fecha, **extra)
+        if r.status_code == 409 and r.json().get('requiere_confirmacion'):
+            r = self.corregir(tipo, objeto_id, fecha, aceptadas=[a['codigo'] for a in r.json()['advertencias']], **extra)
+        return r
+
+    def test_corregir_la_fecha_de_un_abono_de_gasto_con_auditoria(self):
+        from sevens.models import VGCorreccionFecha
+        self.crear_gasto(fecha=self.hoy)
+        abono = VGAbonoGasto.objects.get()
+        momento = abono.fecha_pago
+        r = self.corregir_ok('abono_gasto', abono.id, self.ayer)
+        self.assertEqual(r.status_code, 200, r.content)
+        abono.refresh_from_db()
+        self.assertEqual(abono.fecha_abono, self.ayer)
+        self.assertEqual(abono.fecha_pago, momento)  # el momento exacto del registro no se toca
+        correccion = VGCorreccionFecha.objects.get()
+        self.assertEqual((correccion.tipo, correccion.objeto_id, correccion.fecha_anterior, correccion.fecha_nueva), ('abono_gasto', abono.id, self.hoy, self.ayer))
+        self.assertEqual((correccion.motivo, correccion.creado_por_id, correccion.gasto_id), ('Se registro con la fecha equivocada', self.admin.id, abono.gasto_id))
+        from sevens.reportes import gastos_efectivo_dia
+        self.assertEqual((gastos_efectivo_dia(self.ayer), gastos_efectivo_dia(self.hoy)), (Decimal('40'), Decimal('0')))
+
+    def test_corregir_exige_motivo_fecha_valida_y_distinta(self):
+        self.crear_gasto(fecha=self.hoy)
+        abono = VGAbonoGasto.objects.get()
+        self.assertEqual(self.corregir('abono_gasto', abono.id, self.ayer, motivo='corto').status_code, 400)
+        self.assertEqual(self.corregir('abono_gasto', abono.id, self.hoy).status_code, 400)
+        self.assertEqual(self.corregir('abono_gasto', abono.id, self.hoy + timedelta(days=1)).status_code, 400)
+        self.assertEqual(self.post(self.URL, {'tipo': 'abono_gasto', 'objeto_id': abono.id, 'motivo': 'Motivo suficiente'}).status_code, 400)
+        self.assertEqual(self.post(self.URL, {'tipo': 'otra', 'objeto_id': 1, 'fecha_nueva': self.ayer.isoformat(), 'motivo': 'Motivo suficiente'}).status_code, 400)
+        self.assertEqual(self.corregir('abono_gasto', 999999, self.ayer).status_code, 404)
+        abono.refresh_from_db()
+        self.assertEqual(abono.fecha_abono, self.hoy)
+
+    def test_corregir_a_un_dia_con_caja_cerrada_exige_aceptar_la_advertencia(self):
+        from sevens.models import VGCierreCaja, VGCorreccionFecha
+        self.crear_gasto(fecha=self.hoy)
+        abono = VGAbonoGasto.objects.get()
+        VGCierreCaja.objects.create(fecha=self.ayer)
+        r = self.corregir('abono_gasto', abono.id, self.ayer)
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertTrue(r.json()['requiere_confirmacion'])
+        codigos = [a['codigo'] for a in r.json()['advertencias']]
+        self.assertIn(f'caja_cerrada_{self.ayer.isoformat()}', codigos)
+        abono.refresh_from_db()
+        self.assertEqual(abono.fecha_abono, self.hoy)
+        self.assertFalse(VGCorreccionFecha.objects.exists())
+        r = self.corregir('abono_gasto', abono.id, self.ayer, aceptadas=codigos)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(VGCorreccionFecha.objects.get().advertencias_aceptadas, codigos)
+
+    def test_corregir_avisa_si_cambia_de_mes_o_queda_antes_del_gasto(self):
+        self.crear_gasto(fecha=self.hoy)
+        abono = VGAbonoGasto.objects.get()
+        anterior = self.hoy - timedelta(days=45)
+        r = self.corregir('abono_gasto', abono.id, anterior)
+        self.assertEqual(r.status_code, 409)
+        codigos = {a['codigo'] for a in r.json()['advertencias']}
+        self.assertEqual(codigos, {'cambia_periodo', 'pago_antes_del_documento'})
+
+    def test_corregir_la_fecha_de_un_abono_de_compra_y_de_la_compra(self):
+        compra = self.crear_compra()
+        self.post(f'/api/admin/compras/{compra.id}/abonos/', {'monto': '30', 'metodo_pago_id': self.efectivo.id})
+        abono = VGAbonoCompra.objects.get()
+        r = self.corregir_ok('abono_compra', abono.id, self.ayer)
+        self.assertEqual(r.status_code, 200, r.content)
+        abono.refresh_from_db()
+        self.assertEqual(abono.fecha_abono, self.ayer)
+        # la compra: la nueva fecha queda despues del primer pago -> advierte
+        r = self.corregir('compra', compra.id, self.hoy)
+        self.assertEqual(r.status_code, 409, r.content)
+        self.assertIn('compra_despues_de_pagos', [a['codigo'] for a in r.json()['advertencias']])
+        r = self.corregir_ok('compra', compra.id, self.anteayer)
+        self.assertEqual(r.status_code, 200, r.content)
+        compra.refresh_from_db()
+        self.assertEqual(compra.fecha_factura, self.anteayer)
+
+    def test_no_se_corrige_un_pago_de_un_gasto_inhabilitado_ni_de_una_compra_anulada(self):
+        self.crear_gasto(fecha=self.hoy)
+        abono = VGAbonoGasto.objects.get()
+        VGGasto.objects.update(inhabilitado=True)
+        self.assertEqual(self.corregir('abono_gasto', abono.id, self.ayer).status_code, 409)
+        compra = self.crear_compra()
+        self.post(f'/api/admin/compras/{compra.id}/abonos/', {'monto': '30', 'metodo_pago_id': self.efectivo.id})
+        VGCompra.objects.update(estado='cancelado')
+        self.assertEqual(self.corregir('abono_compra', VGAbonoCompra.objects.get().id, self.ayer).status_code, 409)
+        self.assertEqual(self.corregir('compra', compra.id, self.anteayer).status_code, 409)
+
+    def test_el_listado_y_el_historial(self):
+        self.crear_gasto(fecha=self.ayer)
+        compra = self.crear_compra()
+        self.post(f'/api/admin/compras/{compra.id}/abonos/', {'monto': '30', 'metodo_pago_id': self.efectivo.id})
+        desde = self.anteayer.isoformat()
+
+        def listar(**params):
+            return self.client.get(self.URL, {'desde': desde, 'hasta': self.hoy.isoformat(), **params}).json()
+
+        gastos = listar(tipo='abono_gasto')
+        self.assertEqual([i['fecha'] for i in gastos['items']], [self.ayer.isoformat()])
+        self.assertTrue(gastos['items'][0]['editable'])
+        self.assertEqual(len(listar(tipo='abono_gasto', q='luz')['items']), 1)
+        self.assertEqual(len(listar(tipo='abono_gasto', q='nada')['items']), 0)
+        self.assertEqual(len(listar(tipo='abono_compra')['items']), 1)
+        self.assertEqual(len(listar(tipo='compra')['items']), 1)
+        self.assertEqual(listar(tipo='historial')['items'], [])
+        self.corregir_ok('abono_gasto', VGAbonoGasto.objects.get().id, self.anteayer)
+        historial = listar(tipo='historial')['items']
+        self.assertEqual(len(historial), 1)
+        self.assertEqual((historial[0]['fecha_anterior'], historial[0]['fecha_nueva']), (self.ayer.isoformat(), self.anteayer.isoformat()))
+        self.assertEqual(listar(tipo='abono_gasto')['items'][0]['correcciones'], 1)
+        self.assertEqual(self.client.get(self.URL, {'tipo': 'otra'}).status_code, 400)
+        self.assertEqual(self.client.get(self.URL, {'desde': 'x'}).status_code, 400)
+
+    def test_solo_un_administrador(self):
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.client.get(self.URL).status_code, 401)
+        self.assertEqual(self.corregir('abono_gasto', 1, self.ayer).status_code, 401)
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.put(self.URL).status_code, 405)
+
+
+class AlertaCuentasPorCobrarTests(TestCase):
+    """La tarjeta "Cuentas por cobrar" de Contabilidad avisa solo de lo que sigue en estado pendiente."""
+
+    URL = '/api/cuentas-por-cobrar/'
+
+    def setUp(self):
+        admin_rol, _ = VGRol.objects.get_or_create(nombre_role='Administrador')
+        cajera_rol, _ = VGRol.objects.get_or_create(nombre_role='Cajera')
+        mesero_rol, _ = VGRol.objects.get_or_create(nombre_role='Mesero')
+        self.admin = VGUsuario.objects.create_superuser(
+            username='ac_admin', password='claveAc123', cedula='96000060', email='ac@test.test', id_role=admin_rol,
+        )
+        self.cajera = VGUsuario.objects.create_user(
+            username='ac_cajera', password='claveAc123', cedula='96000061', email='acc@test.test', id_role=cajera_rol,
+        )
+        self.mesero = VGUsuario.objects.create_user(
+            username='ac_mesero', password='claveAc123', cedula='96000062', email='acm@test.test', id_role=mesero_rol,
+        )
+        self.metodo = VGMetodoPago.objects.create(nombre='Efectivo AC', moneda='USD', es_efectivo=True)
+
+    def nota(self, estado, saldo='10'):
+        return VGNotaEntrega.objects.create(
+            metodo_pago=self.metodo, total=Decimal('10'), saldo_pendiente=Decimal(saldo), estado=estado,
+            tasa_cambio_referencia=Decimal('100.0000'),
+        )
+
+    def test_cuenta_solo_las_notas_pendientes_de_pago(self):
+        self.nota('pendiente_pago')
+        self.nota('pendiente_pago')
+        self.nota('abonada_parcial', saldo='4')   # ya tiene un cobro en curso
+        self.nota('pagada', saldo='0')
+        self.nota('anulada', saldo='0')
+        self.client.force_login(self.admin)
+        data = self.client.get(self.URL).json()
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['notas_entrega_pendientes'], 2)
+
+    def test_sin_notas_pendientes_el_conteo_es_cero(self):
+        self.nota('pagada', saldo='0')
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get(self.URL).json()['notas_entrega_pendientes'], 0)
+
+    def test_la_cajera_tambien_lo_ve_y_un_mesero_no(self):
+        self.nota('pendiente_pago')
+        self.client.force_login(self.cajera)
+        self.assertEqual(self.client.get(self.URL).json()['notas_entrega_pendientes'], 1)
+        self.client.force_login(self.mesero)
+        self.assertEqual(self.client.get(self.URL).status_code, 401)

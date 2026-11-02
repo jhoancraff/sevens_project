@@ -1090,6 +1090,10 @@ def cuentas_por_cobrar_view(request):
     return _auth_response({
         'ok': True,
         'ordenes_cobro': [_serialize_orden_cobro(orden) for orden in ordenes],
+        # Notas de entrega a las que no se les ha cobrado nada (las abonadas ya tienen un pago en curso): es lo que
+        # cuenta la alerta de la tarjeta "Cuentas por cobrar" de Contabilidad, junto con las ordenes en 'pendiente'.
+        # Solo el conteo: la lista completa de notas es pesada y no hace falta para la alerta.
+        'notas_entrega_pendientes': VGNotaEntrega.objects.filter(estado='pendiente_pago').count(),
         # Lo que Cashea aún no ha pagado: no es una deuda de un cliente, pero sí dinero por cobrar.
         'cashea_por_cobrar': {'total_usd': str(cashea['total_usd']), 'cantidad': cashea['cantidad']},
     })

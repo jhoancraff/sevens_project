@@ -61,6 +61,9 @@ import ChefRecommendationsPage from './ChefRecommendationsPage';
 import CheckoutPage from './CheckoutPage';
 import AnalystComprasBorradorPage from './AnalystComprasBorradorPage';
 import AnalystAjusteInventarioPage from './AnalystAjusteInventarioPage';
+import AnalystAjusteInventarioHojaPage from './AnalystAjusteInventarioHojaPage';
+import AnalystCorreccionesFechaPage from './AnalystCorreccionesFechaPage';
+import AnalystAlertasCostosPage from './AnalystAlertasCostosPage';
 import CuentasPorCobrarPage from './CuentasPorCobrarPage';
 import CuentasPorPagarPage from './CuentasPorPagarPage';
 import AnalystGastosPage from './AnalystGastosPage';
@@ -1084,6 +1087,11 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             onBack={goBackView}
             onVerComprobante={(tipo, documentoId, abonoId) => goToView(`comprobante-pago:${tipo}:${documentoId}:${abonoId}`)}
           />
+        ) : activeView === 'correcciones-fecha' ? (
+          <AnalystCorreccionesFechaPage
+            isMobile={isMobile}
+            onBack={goBackView}
+          />
         ) : activeView === 'gastos-operativos' ? (
           <AnalystGastosPage
             isMobile={isMobile}
@@ -1336,6 +1344,13 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             onActivosCategories={() => goToView('admin-activos-categories')}
             onGeneral={() => goToView('admin-inventario-general')}
             onMovimientos={() => goToView('admin-inventario-movimientos')}
+            onViewAlerts={() => goToView('admin-alertas-costos')}
+          />
+        ) : activeView === 'admin-alertas-costos' ? (
+          <AnalystAlertasCostosPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onEditIngredient={(ingredientId) => goToView(`admin-ingredients-edit:${ingredientId}`)}
           />
         ) : activeView === 'admin-inventario-movimientos' ? (
           <AnalystInventarioMovimientosPage
@@ -1368,6 +1383,13 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
         ) : activeView === 'admin-ingredients-ajuste' ? (
           <AnalystAjusteInventarioPage
             isMobile={isMobile}
+            onBack={goBackView}
+            onOpenHoja={(ajusteId) => goToView(`admin-ingredients-ajuste:${ajusteId}`)}
+          />
+        ) : activeView.startsWith('admin-ingredients-ajuste:') ? (
+          <AnalystAjusteInventarioHojaPage
+            isMobile={isMobile}
+            ajusteId={activeView.split(':')[1] || ''}
             onBack={goBackView}
           />
         ) : activeView === 'admin-ingredients-create' ? (

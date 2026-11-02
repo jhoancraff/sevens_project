@@ -64,6 +64,14 @@ const GridIcon = () => (
   </svg>
 );
 
+const AlertIcon = () => (
+  <svg {...iconProps}>
+    <path d="M12 3 2 20h20L12 3Z" />
+    <path d="M12 10v4" />
+    <path d="M12 17h0" />
+  </svg>
+);
+
 const MovementIcon = () => (
   <svg {...iconProps}>
     <path d="M7 4v16" />
@@ -84,6 +92,10 @@ const grupos = [
       { id: 'view', title: 'Ver inventario actual', detalle: 'Stock, costos, categorías y PDF', icon: StockIcon },
       { id: 'adjust', title: 'Ajuste de inventario', detalle: 'Corregir el stock tras un conteo', icon: AdjustIcon },
       { id: 'categories', title: 'Categorías de inventario', detalle: 'Condimentos, carnes, granos, bolsas...', icon: TagIcon },
+      {
+        id: 'alertas', title: 'Alertas de precios', detalle: 'Cambios fuertes en el costo de un ingrediente', icon: AlertIcon,
+        badgeKey: 'alertasPrecio', badgeTexto: 'alertas pendientes', badgeTitulo: 'Alertas de precio pendientes de revisión',
+      },
     ],
   },
   {
@@ -106,9 +118,10 @@ const grupos = [
 
 function AnalystInventoryHubPage({
   isMobile, onBack, onCreate, onViewInventory, onAdjustInventory, onCategories,
-  onActivos, onActivosCategories, onGeneral, onMovimientos,
+  onActivos, onActivosCategories, onGeneral, onMovimientos, onViewAlerts,
 }) {
   const [bajoMinimo, setBajoMinimo] = useState(0);
+  const [alertasPrecio, setAlertasPrecio] = useState(0);
 
   // Aviso (como los de Contabilidad): cuántos utensilios o dotaciones están en su mínimo o por debajo.
   useEffect(() => {
@@ -126,11 +139,22 @@ function AnalystInventoryHubPage({
     cargar();
   }, []);
 
+  // Cuantas alertas de precio de ingredientes esperan revision (ver Alertas de precios).
+  useEffect(() => {
+    let cancelado = false;
+    fetch('/api/admin/alertas-costos/?limite=1', { credentials: 'include', cache: 'no-store' })
+      .then((respuesta) => respuesta.json().catch(() => ({})))
+      .then((json) => { if (!cancelado && json.ok) setAlertasPrecio(Number(json.pendientes) || 0); })
+      .catch(() => {});
+    return () => { cancelado = true; };
+  }, []);
+
   const handlers = {
     create: onCreate, view: onViewInventory, adjust: onAdjustInventory, categories: onCategories,
     activos: onActivos, 'activos-categories': onActivosCategories, general: onGeneral, movimientos: onMovimientos,
+    alertas: onViewAlerts,
   };
-  const badges = { bajoMinimo };
+  const badges = { bajoMinimo, alertasPrecio };
 
   const renderTile = (opcion) => {
     const Icono = opcion.icon;
@@ -142,14 +166,14 @@ function AnalystInventoryHubPage({
         className="vg-inv-tile"
         onClick={handlers[opcion.id]}
         style={tileStyle}
-        aria-label={badge > 0 ? `${opcion.title}, ${badge} bajo el mínimo` : opcion.title}
+        aria-label={badge > 0 ? `${opcion.title}, ${badge} ${opcion.badgeTexto || 'bajo el mínimo'}` : opcion.title}
       >
         <span style={tileIconStyle} aria-hidden="true"><Icono /></span>
         <span style={tileTextStyle}>
           <span style={tileTitleStyle}>{opcion.title}</span>
           <span style={tileDetailStyle}>{opcion.detalle}</span>
         </span>
-        {badge > 0 ? <span style={tileBadgeStyle} title="Artículos en su mínimo o por debajo">{badge}</span> : null}
+        {badge > 0 ? <span style={tileBadgeStyle} title={opcion.badgeTitulo || 'Artículos en su mínimo o por debajo'}>{badge}</span> : null}
         <span style={tileChevronStyle} aria-hidden="true">›</span>
       </button>
     );

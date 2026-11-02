@@ -461,10 +461,10 @@ def cashea_por_cobrar_total():
 
 
 def gastos_efectivo_dia(fecha):
-    """Suma de VGAbonoGasto en `fecha` pagados con un metodo que cuenta como efectivo fisico."""
+    """Suma de VGAbonoGasto pagados en `fecha` (fecha_abono, el dia real del pago) con un metodo que cuenta como efectivo fisico."""
     total = (
         VGAbonoGasto.objects
-        .filter(fecha_pago__date=fecha, metodo_pago__es_efectivo=True, gasto__inhabilitado=False)
+        .filter(fecha_abono=fecha, metodo_pago__es_efectivo=True, gasto__inhabilitado=False)
         .aggregate(total=Sum('monto'))
         .get('total')
     )
@@ -529,7 +529,7 @@ def efectivo_esperado_por_moneda(fecha):
 
     for abono in (
         VGAbonoGasto.objects
-        .filter(fecha_pago__date=fecha, metodo_pago__es_efectivo=True, gasto__inhabilitado=False)
+        .filter(fecha_abono=fecha, metodo_pago__es_efectivo=True, gasto__inhabilitado=False)
         .select_related('metodo_pago')
     ):
         if abono.metodo_pago.moneda == 'VES':
@@ -893,19 +893,19 @@ def disponibilidad_por_cuenta(fecha):
         else:
             saldo_bs_incompleto.add(ingreso.metodo_pago_id)
 
-    for abono in VGAbonoGasto.objects.filter(fecha_pago__date__lte=fecha, gasto__inhabilitado=False).select_related('metodo_pago'):
+    for abono in VGAbonoGasto.objects.filter(fecha_abono__lte=fecha, gasto__inhabilitado=False).select_related('metodo_pago'):
         if abono.metodo_pago.moneda != 'VES':
             continue
-        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(timezone.localtime(abono.fecha_pago).date())
+        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(abono.fecha_abono)
         if tasa is not None:
             saldo_bs_por_metodo[abono.metodo_pago_id] = saldo_bs_por_metodo.get(abono.metodo_pago_id, Decimal('0')) - _monto_bs(abono.monto, tasa)
         else:
             saldo_bs_incompleto.add(abono.metodo_pago_id)
 
-    for abono in VGAbonoCompra.objects.filter(fecha_pago__date__lte=fecha).exclude(compra__estado='cancelado').select_related('metodo_pago'):
+    for abono in VGAbonoCompra.objects.filter(fecha_abono__lte=fecha).exclude(compra__estado='cancelado').select_related('metodo_pago'):
         if abono.metodo_pago.moneda != 'VES':
             continue
-        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(timezone.localtime(abono.fecha_pago).date())
+        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(abono.fecha_abono)
         if tasa is not None:
             saldo_bs_por_metodo[abono.metodo_pago_id] = saldo_bs_por_metodo.get(abono.metodo_pago_id, Decimal('0')) - _monto_bs(abono.monto, tasa)
         else:
@@ -944,10 +944,10 @@ def disponibilidad_por_cuenta(fecha):
         VGIngresoExtra.objects.filter(fecha_creacion__date__lte=fecha)
     )
     gastos_por_metodo = _totales_por_metodo(
-        VGAbonoGasto.objects.filter(fecha_pago__date__lte=fecha, gasto__inhabilitado=False)
+        VGAbonoGasto.objects.filter(fecha_abono__lte=fecha, gasto__inhabilitado=False)
     )
     compras_por_metodo = _totales_por_metodo(
-        VGAbonoCompra.objects.filter(fecha_pago__date__lte=fecha).exclude(compra__estado='cancelado')
+        VGAbonoCompra.objects.filter(fecha_abono__lte=fecha).exclude(compra__estado='cancelado')
     )
     consignado_acumulado = (
         VGConsignacionCaja.objects
@@ -1106,12 +1106,12 @@ def _movimientos_banco_mes(anio, mes, metodo_pago_ids):
       fecha real — se usa tal cual, convertido siempre a hora local
       (timezone.localtime) para nunca extraer la fecha de un datetime en
       UTC crudo.
-    - Salidas por gasto operativo (VGAbonoGasto): un gasto se puede cargar
-      al sistema dias despues de haber pasado de verdad (el analista carga
-      una semana atrasada de una sola vez) — su timestamp automatico de
-      creacion NO sirve. Se usa VGGasto.fecha_gasto (el campo manual que el
-      analista escribe), nunca el momento en que se registro el abono; por
-      eso esas filas no traen una 'hora' real que mostrar.
+    - Salidas por gasto operativo (VGAbonoGasto) y por compra (VGAbonoCompra):
+      un pago se puede cargar al sistema dias despues de haber pasado de
+      verdad — su timestamp automatico (fecha_pago) NO sirve. Se usa
+      fecha_abono (el dia real que elige quien lo registra, ver
+      fechas_registro.py). Traen 'hora' real solo si se registraron ese
+      mismo dia.
     - Transferencias entre cuentas propias (VGTransferenciaCuenta): entrada
       en la cuenta destino, salida en la cuenta origen — su campo `fecha`
       ya es un DateField sin hora.
@@ -1199,16 +1199,17 @@ def _movimientos_banco_mes(anio, mes, metodo_pago_ids):
     for abono in (
         VGAbonoGasto.objects
         .filter(
-            metodo_pago_id__in=ids, gasto__fecha_gasto__gte=desde, gasto__fecha_gasto__lte=hasta,
+            metodo_pago_id__in=ids, fecha_abono__gte=desde, fecha_abono__lte=hasta,
             gasto__inhabilitado=False,
         )
         .select_related('gasto', 'metodo_pago')
     ):
-        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(abono.gasto.fecha_gasto)
+        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(abono.fecha_abono)
+        registrado = timezone.localtime(abono.fecha_pago)
         movimientos.append({
-            'fecha': abono.gasto.fecha_gasto,
+            'fecha': abono.fecha_abono,
             'tipo': 'salida',
-            'hora': None,
+            'hora': registrado.time() if registrado.date() == abono.fecha_abono else None,
             'monto_usd': abono.monto,
             'monto_local': (abono.monto * tasa) if tasa else None,
             'metodo_pago': abono.metodo_pago.nombre,
@@ -1219,16 +1220,16 @@ def _movimientos_banco_mes(anio, mes, metodo_pago_ids):
 
     for abono in (
         VGAbonoCompra.objects
-        .filter(metodo_pago_id__in=ids, fecha_pago__date__gte=desde, fecha_pago__date__lte=hasta)
+        .filter(metodo_pago_id__in=ids, fecha_abono__gte=desde, fecha_abono__lte=hasta)
         .exclude(compra__estado='cancelado')
         .select_related('compra', 'metodo_pago')
     ):
-        fecha_local = timezone.localtime(abono.fecha_pago)
-        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(fecha_local.date())
+        tasa = abono.tasa_cambio_referencia or tasa_para_fecha(abono.fecha_abono)
+        registrado = timezone.localtime(abono.fecha_pago)
         movimientos.append({
-            'fecha': fecha_local.date(),
+            'fecha': abono.fecha_abono,
             'tipo': 'salida',
-            'hora': fecha_local.time(),
+            'hora': registrado.time() if registrado.date() == abono.fecha_abono else None,
             'monto_usd': abono.monto,
             'monto_local': (abono.monto * tasa) if tasa else None,
             'metodo_pago': abono.metodo_pago.nombre,
