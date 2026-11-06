@@ -126,6 +126,15 @@ from .conciliacion_bancaria_views import (
     conciliacion_reabrir_cierre_view,
     conciliacion_reverso_view,
 )
+from .cierre_turno_views import (
+    admin_cierre_turno_config_view,
+    cierre_turno_cerrar_view,
+    cierre_turno_cierres_view,
+    cierre_turno_estado_view,
+    cierre_turno_pendientes_view,
+    cierre_turno_acta_pdf_view,
+    cierre_turno_imprimir_view,
+)
 from .contabilidad_views import (
     admin_ingresos_no_facturados_view,
     admin_lotes_pos_view,
@@ -281,6 +290,15 @@ urlpatterns = [
     # --- Administracion: metodos de pago e ingresos extra ------------------
     path('admin/metodos-pago/', admin_metodos_pago_view, name='admin_metodos_pago'),
     path('admin/lotes-pos/', admin_lotes_pos_view, name='admin_lotes_pos'),
+
+    # --- Cierre de turno por cajera (ver cierre_turno.py) --------------------
+    path('cierre-turno/estado/', cierre_turno_estado_view, name='cierre_turno_estado'),
+    path('cierre-turno/pendientes/', cierre_turno_pendientes_view, name='cierre_turno_pendientes'),
+    path('cierre-turno/cerrar/', cierre_turno_cerrar_view, name='cierre_turno_cerrar'),
+    path('cierre-turno/cierres/', cierre_turno_cierres_view, name='cierre_turno_cierres'),
+    path('cierre-turno/imprimir/', cierre_turno_imprimir_view, name='cierre_turno_imprimir'),
+    path('cierre-turno/acta-pdf/', cierre_turno_acta_pdf_view, name='cierre_turno_acta_pdf'),
+    path('admin/cierre-turno/config/', admin_cierre_turno_config_view, name='admin_cierre_turno_config'),
     path('admin/cashea/pendientes/', cashea_pendientes_view, name='cashea_pendientes'),
     path('admin/cashea/liquidaciones/', liquidaciones_cashea_view, name='cashea_liquidaciones'),
     path('contabilidad/ingresos-extra/', ingresos_extra_view, name='ingresos_extra'),
