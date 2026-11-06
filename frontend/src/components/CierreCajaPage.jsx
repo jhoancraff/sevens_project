@@ -19,7 +19,7 @@ function todayIso() {
 // Pantalla a la que lleva el boton "Cerrar caja" del cuadre diario. Ya no se
 // cuenta el efectivo a mano: aqui se revisan/cierran los lotes de punto de venta
 // (cierre parcial o autoclausura al cerrar) y se cierra la caja del dia.
-function CierreCajaPage({ isMobile, onBack }) {
+function CierreCajaPage({ isMobile, onBack, onCerrarTurnoDe }) {
   const [fecha] = useState(() => getFechaSeleccionada(todayIso()));
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -57,6 +57,9 @@ function CierreCajaPage({ isMobile, onBack }) {
     : [];
   const lotesAbiertosConCobros = lotesAbiertos.filter((lote) => lote.num_pagos > 0);
   const lotesCerradosDia = pos ? pos.lotes_dia.filter((lote) => lote.estado !== 'abierto') : [];
+  // Con el cierre de turno activado, la caja del dia no se cierra hasta que cada quien cierre su turno.
+  const turnosPendientes = data?.cierre_turno_pendiente || null;
+  const faltanTurnos = Boolean(turnosPendientes && turnosPendientes.total > 0);
 
   const handleCerrarLote = async (lote) => {
     setSaving(true);
@@ -267,11 +270,28 @@ function CierreCajaPage({ isMobile, onBack }) {
                     Al cerrar la caja se cerrarán automáticamente {lotesAbiertosConCobros.length} lote(s) abiertos de punto de venta.
                   </div>
                 ) : null}
+                {faltanTurnos ? (
+                  <div style={turnosPendientesStyle}>
+                    <div style={{ fontWeight: 800 }}>
+                      Primero hay que cerrar los turnos: quedan {turnosPendientes.total} transacción(es) sin cierre de turno.
+                    </div>
+                    {turnosPendientes.por_titular.map((fila) => (
+                      <div key={fila.titular_id} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span>{fila.titular_nombre}: {fila.cantidad}</span>
+                        {onCerrarTurnoDe ? (
+                          <button type="button" onClick={() => onCerrarTurnoDe(fila.titular_id)} style={secondaryButtonStyle}>
+                            Cerrar su turno
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 <label style={{ display: 'grid', gap: 6, color: 'var(--vg-f-f2e6e6)' }}>
                   Notas (opcional)
                   <input type="text" value={notas} onChange={(event) => setNotas(event.target.value)} style={inputStyle} />
                 </label>
-                <button type="submit" disabled={saving} style={dangerButtonStyle}>
+                <button type="submit" disabled={saving || faltanTurnos} style={{ ...dangerButtonStyle, ...(faltanTurnos ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}>
                   {saving ? 'Cerrando...' : 'Cerrar caja del día'}
                 </button>
               </form>
@@ -299,6 +319,7 @@ const loteCardStyle = { display: 'grid', gap: 8, padding: '12px 14px', borderRad
 const loteHeaderStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' };
 const loteDatosStyle = { display: 'flex', gap: 14, flexWrap: 'wrap', color: 'var(--vg-f-d2c3c3)', fontSize: 13 };
 const badgeStyle = { fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 999, textTransform: 'uppercase', letterSpacing: '0.04em' };
+const turnosPendientesStyle = { display: 'grid', gap: 8, padding: 12, borderRadius: 12, border: '1px dashed var(--vg-f-ffcf85-a400)', background: 'rgba(255,207,133,0.05)', color: 'var(--vg-f-ffe3a3)' };
 const mutedStyle = { color: 'var(--vg-f-a89999)', fontSize: 12.5 };
 const inputStyle = { borderRadius: 12, border: '1px solid rgba(var(--vg-ink), 0.14)', background: 'var(--vg-s-161010)', padding: '10px 12px', color: 'var(--vg-text-strong)' };
 const secondaryButtonStyle = { border: '1px solid rgba(var(--vg-ink), 0.18)', borderRadius: 999, padding: '9px 16px', background: 'rgba(var(--vg-ink), 0.05)', color: 'var(--vg-text-strong)', fontWeight: 700, cursor: 'pointer', width: 'fit-content' };

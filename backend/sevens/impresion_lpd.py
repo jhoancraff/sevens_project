@@ -824,6 +824,137 @@ def _build_cierre_lote_pos_bytes(lote, es_reimpresion=False):
     return bytes(out)
 
 
+# ---------------------------------------------------------------------------
+# Acta de cierre de turno
+# ---------------------------------------------------------------------------
+def _monto_acta(linea):
+    """Bs en las cuentas en bolivares (lo que se compara contra el banco), dolares en las demas."""
+    if linea['moneda'] == 'VES' and linea['monto_bs'] is not None:
+        return f'Bs.{_formatear_bs(linea["monto_bs"])}'
+    return f'${linea["monto_usd"]:.2f}'
+
+
+def _lineas_ajustadas(out, texto, sangria='  '):
+    """Texto largo en varias lineas de LINE_WIDTH, con sangria (nota de una transaccion, novedad)."""
+    for renglon in textwrap.wrap(str(texto), LINE_WIDTH - len(sangria)) or ['']:
+        out += _text(f'{sangria}{renglon}') + FEED
+
+
+def _build_acta_cierre_turno_bytes(datos, es_reimpresion=False):
+    """
+    Ticket del ACTA DE CIERRE DE TURNO: quien cerro y de quien era el turno, cada
+    transaccion por cuenta (las que "no llegaron" bien marcadas, con su nota), los
+    totales por cuenta, la novedad y la linea de firma. Es la constancia que se
+    lleva la cajera; el detalle completo y firmado va en el PDF A4.
+    """
+    datos_fiscales = VGDatosFiscalesEmisor.objects.first()
+    titulo = 'ACTA DE CIERRE DE TURNO' + (' (REIMPRESION)' if es_reimpresion else '')
+
+    out = bytearray()
+    out += INIT
+    out += KANJI_OFF
+    out += ESC_POS_WCP1252
+    out += ALIGN_CENTER
+    out += BOLD_ON
+    out += _text((datos_fiscales.nombre_comercial if datos_fiscales and datos_fiscales.nombre_comercial else None) or 'SEVEN') + FEED
+    out += _text(titulo) + FEED
+    out += _text(datos['codigo']) + FEED
+    out += BOLD_OFF
+    out += ALIGN_LEFT
+    out += _text('-' * LINE_WIDTH) + FEED
+    out += _text(f'Turno de: {datos["titular_nombre"]}'[:LINE_WIDTH]) + FEED
+    if datos['tipo'] != 'normal':
+        out += BOLD_ON
+        out += _text(f'** {datos["tipo_label"].upper()} **'[:LINE_WIDTH]) + FEED
+        out += BOLD_OFF
+    if datos['cerrado_por_nombre'] != datos['titular_nombre']:
+        out += _text(f'Cerro: {datos["cerrado_por_nombre"]}'[:LINE_WIDTH]) + FEED
+    out += _text(f'Cierre: {datos["fecha_cierre"]:%d/%m/%Y %H:%M}') + FEED
+    if datos['desde'] and datos['hasta']:
+        out += _text(f'Del {datos["desde"]:%d/%m %H:%M}') + FEED
+        out += _text(f'al  {datos["hasta"]:%d/%m %H:%M}') + FEED
+    out += _text('-' * LINE_WIDTH) + FEED
+
+    for grupo in datos['grupos']:
+        out += BOLD_ON
+        out += _text(f'{grupo["nombre"]} ({len(grupo["lineas"])})'[:LINE_WIDTH]) + FEED
+        out += BOLD_OFF
+        for linea in grupo['lineas']:
+            etiqueta = linea['documento'] or linea['concepto']
+            out += _text(_fila_izq_der(f'{linea["fecha"]:%H:%M} {etiqueta}', _monto_acta(linea))) + FEED
+            detalle = linea['cliente']
+            if linea['referencia']:
+                detalle = f'{detalle[:14]} Ref:{linea["referencia"][:12]}'.strip()
+            if detalle:
+                out += _text(f'  {detalle}'[:LINE_WIDTH]) + FEED
+            if not linea['llego']:
+                out += BOLD_ON
+                out += _text('  *** NO LLEGO ***') + FEED
+                out += BOLD_OFF
+                if linea['nota']:
+                    _lineas_ajustadas(out, f'Nota: {linea["nota"]}', '  ')
+            if linea['modificaciones']:
+                out += _text('  (MODIFICADO DESPUES DEL CIERRE)') + FEED
+        if grupo['moneda'] == 'VES' and grupo['total_bs']:
+            total = f'Bs.{_formatear_bs(grupo["total_bs"])}'
+        else:
+            total = f'${grupo["total_usd"]:.2f}'
+        out += _text(_fila_izq_der('  Total', total)) + FEED
+        out += _text('-' * LINE_WIDTH) + FEED
+
+    out += BOLD_ON
+    out += _text(_fila_izq_der('Transacciones', datos['total_lineas'])) + FEED
+    out += BOLD_OFF
+    out += _text(_fila_izq_der('Llegaron', datos['total_confirmadas'])) + FEED
+    out += _text(_fila_izq_der('No llegaron', datos['total_no_llegaron'])) + FEED
+    if datos['total_no_llegaron']:
+        out += _text(_fila_izq_der('Monto que no llego', f'${datos["usd_no_llegaron"]:.2f}')) + FEED
+    out += _text('-' * LINE_WIDTH) + FEED
+    out += BOLD_ON
+    out += _text('NOVEDAD') + FEED
+    out += BOLD_OFF
+    _lineas_ajustadas(out, datos['novedad'] or 'Sin novedad.', '')
+    out += _text('-' * LINE_WIDTH) + FEED
+    out += FEED + FEED
+    out += _text('_' * LINE_WIDTH) + FEED
+    out += ALIGN_CENTER
+    out += _text(f'Firma: {datos["titular_nombre"]}'[:LINE_WIDTH]) + FEED
+    out += _text('Documento sin efecto fiscal') + FEED
+    out += ALIGN_LEFT
+    out += FEED + FEED + FEED + FEED
+    out += CUT
+    return bytes(out)
+
+
+def imprimir_acta_cierre_turno(cierre, es_reimpresion=False):
+    """
+    Imprime (o reimprime) el acta de un cierre de turno en la impresora de caja. Devuelve
+    (exito, motivo) como imprimir_cierre_lote_pos: el turno ya quedo cerrado, un fallo de
+    impresora nunca debe tumbarlo.
+    """
+    from .cierre_turno import datos_del_acta  # import tardio: evita ciclos entre modulos
+
+    config = VGImpresoraCaja.obtener_config()
+    if config is None or not config.activo:
+        return False, 'No hay una impresora de caja activa configurada.'
+    if not config.ip or not config.cola:
+        logger.warning('Impresora de caja activa pero sin IP/cola configurada; se omite el acta de turno.')
+        return False, 'La impresora de caja no tiene IP o cola configurada.'
+
+    destino = f'{config.ip}:{config.puerto} (cola "{config.cola}")'
+    try:
+        ticket = _build_acta_cierre_turno_bytes(datos_del_acta(cierre), es_reimpresion=es_reimpresion)
+        enviar_trabajo_lpd(
+            config.ip, config.puerto, config.cola, ticket,
+            job_id=cierre.id, nombre_trabajo=f'Acta de turno {cierre.codigo}',
+        )
+        logger.info('Acta de cierre de turno %s enviada a %s', cierre.codigo, destino)
+        return True, None
+    except Exception as exc:
+        logger.exception('No se pudo imprimir el acta de turno %s hacia %s', cierre.codigo, destino)
+        return False, f'No se pudo enviar el trabajo de impresion: {exc}'
+
+
 def imprimir_cierre_lote_pos(lote, es_reimpresion=False):
     """
     Imprime (o reimprime) el cierre de un lote POS en la impresora de caja. Devuelve

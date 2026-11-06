@@ -7,6 +7,8 @@ import ContabilidadPanelPage from './ContabilidadPanelPage';
 import ThemeToggle from './ThemeToggle';
 import ReporteCuadreCajaPage from './ReporteCuadreCajaPage';
 import CierreCajaPage from './CierreCajaPage';
+import CierreTurnoPage from './CierreTurnoPage';
+import CierresTurnoPage from './CierresTurnoPage';
 import LotesPOSPage from './LotesPOSPage';
 import ReporteVentasDiaPage from './ReporteVentasDiaPage';
 import ReporteCuentasPorCobrarPage from './ReporteCuentasPorCobrarPage';
@@ -91,7 +93,7 @@ import useViewHistory from '../hooks/useViewHistory';
 // (no solo las suyas, ver mesas_atendidas_view) y a registrarle una ronda a un
 // mesero desbordado que le pide ayuda — "Agregar ronda a esta mesa" navega a
 // 'orders' con la mesa/cliente precargados (ver handleAddRoundToTable).
-const CAJERA_ALLOWED_VIEWS = ['checkout', 'contabilidad', 'contabilidad-cuadre-caja', 'contabilidad-cierre-caja', 'contabilidad-lotes-pos', 'cuentas-cobrar', 'mesas-atendidas', 'orders', 'pedidos-delivery'];
+const CAJERA_ALLOWED_VIEWS = ['checkout', 'contabilidad', 'contabilidad-cuadre-caja', 'contabilidad-cierre-caja', 'contabilidad-cierre-turno', 'contabilidad-cierres-turno', 'contabilidad-lotes-pos', 'cuentas-cobrar', 'mesas-atendidas', 'orders', 'pedidos-delivery'];
 // Mismas 3 tarjetas que AdminPanelPage oculta (CARTAS_RESTRINGIDAS) — reservadas al
 // dueño real del negocio o al Contador, nunca a un Administrador de rol común.
 const RESTRICTED_ADMIN_VIEWS = ['admin-printers', 'admin-datos-fiscales', 'admin-compras'];
@@ -132,6 +134,10 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
   const [adicionales, setAdicionales] = useState([]);
   const [loadingData, setLoadingData] = useState(true);
   const [readyToBillCount, setReadyToBillCount] = useState(0);
+  // Cierre de turno: lo que alimenta el badge del menu y el aviso fijo "X tiene N sin cerrar".
+  const [cierreTurnoEstado, setCierreTurnoEstado] = useState(null);
+  // Titular preseleccionado al abrir "Cerrar turno" desde el tablero o el aviso (null = el propio usuario).
+  const [cierreTurnoTitularId, setCierreTurnoTitularId] = useState(null);
   const [newOrderPreset, setNewOrderPreset] = useState(null);
   const [mesaAutoAbrir, setMesaAutoAbrir] = useState(null);
 
@@ -373,6 +379,46 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [puedeVerCobro]);
+
+  // Cierre de turno: mismos tres roles que cobran (cajera/admin/contador). Se reconsulta al
+  // cambiar de pantalla para que el badge y el aviso se actualicen al cerrar un turno.
+  useEffect(() => {
+    if (!puedeVerCobro) {
+      setCierreTurnoEstado(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const loadCierreTurnoEstado = async () => {
+      try {
+        const response = await fetch('/api/cierre-turno/estado/', { credentials: 'include', cache: 'no-store' });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok || cancelled) {
+          return;
+        }
+        setCierreTurnoEstado(data);
+      } catch (error) {
+        // Se conserva el ultimo valor conocido ante un fallo de red pasajero.
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        loadCierreTurnoEstado();
+      }
+    };
+
+    loadCierreTurnoEstado();
+    const pollId = window.setInterval(loadCierreTurnoEstado, 30000);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(pollId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [puedeVerCobro, activeView]);
 
   useEffect(() => {
     // Correcciones de permisos, no navegación real del usuario — replaceView
@@ -728,6 +774,47 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           </button>
         ) : null}
 
+        {(isCajera || isAdmin) ? (
+          <button
+            type="button"
+            onClick={() => {
+              setCierreTurnoTitularId(null);
+              goToView('contabilidad-cierre-turno');
+              if (isSidebarOverlayMode) {
+                setIsSidebarOpen(false);
+              }
+            }}
+            className="vg-sidebar-btn"
+            style={sidebarButtonStyle(activeView === 'contabilidad-cierre-turno')}
+          >
+            <span aria-hidden="true" style={sidebarIconWrapStyle(activeView === 'contabilidad-cierre-turno')}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7v5l3 2" />
+              </svg>
+            </span>
+            <span style={{ flex: 1, textAlign: 'left' }}>Cerrar turno</span>
+            {cierreTurnoEstado?.activo ? (
+              <span
+                style={pendingBadgeStyle(false)}
+                title={`${cierreTurnoEstado.mis_pendientes} transacción(es) tuyas sin cerrar`}
+              >
+                {cierreTurnoEstado.mis_pendientes}
+              </span>
+            ) : null}
+            {cierreTurnoEstado?.activo && cierreTurnoEstado.pendientes_ajenos?.length > 0 ? (
+              <span
+                style={avisoAjenosBadgeStyle}
+                title={cierreTurnoEstado.pendientes_ajenos
+                  .map((fila) => `${fila.titular_nombre}: ${fila.cantidad} sin cerrar`)
+                  .join(' · ')}
+              >
+                !
+              </span>
+            ) : null}
+          </button>
+        ) : null}
+
         {isCajera ? (
           <button
             type="button"
@@ -913,6 +1000,37 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
         alignContent: 'start',
         paddingTop: isMobile ? 64 : 0,
       }}>
+        {/* Aviso fijo: alguien (que no soy yo) lleva mas horas sin cerrar que el umbral de cierre tardio,
+            casi seguro se fue sin cerrar. No bloquea nada: se puede seguir cobrando. Antes del umbral,
+            los pendientes de otros solo se ven como "!" en el boton Cerrar turno (es lo normal en pleno turno). */}
+        {puedeVerCobro && cierreTurnoEstado?.activo && activeView !== 'contabilidad-cierre-turno'
+          ? (() => {
+            const abandonados = (cierreTurnoEstado.pendientes_ajenos || []).filter(
+              (fila) => fila.horas_pendiente >= cierreTurnoEstado.umbral_tardio_horas,
+            );
+            if (abandonados.length === 0) {
+              return null;
+            }
+            return (
+              <div role="status" style={avisoCierreTurnoStyle}>
+                <span>
+                  {abandonados.map((fila) => `${fila.titular_nombre} tiene ${fila.cantidad} sin cerrar`).join(' · ')}.
+                  {' '}Puedes seguir cobrando; si se fue sin cerrar, puedes cerrar su turno.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCierreTurnoTitularId(abandonados[0].titular_id);
+                    goToView('contabilidad-cierre-turno');
+                  }}
+                  style={avisoCierreTurnoBotonStyle}
+                >
+                  Ver
+                </button>
+              </div>
+            );
+          })()
+          : null}
         {activeView === 'home' ? (
           <>
             {/* ── Bloque de saludo ── */}
@@ -1173,7 +1291,7 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             isMobile={isMobile}
             onBack={goBackView}
             onNavigate={handleAnalystNavigation}
-            onlyCardIds={isCajera ? ['contabilidad-cuadre-caja', 'contabilidad-lotes-pos', 'cuentas-cobrar'] : null}
+            onlyCardIds={isCajera ? ['contabilidad-cuadre-caja', 'contabilidad-lotes-pos', 'contabilidad-cierres-turno', 'cuentas-cobrar'] : null}
           />
         ) : activeView === 'contabilidad-cuadre-caja' ? (
           <ReporteCuadreCajaPage
@@ -1187,6 +1305,28 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           <CierreCajaPage
             isMobile={isMobile}
             onBack={goBackView}
+            onCerrarTurnoDe={(titularId) => {
+              setCierreTurnoTitularId(titularId);
+              goToView('contabilidad-cierre-turno');
+            }}
+          />
+        ) : activeView === 'contabilidad-cierre-turno' ? (
+          <CierreTurnoPage
+            key={`cierre-turno-${cierreTurnoTitularId ?? 'propio'}`}
+            isMobile={isMobile}
+            onBack={goBackView}
+            onNavigate={handleAnalystNavigation}
+            titularInicialId={cierreTurnoTitularId}
+          />
+        ) : activeView === 'contabilidad-cierres-turno' ? (
+          <CierresTurnoPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            esAdmin={isAdmin}
+            onCerrarTurnoDe={(titularId) => {
+              setCierreTurnoTitularId(titularId);
+              goToView('contabilidad-cierre-turno');
+            }}
           />
         ) : activeView === 'contabilidad-lotes-pos' ? (
           <LotesPOSPage
@@ -1586,6 +1726,45 @@ const sidebarIconWrapStyle = (isPrimary) => ({
   flexShrink: 0,
   width: 20,
 });
+
+const avisoAjenosBadgeStyle = {
+  minWidth: 22,
+  height: 22,
+  borderRadius: 999,
+  display: 'inline-grid',
+  placeItems: 'center',
+  fontSize: 12,
+  fontWeight: 900,
+  color: '#2a1a00',
+  background: '#ffcf85',
+  boxSizing: 'border-box',
+  flexShrink: 0,
+};
+
+const avisoCierreTurnoStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  gap: 12,
+  flexWrap: 'wrap',
+  padding: '10px 14px',
+  borderRadius: 14,
+  border: '1px solid var(--vg-f-ffcf85-a400)',
+  background: 'rgba(255,207,133,0.1)',
+  color: 'var(--vg-f-ffe3a3)',
+  fontWeight: 600,
+  fontSize: 14,
+};
+
+const avisoCierreTurnoBotonStyle = {
+  border: '1px solid var(--vg-f-ffcf85-a400)',
+  borderRadius: 999,
+  padding: '7px 16px',
+  background: 'rgba(255,207,133,0.15)',
+  color: 'var(--vg-f-ffe3a3)',
+  fontWeight: 800,
+  cursor: 'pointer',
+};
 
 const pendingBadgeStyle = (isActive) => ({
   minWidth: 28,

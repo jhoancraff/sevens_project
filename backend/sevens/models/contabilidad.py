@@ -128,6 +128,10 @@ class VGIngresoExtra(VGAuditoria):
     tasa_cambio_referencia = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
     descripcion = models.CharField(max_length=255, blank=True)
     metodo_pago = models.ForeignKey(VGMetodoPago, on_delete=models.PROTECT, related_name="ingresos_extra")
+    cierre_turno = models.ForeignKey(
+        "sevens.VGCierreTurno", on_delete=models.PROTECT, null=True, blank=True, related_name="ingresos_extra",
+        help_text="Cierre de turno que confirmó esta propina/pago extra. Null = pendiente de cierre (ver cierre_turno.py).",
+    )
 
     class Meta:
         db_table = "vg_ingresos_extra"
@@ -279,6 +283,157 @@ class VGCierreCaja(VGAuditoria):
 
     def __str__(self):
         return f"Cierre de caja — {self.fecha}"
+
+
+# ---------------------------------------------------------------------------
+# Cierre de turno por cajera
+# ---------------------------------------------------------------------------
+class VGConfiguracionCierreTurno(VGAuditoria):
+    """
+    Configuración global del cierre de turno (fila única, mismo criterio que
+    VGConfiguracionCosteo.obtener_config()).
+
+    fecha_activacion es el DÍA desde el que cuentan las transacciones como
+    "pendientes de cierre" (desde las 00:00 locales de ese día). Mientras sea
+    None el cierre de turno está inactivo: no hay pendientes y nada bloquea el
+    cierre diario. Así, desplegar la función no hace aparecer de golpe todo el
+    histórico por cerrar.
+
+    umbral_tardio_horas: un cierre del propio titular cuya transacción
+    pendiente más vieja tenga MÁS horas que esto se registra como 'tardio'.
+    """
+    umbral_tardio_horas = models.PositiveIntegerField(
+        default=20, validators=[MinValueValidator(1)],
+        help_text="Horas desde la transacción pendiente más vieja a partir de las cuales el cierre propio se marca como tardío.",
+    )
+    fecha_activacion = models.DateField(
+        null=True, blank=True,
+        help_text="Día desde el que cuentan las transacciones pendientes de cierre. Vacío = cierre de turno inactivo.",
+    )
+
+    class Meta:
+        db_table = "vg_configuracion_cierre_turno"
+        verbose_name = "Configuración de cierre de turno"
+        verbose_name_plural = "Configuración de cierre de turno"
+
+    def __str__(self):
+        if self.fecha_activacion:
+            return f"Cierre de turno activo desde {self.fecha_activacion} (umbral {self.umbral_tardio_horas} h)"
+        return "Cierre de turno inactivo"
+
+    @property
+    def activo(self):
+        return self.fecha_activacion is not None
+
+    @classmethod
+    def obtener_config(cls):
+        config = cls.objects.first()
+        if config is None:
+            config = cls.objects.create()
+        return config
+
+
+class VGCierreTurno(VGAuditoria):
+    """
+    Acta del cierre de turno de UN titular (quien cobró las transacciones): la
+    lista de todo lo que cobró (VGPago que no es de punto de venta + propinas /
+    pagos extra) desde su último cierre, con cada transacción confirmada
+    ("llegó") o marcada "no llegó" por quien cierra.
+
+    titular != cerrado_por cuando otra persona cierra por él (tipo
+    'por_tercero'): las transacciones siguen siendo del titular — conservan su
+    creado_por — y el acta deja los dos nombres y roles. Cualquier usuario que
+    pueda cobrar (cajera, administrador, contador, dueño) puede ser titular o
+    cerrar por otro, con la misma lógica.
+
+    Los nombres/roles se copian al cerrar (snapshot) para que el acta impresa
+    siga igual si después se renombra o elimina un usuario.
+    """
+    TIPOS = [
+        ("normal", "Normal"),
+        ("tardio", "Tardío"),
+        ("por_tercero", "Cerrado por otra persona"),
+    ]
+    numero = models.PositiveIntegerField(unique=True, help_text="Correlativo de la serie 'CIERRE_TURNO'.")
+    tipo = models.CharField(max_length=12, choices=TIPOS)
+    titular = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="cierres_turno_titular",
+    )
+    titular_nombre = models.CharField(max_length=150)
+    titular_rol = models.CharField(max_length=50, blank=True)
+    cerrado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="cierres_turno_cerrados",
+    )
+    cerrado_por_nombre = models.CharField(max_length=150)
+    cerrado_por_rol = models.CharField(max_length=50, blank=True)
+    fecha_cierre = models.DateTimeField()
+    desde = models.DateTimeField(null=True, blank=True, help_text="Hora de la primera transacción incluida.")
+    hasta = models.DateTimeField(null=True, blank=True, help_text="Hora de la última transacción incluida.")
+    novedad = models.TextField(blank=True)
+    total_lineas = models.PositiveIntegerField(default=0)
+    total_confirmadas = models.PositiveIntegerField(default=0)
+    total_no_llegaron = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        db_table = "vg_cierres_turno"
+        verbose_name = "Cierre de turno"
+        verbose_name_plural = "Cierres de turno"
+        ordering = ["-numero"]
+
+    @property
+    def codigo(self):
+        return f"CT-{self.numero:06d}"
+
+    def __str__(self):
+        return f"Cierre de turno #{self.numero} — {self.titular_nombre} ({self.get_tipo_display()})"
+
+
+class VGCierreTurnoLinea(models.Model):
+    """
+    Copia congelada de una transacción en el momento del cierre. Lo que la
+    cajera firmó no cambia aunque después se anule el pago o se mueva de
+    cuenta: eso se detecta comparando contra el original (origen/origen_id),
+    nunca reescribiendo esta fila.
+    """
+    ORIGENES = [
+        ("pago", "Pago"),
+        ("ingreso_extra", "Propina / pago extra"),
+    ]
+    ESTADOS = [
+        ("confirmada", "Llegó"),
+        ("no_llego", "No llegó"),
+    ]
+    cierre = models.ForeignKey(VGCierreTurno, on_delete=models.CASCADE, related_name="lineas")
+    origen = models.CharField(max_length=15, choices=ORIGENES)
+    origen_id = models.PositiveIntegerField()
+    fecha_transaccion = models.DateTimeField()
+    concepto = models.CharField(max_length=255)
+    documento = models.CharField(max_length=80, blank=True)
+    cliente = models.CharField(max_length=300, blank=True)
+    numero_cobro = models.PositiveIntegerField(null=True, blank=True)
+    saldo_posterior = models.DecimalField(max_digits=14, decimal_places=6, null=True, blank=True)
+    referencia = models.CharField(max_length=100, blank=True)
+    metodo_pago = models.ForeignKey(VGMetodoPago, on_delete=models.PROTECT, related_name="lineas_cierre_turno")
+    metodo_pago_nombre = models.CharField(max_length=50)
+    moneda = models.CharField(max_length=3, choices=VGMetodoPago.MONEDAS)
+    es_efectivo = models.BooleanField(default=False)
+    monto_usd = models.DecimalField(max_digits=14, decimal_places=6)
+    monto_bs = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    tasa_cambio_referencia = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)
+    estado = models.CharField(max_length=10, choices=ESTADOS)
+    nota = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "vg_cierres_turno_lineas"
+        verbose_name = "Línea de cierre de turno"
+        verbose_name_plural = "Líneas de cierre de turno"
+        ordering = ["fecha_transaccion", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["origen", "origen_id"], name="una_linea_de_cierre_por_transaccion"),
+        ]
+
+    def __str__(self):
+        return f"{self.get_origen_display()} #{self.origen_id} — {self.get_estado_display()}"
 
 
 class VGConciliacionBancaria(VGAuditoria):
