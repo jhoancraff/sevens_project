@@ -39,6 +39,7 @@ from .lotes_pos import (
     validar_cambio_metodo_pago,
 )
 from .auth_helpers import _auth_response, _is_admin_user, _is_cajera_user
+from .cierre_turno import mensaje_pendientes_cierre_de_caja, pendientes_para_cierre_de_caja
 from .models import (
     VGAbonoCompra,
     VGCierreCaja,
@@ -483,6 +484,14 @@ def _serialize_desglose_caja(desglose):
     return {clave: _serialize_balde(balde) for clave, balde in desglose.items()}
 
 
+def _mensaje_cierre_de_turno_cerrado(registro):
+    """Rechazo a un cambio de cuenta de un cobro/propina que ya quedo en un acta de cierre de turno."""
+    return (
+        f'Este movimiento ya está en el cierre de turno CT-{registro.cierre_turno.numero:06d}: '
+        'solo un administrador puede cambiar su cuenta (el cambio queda marcado como modificado después del cierre).'
+    )
+
+
 def _serialize_cierre_caja(cierre):
     if cierre is None:
         return None
@@ -656,6 +665,8 @@ def reporte_cuadre_caja_view(request):
             },
             'cierre': _serialize_cierre_caja(cierre),
             'pos': _bloque_pos_cuadre(fecha, disponibilidad_real),
+            # Cierres de turno que faltan para poder cerrar la caja de este dia.
+            'cierre_turno_pendiente': pendientes_para_cierre_de_caja(fecha) if cierre is None else None,
         })
 
     try:
@@ -701,6 +712,8 @@ def reporte_cuadre_caja_view(request):
             metodo_anterior = pago.metodo_pago
             if metodo_nuevo.id == pago.metodo_pago_id:
                 return _auth_response({'ok': False, 'message': 'Ya está en esa cuenta.'}, status=400)
+            if pago.cierre_turno_id and not _is_admin_user(request.user):
+                return _auth_response({'ok': False, 'message': _mensaje_cierre_de_turno_cerrado(pago)}, status=400)
 
             # Un cobro que ya esta en un lote POS cerrado/acreditado no se mueve de
             # cuenta sin reabrir el lote antes (su dinero ya esta en una maquina y un banco).
@@ -733,6 +746,8 @@ def reporte_cuadre_caja_view(request):
         metodo_anterior = ingreso.metodo_pago
         if metodo_nuevo.id == ingreso.metodo_pago_id:
             return _auth_response({'ok': False, 'message': 'Ya está en esa cuenta.'}, status=400)
+        if ingreso.cierre_turno_id and not _is_admin_user(request.user):
+            return _auth_response({'ok': False, 'message': _mensaje_cierre_de_turno_cerrado(ingreso)}, status=400)
 
         ingreso.metodo_pago = metodo_nuevo
         update_fields = ['metodo_pago']
@@ -786,6 +801,16 @@ def reporte_cuadre_caja_view(request):
         # acepta si alguien lo manda explicitamente (clientes viejos).
         if VGCierreCaja.objects.filter(fecha=fecha).exists():
             return _auth_response({'ok': False, 'message': 'La caja de ese dia ya esta cerrada.'}, status=400)
+
+        # Con el cierre de turno activado, la caja del dia no se cierra mientras quede
+        # algo sin cerrar por turno: es lo que garantiza que nada queda sin revisar.
+        pendientes_turno = pendientes_para_cierre_de_caja(fecha)
+        if pendientes_turno['total']:
+            return _auth_response({
+                'ok': False,
+                'message': mensaje_pendientes_cierre_de_caja(pendientes_turno),
+                'cierre_turno_pendiente': pendientes_turno,
+            }, status=400)
 
         efectivo_contado_raw = data.get('efectivo_contado_final')
         contado_explicito = efectivo_contado_raw not in (None, '')
