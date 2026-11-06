@@ -15,7 +15,15 @@ function formatMonto(value) {
   return number.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function ReporteCuadreCajaPage({ isMobile, onBack, onNavigate, backLabel = '← Volver a Contabilidad', puedeVerCashea = true }) {
+function ReporteCuadreCajaPage({
+  isMobile,
+  onBack,
+  onNavigate,
+  backLabel = '← Volver a Contabilidad',
+  puedeVerCashea = true,
+  onCerrarTurno = null,
+  cierreTurnoEstado = null,
+}) {
   const [fecha, setFecha] = useState(() => getFechaSeleccionada(todayIso()));
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -57,9 +65,34 @@ function ReporteCuadreCajaPage({ isMobile, onBack, onNavigate, backLabel = '← 
         <button type="button" onClick={onBack} style={backButtonStyle}>
           {backLabel}
         </button>
-        <button type="button" onClick={() => window.print()} style={printButtonStyle}>
-          Imprimir / Guardar PDF
-        </button>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+          {onCerrarTurno ? (
+            <button type="button" onClick={onCerrarTurno} style={cerrarTurnoButtonStyle}>
+              Cerrar turno
+              {cierreTurnoEstado?.activo ? (
+                <span
+                  style={cerrarTurnoBadgeStyle}
+                  title={`${cierreTurnoEstado.mis_pendientes} transacción(es) tuyas sin cerrar`}
+                >
+                  {cierreTurnoEstado.mis_pendientes}
+                </span>
+              ) : null}
+              {cierreTurnoEstado?.activo && cierreTurnoEstado.pendientes_ajenos?.length > 0 ? (
+                <span
+                  style={cerrarTurnoAjenosStyle}
+                  title={cierreTurnoEstado.pendientes_ajenos
+                    .map((fila) => `${fila.titular_nombre}: ${fila.cantidad} sin cerrar`)
+                    .join(' · ')}
+                >
+                  !
+                </span>
+              ) : null}
+            </button>
+          ) : null}
+          <button type="button" onClick={() => window.print()} style={printButtonStyle}>
+            Imprimir / Guardar PDF
+          </button>
+        </div>
       </div>
 
       <div style={headerRowStyle(isMobile)}>
@@ -354,6 +387,9 @@ const verDetalleLinkStyle = { border: 'none', background: 'none', color: 'var(--
 const posTableStyle = { display: 'grid', gridTemplateColumns: 'minmax(110px,0.8fr) minmax(150px,1fr) minmax(120px,0.8fr) minmax(130px,0.8fr)', minWidth: 520, border: '1px solid rgba(var(--vg-ink), 0.08)', borderRadius: 14, overflow: 'hidden' };
 const posBadgeStyle = { fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 999, textTransform: 'uppercase', letterSpacing: '0.04em', width: 'fit-content' };
 const dangerButtonStyle = { border: '1px solid var(--vg-f-ff7e7e-a400)', borderRadius: 999, padding: '12px 16px', background: 'rgba(145,33,33,0.35)', color: 'var(--vg-f-ffd3d3)', fontWeight: 700, cursor: 'pointer' };
+const cerrarTurnoButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 8, border: '1px solid var(--vg-f-ffb9b9-a900)', borderRadius: 999, padding: '10px 18px', background: 'var(--vg-f-ff9d9d)', color: '#2a0f0f', fontWeight: 800, cursor: 'pointer' };
+const cerrarTurnoBadgeStyle = { minWidth: 22, height: 22, padding: '0 6px', borderRadius: 999, display: 'inline-grid', placeItems: 'center', fontSize: 12, fontWeight: 800, color: 'var(--vg-text-strong)', background: 'rgba(0,0,0,0.55)', boxSizing: 'border-box' };
+const cerrarTurnoAjenosStyle = { minWidth: 22, height: 22, borderRadius: 999, display: 'inline-grid', placeItems: 'center', fontSize: 12, fontWeight: 900, color: '#2a1a00', background: '#ffcf85', boxSizing: 'border-box' };
 const printButtonStyle = { border: '1px solid rgba(var(--vg-ink), 0.14)', borderRadius: 999, padding: '10px 16px', background: 'rgba(var(--vg-ink), 0.04)', color: 'var(--vg-text-strong)', fontWeight: 700, cursor: 'pointer' };
 const backButtonStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', border: 'none', borderRadius: 999, padding: '11px 18px', background: 'linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%)', color: '#fff', fontWeight: 700, cursor: 'pointer', boxShadow: '0 8px 20px rgba(37, 99, 235, 0.35)' };
 

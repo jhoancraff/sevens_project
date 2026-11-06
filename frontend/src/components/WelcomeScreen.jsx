@@ -774,47 +774,6 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           </button>
         ) : null}
 
-        {(isCajera || isAdmin) ? (
-          <button
-            type="button"
-            onClick={() => {
-              setCierreTurnoTitularId(null);
-              goToView('contabilidad-cierre-turno');
-              if (isSidebarOverlayMode) {
-                setIsSidebarOpen(false);
-              }
-            }}
-            className="vg-sidebar-btn"
-            style={sidebarButtonStyle(activeView === 'contabilidad-cierre-turno')}
-          >
-            <span aria-hidden="true" style={sidebarIconWrapStyle(activeView === 'contabilidad-cierre-turno')}>
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 7v5l3 2" />
-              </svg>
-            </span>
-            <span style={{ flex: 1, textAlign: 'left' }}>Cerrar turno</span>
-            {cierreTurnoEstado?.activo ? (
-              <span
-                style={pendingBadgeStyle(false)}
-                title={`${cierreTurnoEstado.mis_pendientes} transacción(es) tuyas sin cerrar`}
-              >
-                {cierreTurnoEstado.mis_pendientes}
-              </span>
-            ) : null}
-            {cierreTurnoEstado?.activo && cierreTurnoEstado.pendientes_ajenos?.length > 0 ? (
-              <span
-                style={avisoAjenosBadgeStyle}
-                title={cierreTurnoEstado.pendientes_ajenos
-                  .map((fila) => `${fila.titular_nombre}: ${fila.cantidad} sin cerrar`)
-                  .join(' · ')}
-              >
-                !
-              </span>
-            ) : null}
-          </button>
-        ) : null}
-
         {isCajera ? (
           <button
             type="button"
@@ -1300,6 +1259,11 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             onNavigate={handleAnalystNavigation}
             backLabel={isCajera ? '← Volver a Cobro' : '← Volver a Contabilidad'}
             puedeVerCashea={!isCajera}
+            cierreTurnoEstado={cierreTurnoEstado}
+            onCerrarTurno={() => {
+              setCierreTurnoTitularId(null);
+              goToView('contabilidad-cierre-turno');
+            }}
           />
         ) : activeView === 'contabilidad-cierre-caja' ? (
           <CierreCajaPage
@@ -1726,20 +1690,6 @@ const sidebarIconWrapStyle = (isPrimary) => ({
   flexShrink: 0,
   width: 20,
 });
-
-const avisoAjenosBadgeStyle = {
-  minWidth: 22,
-  height: 22,
-  borderRadius: 999,
-  display: 'inline-grid',
-  placeItems: 'center',
-  fontSize: 12,
-  fontWeight: 900,
-  color: '#2a1a00',
-  background: '#ffcf85',
-  boxSizing: 'border-box',
-  flexShrink: 0,
-};
 
 const avisoCierreTurnoStyle = {
   display: 'flex',
