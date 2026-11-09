@@ -152,6 +152,12 @@ CORS_ALLOW_CREDENTIALS = True
 TICKET_CAJA_ANCHO_PUNTOS = int(os.getenv('TICKET_CAJA_ANCHO_PUNTOS', '576') or 576)
 TICKET_CAJA_GRAFICO = os.getenv('TICKET_CAJA_GRAFICO', 'true').lower() in ('true', '1', 't')
 
+# Comandas de cocina / parrilla / barra (sevens/comanda_grafica.py): dibujadas como imagen, sin logo.
+# COMANDA_ANCHO_PUNTOS: 576 = papel de 80 mm, 384 = papel de 58 mm (aplica a TODAS las impresoras de
+# comandas). COMANDA_GRAFICA=false vuelve a la comanda de solo texto.
+COMANDA_ANCHO_PUNTOS = int(os.getenv('COMANDA_ANCHO_PUNTOS', '576') or 576)
+COMANDA_GRAFICA = os.getenv('COMANDA_GRAFICA', 'true').lower() in ('true', '1', 't')
+
 # Largo (en dígitos) del número de orden de Cashea que teclea la cajera. Si escribe
 # otro largo, el cobro pide una confirmación explícita (puede ser un dígito de más
 # o de menos). 0 desactiva la comprobación.
