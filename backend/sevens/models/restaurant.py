@@ -1324,8 +1324,10 @@ class VGDetallePedido(models.Model):
 
     @property
     def subtotal(self):
+        # Redondeado a centavos por linea (no solo el total del pedido): es el mismo importe que lleva la
+        # linea de la cuenta del cliente y de la nota de entrega, asi todas suman exactamente lo mismo.
         peso_factor = (self.peso_gramos / Decimal("1000")) if self.peso_gramos else Decimal("1")
-        return self.cantidad * self.precio_unitario * peso_factor
+        return (self.cantidad * self.precio_unitario * peso_factor).quantize(Decimal("0.01"))
 
     def __str__(self):
         return f"{self.producto} x {self.cantidad}"

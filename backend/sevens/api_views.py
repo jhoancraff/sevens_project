@@ -80,6 +80,7 @@ from .notifications import send_whatsapp_new_order_alert
 from .reportes import tasa_para_fecha
 from .serializers import MesaSerializer, ProductoSerializer
 from .tasa_cambio import obtener_tasa_actual, tasa_cambio_para_registro
+from .cuenta_cliente import cuenta_desactualizada, respuesta_cuenta_desactualizada
 from .tasa_cuenta import prefacturas_con_tasa_vigente, resolver_tasa_cuenta
 
 logger = logging.getLogger(__name__)
@@ -1614,9 +1615,14 @@ def _build_order_lines(parsed_lines, products_map, preparaciones_map):
     for line in parsed_lines:
         product = products_map[line['product_id']]
         promotion = active_promotions.get(product.id)
+        # Cada importe se redondea a centavos AQUI, uno por uno, igual que lo muestran la cuenta del cliente
+        # y la nota de entrega (VGDetallePedido.subtotal, VGLineaVentaBase.calcular_montos): si se sumara sin
+        # redondear y se redondeara solo el total, un producto por peso (350 g a $6.50/kg = 2.275) hacia que
+        # el pedido diera un centavo menos que la cuenta que se le entrego al cliente.
         unit_price = _compute_discounted_price(product.precio_venta, promotion) if promotion else product.precio_venta
+        unit_price = unit_price.quantize(Decimal('0.01'))  # = lo que se guarda en precio_unitario (2 decimales)
         peso_factor = (line['peso_gramos'] / Decimal('1000')) if product.venta_por_peso and line['peso_gramos'] else Decimal('1')
-        line_subtotal = unit_price * peso_factor * line['cantidad']
+        line_subtotal = (unit_price * peso_factor * line['cantidad']).quantize(Decimal('0.01'))
 
         built_addons = []
         for addon in line['adicionales']:
@@ -6874,6 +6880,29 @@ def pedidos_cobro_view(request):
                 status=409,
             )
 
+        # Si el cliente ya tiene una cuenta de estos pedidos y el pedido cambio desde entonces (se quito un item,
+        # se agrego un servicio...), la nota saldria por un monto distinto al que el cliente tiene impreso. Se
+        # frena ANTES de tocar inventario o estados; la cajera regenera la cuenta o confirma el monto actual.
+        if not data.get('confirmar_monto_cuenta'):
+            aviso_cuenta = cuenta_desactualizada(pedido_ids, pedidos)
+            if aviso_cuenta is not None:
+                return _auth_response(respuesta_cuenta_desactualizada(aviso_cuenta), status=409)
+
+        # Las validaciones del monto/descuento van ANTES de cerrar pedidos y descontar inventario: un `return` dentro
+        # de este atomic() confirma lo ya hecho, asi que rechazar mas abajo dejaba los pedidos pagados y el stock
+        # descontado aunque la respuesta fuera un error.
+        total_cobrado = sum((pedido.total for pedido in pedidos), Decimal('0'))
+        if monto_cobrar is not None and monto_cobrar > total_cobrado:
+            return _auth_response({
+                'ok': False,
+                'message': f'El monto a cobrar (${monto_cobrar}) no puede ser mayor al total de la cuenta (${total_cobrado}).',
+            }, status=400)
+
+        total_con_descuento = monto_cobrar if monto_cobrar is not None else total_cobrado
+        descuento_monto = (total_cobrado - total_con_descuento) if monto_cobrar is not None else Decimal('0')
+        if descuento_monto > 0 and not descuento_motivo:
+            return _auth_response({'ok': False, 'message': 'Indica el motivo del descuento.'}, status=400)
+
         components_by_preparation, yields_by_preparation = _load_preparation_structure()
         ingredient_costs = {
             row['id']: _costo_unitario_efectivo(row['costo_unitario'], row['precio_compra'], row['peso_real'])
@@ -6886,7 +6915,6 @@ def pedidos_cobro_view(request):
         # tasa BCV de este instante; 'usar_tasa_actual' es la salida explicita de la cajera (ver tasa_cuenta.py).
         tasa_resuelta = resolver_tasa_cuenta(pedido_ids, usar_tasa_actual=bool(data.get('usar_tasa_actual')))
         tasa_cambio_pago = tasa_resuelta['tasa']
-        total_cobrado = Decimal('0')
         for pedido in pedidos:
             # El dinero de la nota de entrega se cobra aparte, en uno o varios
             # abonos (ver nota_entrega_abono_view) — acá solo se cierra el
@@ -6895,7 +6923,6 @@ def pedidos_cobro_view(request):
             pedido.estado = 'pagado'
             pedido.actualizado_por = request.user
             pedido.save(update_fields=['estado', 'actualizado_por', 'fecha_actualizacion'])
-            total_cobrado += pedido.total
 
             _snapshot_costo_venta_detalles(pedido, ingredient_costs, preparation_cost_map, unit_cost_cache)
 
@@ -6919,17 +6946,6 @@ def pedidos_cobro_view(request):
                         id_referencia=pedido.id,
                         creado_por=request.user,
                     )
-
-        if monto_cobrar is not None and monto_cobrar > total_cobrado:
-            return _auth_response({
-                'ok': False,
-                'message': f'El monto a cobrar (${monto_cobrar}) no puede ser mayor al total de la cuenta (${total_cobrado}).',
-            }, status=400)
-
-        total_con_descuento = monto_cobrar if monto_cobrar is not None else total_cobrado
-        descuento_monto = (total_cobrado - total_con_descuento) if monto_cobrar is not None else Decimal('0')
-        if descuento_monto > 0 and not descuento_motivo:
-            return _auth_response({'ok': False, 'message': 'Indica el motivo del descuento.'}, status=400)
 
         # El cobro directo (mesero o cajera) siempre genera una nota de entrega —
         # el recibo de venta sin efecto fiscal que hoy reemplaza a la factura

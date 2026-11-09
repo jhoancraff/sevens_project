@@ -380,6 +380,16 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
     };
   };
   const tasaCuenta = selectedGroup ? tasaCuentaDelGrupo(selectedGroup) : null;
+  // La cuenta que tiene el cliente es una foto: si es de EXACTAMENTE estos pedidos y su total ya no coincide con lo
+  // que suman hoy (se quitó un ítem, se agregó un servicio...), se avisa antes de emitir la nota. El servidor lo
+  // vuelve a verificar y pide confirmación (ver cuenta_cliente.py).
+  const cuentaDesactualizada = (() => {
+    if (!tasaCuenta || tasaCuenta.total === undefined || !selectedGroup) return null;
+    const ids = Array.from(selectedSet);
+    const mismosPedidos = ids.length === tasaCuenta.pedido_ids.length && ids.every((id) => tasaCuenta.pedido_ids.includes(id));
+    if (!mismosPedidos || selectedTotal.toFixed(2) === Number(tasaCuenta.total).toFixed(2)) return null;
+    return { codigo: tasaCuenta.codigo, totalCuenta: Number(tasaCuenta.total), totalActual: selectedTotal };
+  })();
   const usarTasaActual = selectedGroup ? Boolean(usarTasaActualByGroup[selectedGroup.key]) : false;
   const tasaGrupo = selectedGroup ? tasaDelGrupo(selectedGroup) : tasaCambio;
   const cliente = selectedGroup ? (clienteByGroup[selectedGroup.key] || clienteDelMesero(selectedGroup)) : emptyCliente;
@@ -675,10 +685,12 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
   };
 
   // --- Documento 1: Nota de entrega (cobro directo e inmediato, sin IVA ni numeracion fiscal) ---
-  const handleNotaEntrega = async (group) => {
+  // Devuelve true si el servidor frenó porque la cuenta del cliente ya no coincide con el pedido y quedó
+  // abierta la confirmación (handleConfirmPendingAction no debe cerrarla).
+  const handleNotaEntrega = async (group, { confirmarMontoCuenta = false } = {}) => {
     const selectedIds = Array.from(selectedByGroup[group.key] || []);
     if (selectedIds.length === 0) {
-      return;
+      return false;
     }
     const cliente = clienteByGroup[group.key] || clienteDelMesero(group);
 
@@ -707,13 +719,19 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
           monto_cobrar: montoCobrar,
           descuento_motivo: descuentoMotivo,
           usar_tasa_actual: Boolean(usarTasaActualByGroup[group.key]),
+          confirmar_monto_cuenta: confirmarMontoCuenta,
         }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.ok) {
+        if (data.cuenta_desactualizada) {
+          await fetchPedidos();
+          setPendingConfirm({ action: 'cuenta-desactualizada', group, documento: 'nota', mensaje: data.message });
+          return true;
+        }
         showError(data.message || 'No se pudo procesar la nota de entrega.');
         await fetchPedidos();
-        return;
+        return false;
       }
 
       const descuentoAplicado = Number(data.nota_entrega.descuento_monto || 0);
@@ -797,10 +815,10 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
     });
   };
 
-  const handleConfirmarFacturaDesdePrefactura = async (group) => {
+  const handleConfirmarFacturaDesdePrefactura = async (group, { confirmarMontoCuenta = false } = {}) => {
     const prefactura = prefacturaByGroup[group.key];
     if (!prefactura) {
-      return;
+      return false;
     }
     setBusyGroup(group.key);
     try {
@@ -808,11 +826,16 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') || '' },
         credentials: 'include',
+        body: JSON.stringify({ confirmar_monto_cuenta: confirmarMontoCuenta }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.ok) {
+        if (data.cuenta_desactualizada) {
+          setPendingConfirm({ action: 'cuenta-desactualizada', group, documento: 'factura', mensaje: data.message });
+          return true;
+        }
         showError(data.message || 'No se pudo emitir la factura.');
-        return;
+        return false;
       }
       showSuccess(
         `Factura Nº ${data.factura.numero_factura} emitida (Control ${data.factura.numero_control}). `
@@ -910,6 +933,14 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
       };
     }
 
+    if (action === 'cuenta-desactualizada') {
+      return {
+        title: 'La cuenta del cliente cambió',
+        message: `${pending.mensaje} Si prefieres, cancela y genera la cuenta de nuevo para entregarle el monto correcto.`,
+        confirmLabel: pending.documento === 'factura' ? 'Emitir factura por el monto actual' : 'Registrar por el monto actual',
+      };
+    }
+
     if (action === 'cancelar-pedido') {
       const { pedido } = pending;
       return {
@@ -980,7 +1011,17 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
     if (!pendingConfirm) {
       return;
     }
-    const { action, group, pedido, siguienteAccion } = pendingConfirm;
+    const { action, group, pedido, siguienteAccion, documento } = pendingConfirm;
+    if (action === 'cuenta-desactualizada') {
+      // El cobro YA se frenó una vez por esto y la cajera lo confirmó: se reenvía aceptando el monto de hoy.
+      const sigueDesactualizada = documento === 'factura'
+        ? await handleConfirmarFacturaDesdePrefactura(group, { confirmarMontoCuenta: true })
+        : await handleNotaEntrega(group, { confirmarMontoCuenta: true });
+      if (!sigueDesactualizada) {
+        setPendingConfirm(null);
+      }
+      return;
+    }
     if (action === 'advertencia-parcial') {
       setPendingConfirm(null);
       siguienteAccion();
@@ -992,11 +1033,12 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
       return;
     }
     if (action === 'nota') {
-      await handleNotaEntrega(group);
+      // Si el servidor frenó por una cuenta desactualizada, handleNotaEntrega dejó abierta otra confirmación.
+      if (await handleNotaEntrega(group)) return;
     } else if (action === 'factura') {
       await handleFacturaDirecta(group);
     } else if (action === 'prefactura') {
-      await handleConfirmarFacturaDesdePrefactura(group);
+      if (await handleConfirmarFacturaDesdePrefactura(group)) return;
     } else if (action === 'cancelar-pedido') {
       await handleCancelarPedido(pedido);
     }
@@ -1290,6 +1332,14 @@ function CheckoutPage({ isMobile, onBack, canCancelarPedidos = false, canGestion
                           />
                           Cobrar con la tasa actual{tasaCambio ? ` (Bs ${formatTasa(tasaCambio)})` : ''}
                         </label>
+                      </div>
+                    ) : null}
+
+                    {cuentaDesactualizada ? (
+                      <div role="alert" style={cuentaCambioAvisoStyle}>
+                        La cuenta {cuentaDesactualizada.codigo} que tiene el cliente es de <strong>${cuentaDesactualizada.totalCuenta.toFixed(2)}</strong>,
+                        pero el pedido ahora suma <strong>${cuentaDesactualizada.totalActual.toFixed(2)}</strong>.
+                        {' '}Genera la cuenta de nuevo (conserva la tasa) para entregarle el monto correcto.
                       </div>
                     ) : null}
 
@@ -2242,6 +2292,10 @@ const checkoutButtonStyle = {
   cursor: 'pointer',
 };
 
+const cuentaCambioAvisoStyle = {
+  padding: '10px 14px', borderRadius: 12, border: '1px solid var(--vg-f-ff9191-a220)',
+  background: 'rgba(255, 98, 98, 0.12)', color: 'var(--vg-f-ffd8d8)', fontSize: 14, lineHeight: 1.5,
+};
 const tasaCuentaAvisoStyle = {
   display: 'grid', gap: 8, padding: '10px 14px', borderRadius: 12,
   border: '1px solid var(--vg-f-ffcf7d-a450)', background: 'rgba(255, 207, 125, 0.08)',

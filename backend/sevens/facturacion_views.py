@@ -54,6 +54,7 @@ from .models import (
 from .lotes_pos import asignar_pago_a_lote, pago_anulado, validar_cambio_metodo_pago
 from .reportes import cashea_por_cobrar_total
 from .tasa_cambio import obtener_tasa_actual
+from .cuenta_cliente import respuesta_cuenta_desactualizada, total_de_cuenta_de_pedidos
 from .tasa_cuenta import minutos_restantes, prefactura_que_cubre, resolver_tasa_cuenta
 
 logger = logging.getLogger(__name__)
@@ -704,6 +705,19 @@ def prefactura_convertir_view(request, prefactura_id):
         pedidos, error = _pedidos_facturables_por_ids(pedido_ids)
         if error:
             return _auth_response({'ok': False, 'message': error}, status=409)
+
+        # La factura se arma con lo que suman los pedidos hoy; si ya no coincide con la cuenta que el cliente
+        # tiene, se pide confirmacion antes de emitir un documento fiscal por otro monto.
+        if not cuerpo.get('confirmar_monto_cuenta'):
+            total_actual = total_de_cuenta_de_pedidos(pedidos)
+            total_cuenta = Decimal(prefactura.total).quantize(Decimal('0.01'))
+            if total_actual != total_cuenta:
+                return _auth_response(respuesta_cuenta_desactualizada({
+                    'codigo': f'PF-{prefactura.numero:06d}',
+                    'total_cuenta': total_cuenta,
+                    'total_actual': total_actual,
+                    'diferencia': (total_actual - total_cuenta).quantize(Decimal('0.01')),
+                }, documento='la factura'), status=409)
 
         primera_linea = prefactura.lineas.first()
         porcentaje_iva = primera_linea.porcentaje_iva if primera_linea else None
