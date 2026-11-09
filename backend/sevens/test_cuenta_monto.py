@@ -171,3 +171,38 @@ class CuentaDesactualizadaTests(CuentaMontoBase):
         self.cuenta([pedido])
         from sevens.tasa_cuenta import prefacturas_con_tasa_vigente
         self.assertEqual(prefacturas_con_tasa_vigente()[0]['total'], '41.70')
+
+
+class ValidacionesDelCobroNoDejanEfectosTests(CuentaMontoBase):
+    """Si el cobro se rechaza (monto mayor al total, descuento sin motivo) no debe quedar NADA hecho:
+    ni el pedido pagado, ni nota, ni inventario descontado."""
+
+    def pedido_cobrable(self):
+        return self.crear_pedido([{'product_id': self.plato.id, 'cantidad': 1, 'notas': ''}])
+
+    def assert_sin_efectos(self, pedido):
+        pedido.refresh_from_db()
+        self.assertEqual(pedido.estado, 'entregado')
+        self.assertEqual(VGNotaEntrega.objects.count(), 0)
+
+    def test_un_monto_mayor_al_total_se_rechaza_sin_cerrar_el_pedido(self):
+        pedido = self.pedido_cobrable()
+        respuesta = self.cobrar([pedido], monto_cobrar='999')
+        self.assertEqual(respuesta.status_code, 400)
+        self.assertIn('no puede ser mayor', respuesta.json()['message'])
+        self.assert_sin_efectos(pedido)
+
+    def test_un_descuento_sin_motivo_se_rechaza_sin_cerrar_el_pedido(self):
+        pedido = self.pedido_cobrable()
+        respuesta = self.cobrar([pedido], monto_cobrar='10')
+        self.assertEqual(respuesta.status_code, 400)
+        self.assertEqual(respuesta.json()['message'], 'Indica el motivo del descuento.')
+        self.assert_sin_efectos(pedido)
+
+    def test_con_motivo_el_descuento_si_se_cobra(self):
+        pedido = self.pedido_cobrable()
+        respuesta = self.cobrar([pedido], monto_cobrar='10', descuento_motivo='cliente frecuente')
+        self.assertEqual(respuesta.status_code, 201, respuesta.content)
+        self.assertEqual(Decimal(respuesta.json()['nota_entrega']['descuento_monto']), Decimal('10.85'))
+        pedido.refresh_from_db()
+        self.assertEqual(pedido.estado, 'pagado')

@@ -6888,6 +6888,21 @@ def pedidos_cobro_view(request):
             if aviso_cuenta is not None:
                 return _auth_response(respuesta_cuenta_desactualizada(aviso_cuenta), status=409)
 
+        # Las validaciones del monto/descuento van ANTES de cerrar pedidos y descontar inventario: un `return` dentro
+        # de este atomic() confirma lo ya hecho, asi que rechazar mas abajo dejaba los pedidos pagados y el stock
+        # descontado aunque la respuesta fuera un error.
+        total_cobrado = sum((pedido.total for pedido in pedidos), Decimal('0'))
+        if monto_cobrar is not None and monto_cobrar > total_cobrado:
+            return _auth_response({
+                'ok': False,
+                'message': f'El monto a cobrar (${monto_cobrar}) no puede ser mayor al total de la cuenta (${total_cobrado}).',
+            }, status=400)
+
+        total_con_descuento = monto_cobrar if monto_cobrar is not None else total_cobrado
+        descuento_monto = (total_cobrado - total_con_descuento) if monto_cobrar is not None else Decimal('0')
+        if descuento_monto > 0 and not descuento_motivo:
+            return _auth_response({'ok': False, 'message': 'Indica el motivo del descuento.'}, status=400)
+
         components_by_preparation, yields_by_preparation = _load_preparation_structure()
         ingredient_costs = {
             row['id']: _costo_unitario_efectivo(row['costo_unitario'], row['precio_compra'], row['peso_real'])
@@ -6900,7 +6915,6 @@ def pedidos_cobro_view(request):
         # tasa BCV de este instante; 'usar_tasa_actual' es la salida explicita de la cajera (ver tasa_cuenta.py).
         tasa_resuelta = resolver_tasa_cuenta(pedido_ids, usar_tasa_actual=bool(data.get('usar_tasa_actual')))
         tasa_cambio_pago = tasa_resuelta['tasa']
-        total_cobrado = Decimal('0')
         for pedido in pedidos:
             # El dinero de la nota de entrega se cobra aparte, en uno o varios
             # abonos (ver nota_entrega_abono_view) — acá solo se cierra el
@@ -6909,7 +6923,6 @@ def pedidos_cobro_view(request):
             pedido.estado = 'pagado'
             pedido.actualizado_por = request.user
             pedido.save(update_fields=['estado', 'actualizado_por', 'fecha_actualizacion'])
-            total_cobrado += pedido.total
 
             _snapshot_costo_venta_detalles(pedido, ingredient_costs, preparation_cost_map, unit_cost_cache)
 
@@ -6933,17 +6946,6 @@ def pedidos_cobro_view(request):
                         id_referencia=pedido.id,
                         creado_por=request.user,
                     )
-
-        if monto_cobrar is not None and monto_cobrar > total_cobrado:
-            return _auth_response({
-                'ok': False,
-                'message': f'El monto a cobrar (${monto_cobrar}) no puede ser mayor al total de la cuenta (${total_cobrado}).',
-            }, status=400)
-
-        total_con_descuento = monto_cobrar if monto_cobrar is not None else total_cobrado
-        descuento_monto = (total_cobrado - total_con_descuento) if monto_cobrar is not None else Decimal('0')
-        if descuento_monto > 0 and not descuento_motivo:
-            return _auth_response({'ok': False, 'message': 'Indica el motivo del descuento.'}, status=400)
 
         # El cobro directo (mesero o cajera) siempre genera una nota de entrega —
         # el recibo de venta sin efecto fiscal que hoy reemplaza a la factura
