@@ -78,6 +78,7 @@ def prefacturas_con_tasa_vigente(ahora=None):
             'id': prefactura.id,
             'codigo': f'PF-{prefactura.numero:06d}',
             'tasa': str(prefactura.tasa_cambio_referencia),
+            'total': str(prefactura.total),
             'moneda': prefactura.moneda,
             'pedido_ids': [pedido.id for pedido in prefactura.pedidos.all()],
             'minutos_restantes': minutos_restantes(prefactura, ahora),
