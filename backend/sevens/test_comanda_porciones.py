@@ -61,9 +61,10 @@ class PorcionesBase(TestCase):
         return _collect_print_items(detalles)
 
     def lineas_de_guarniciones(self, pedido):
+        """Lo que llega a la impresora de guarniciones: [(plato con sus gramos, [(cantidad, guarnición), ...]), ...]."""
         solo = [item for item in self.items(pedido) if item['tipo'] == 'acompanante']
         return [
-            (linea['cantidad'], linea['nombre'], linea['referencia'])
+            (linea['nombre'], [(hija['cantidad'], hija['nombre']) for hija in linea['hijas']])
             for bloque in _bloques_comanda(solo) for linea in bloque['lineas']
         ]
 
@@ -74,26 +75,24 @@ class PorcionSegunLaTablaTests(PorcionesBase):
             pedido, _ = self.plato(peso, [self.papas, self.ensalada, self.patacon])
             self.assertEqual(
                 self.lineas_de_guarniciones(pedido),
-                [(f'{papas} g', 'Papas fritas', f'Punta trasera {peso} g'),
-                 (f'{ensalada} g', 'Ensalada', f'Punta trasera {peso} g'),
-                 (f'{patacones}x', 'Patacón', f'Punta trasera {peso} g')],
+                [(f'Punta trasera {peso} g', [(f'{papas} g', 'Papas fritas'), (f'{ensalada} g', 'Ensalada'), (f'{patacones}x', 'Patacón')])],
                 peso,
             )
 
     def test_un_peso_intermedio_usa_el_tramo_mas_cercano(self):
         # 600 g está a 100 de 500 y a 400 de 1000: gana 500.
         pedido, _ = self.plato(600, [self.papas])
-        self.assertEqual(self.lineas_de_guarniciones(pedido)[0][0], '200 g')
+        self.assertEqual(self.lineas_de_guarniciones(pedido)[0][1][0][0], '200 g')
 
     def test_un_peso_fuera_de_rango_usa_el_tramo_limite(self):
         pequeno, _ = self.plato(100, [self.papas])
         grande, _ = self.plato(2000, [self.papas])
-        self.assertEqual(self.lineas_de_guarniciones(pequeno)[0][0], '120 g')
-        self.assertEqual(self.lineas_de_guarniciones(grande)[0][0], '360 g')
+        self.assertEqual(self.lineas_de_guarniciones(pequeno)[0][1][0][0], '120 g')
+        self.assertEqual(self.lineas_de_guarniciones(grande)[0][1][0][0], '360 g')
 
     def test_dos_platos_en_una_misma_linea_duplican_la_porcion(self):
         pedido, _ = self.plato(500, [self.papas], cantidad=2)
-        self.assertEqual(self.lineas_de_guarniciones(pedido), [('400 g', 'Papas fritas', '2x Punta trasera 500 g')])
+        self.assertEqual(self.lineas_de_guarniciones(pedido), [('2x Punta trasera 500 g', [('400 g', 'Papas fritas')])])
 
     def test_platos_iguales_se_suman_y_platos_distintos_quedan_separados(self):
         pedido, _ = self.plato(500, [self.papas])
@@ -101,7 +100,7 @@ class PorcionSegunLaTablaTests(PorcionesBase):
         self.plato(1000, [self.papas], pedido=pedido)
         self.assertEqual(
             self.lineas_de_guarniciones(pedido),
-            [('400 g', 'Papas fritas', '2x Punta trasera 500 g'), ('360 g', 'Papas fritas', 'Punta trasera 1000 g')],
+            [('2x Punta trasera 500 g', [('400 g', 'Papas fritas')]), ('Punta trasera 1000 g', [('360 g', 'Papas fritas')])],
         )
 
     def test_lo_que_escribe_la_comanda_es_lo_que_descuenta_el_cobro(self):
@@ -141,7 +140,7 @@ class PorcionSinTablaTests(PorcionesBase):
         guarnicion = [item for item in items if item['tipo'] == 'acompanante'][0]
         self.assertIsNone(guarnicion['porcion'])
         linea = _bloques_comanda([guarnicion])[0]['lineas'][0]
-        self.assertEqual(linea['nombre'], 'Papas fritas')
+        self.assertEqual([hija['nombre'] for hija in linea['hijas']], ['Papas fritas'])
 
 
 class PorcionEnLaComandaTests(PorcionesBase):
@@ -189,8 +188,69 @@ class PorcionEnLaComandaTests(PorcionesBase):
         items = [item for item in self.items(pedido) if item['destino'] == ('10.1.0.1', 9100)]
         bloque = _bloques_comanda(items)[0]
         self.assertTrue(bloque['plato'].startswith('PLATO 1'))
-        self.assertEqual([(l['cantidad'], l['nombre']) for l in bloque['lineas']], [('500 g', 'Punta trasera'), ('200 g', 'Papas fritas')])
+        self.assertEqual(len(bloque['lineas']), 1)
+        plato = bloque['lineas'][0]
+        self.assertEqual((plato['cantidad'], plato['nombre']), ('500 g', 'Punta trasera'))
+        self.assertEqual([(h['cantidad'], h['nombre']) for h in plato['hijas']], [('200 g', 'Papas fritas')])
         with override_settings(COMANDA_GRAFICA=False):
             ticket = _build_ticket_bytes(pedido, [self.carnes, self.guarniciones], items)
         self.assertIn(b'200 g Papas fritas', ticket)
 
+
+class DisenoDeLaComandaTests(PorcionesBase):
+    """La carne con sus gramos y, debajo con sangría, sus guarniciones."""
+
+    def lineas(self, pedido, categoria=None):
+        items = [i for i in self.items(pedido) if categoria is None or i['categoria'].id == categoria.id]
+        return [linea for bloque in _bloques_comanda(items) for linea in bloque['lineas']]
+
+    def test_en_la_misma_impresora_cada_carne_lleva_sus_guarniciones_debajo(self):
+        VGCategoriaProducto.objects.filter(pk=self.guarniciones.pk).update(ip_impresora='10.1.0.1')
+        pedido, _ = self.plato(500, [self.papas, self.ensalada])
+        self.plato(1000, [self.papas], pedido=pedido)
+        lineas = self.lineas(pedido)
+        self.assertEqual(
+            [(l['cantidad'], l['nombre'], [(h['cantidad'], h['nombre']) for h in l['hijas']]) for l in lineas],
+            [('500 g', 'Punta trasera', [('200 g', 'Papas fritas'), ('200 g', 'Ensalada')]),
+             ('1000 g', 'Punta trasera', [('360 g', 'Papas fritas')])],
+        )
+
+    def test_las_guarniciones_en_su_propia_impresora_llevan_el_plato_como_encabezado(self):
+        pedido, _ = self.plato(500, [self.papas])
+        (linea,) = self.lineas(pedido, self.guarniciones)
+        self.assertTrue(linea['encabezado'])
+        self.assertEqual(linea['nombre'], 'Punta trasera 500 g')
+        self.assertEqual([(h['cantidad'], h['nombre']) for h in linea['hijas']], [('200 g', 'Papas fritas')])
+
+    def test_dos_cortes_de_distinto_peso_no_se_juntan_y_conservan_sus_gramos(self):
+        pedido, _ = self.plato(350, [])
+        self.plato(500, [], pedido=pedido)
+        self.assertEqual([(l['cantidad'], l['nombre']) for l in self.lineas(pedido, self.carnes)],
+                         [('350 g', 'Punta trasera'), ('500 g', 'Punta trasera')])
+
+    def test_dos_cortes_iguales_tampoco_se_juntan(self):
+        pedido, _ = self.plato(500, [self.papas])
+        self.plato(500, [self.ensalada], pedido=pedido)
+        lineas = self.lineas(pedido, self.carnes)
+        self.assertEqual([l['cantidad'] for l in lineas], ['500 g', '500 g'])
+
+    def test_un_corte_de_dos_platos_en_una_linea_lo_dice(self):
+        pedido, _ = self.plato(500, [], cantidad=2)
+        self.assertEqual(self.lineas(pedido, self.carnes)[0]['cantidad'], '2x 500 g')
+
+    def test_lo_que_no_es_por_peso_ni_tiene_guarniciones_sigue_consolidandose(self):
+        yuca = VGProducto.objects.create(nombre='Yuca frita', categoria=self.guarniciones, precio_venta='3', disponible=True)
+        pedido = VGPedido.objects.create(usuario=self.mesero, tipo_pedido='llevar', estado='pendiente', subtotal='9', total='9')
+        for _ in range(3):
+            VGDetallePedido.objects.create(pedido=pedido, producto=yuca, cantidad=1, precio_unitario='3', estado='pendiente')
+        lineas = self.lineas(pedido, self.guarniciones)
+        self.assertEqual([(l['cantidad'], l['nombre']) for l in lineas], [('3x', 'Yuca frita')])
+
+    def test_el_dibujo_con_guarniciones_debajo_funciona(self):
+        from sevens.comanda_grafica import dibujar_comanda
+        pedido, _ = self.plato(500, [self.papas, self.ensalada, self.patacon])
+        datos = {
+            'estacion': 'COCINA', 'titulo': 'MESA 7', 'pedido': pedido.id, 'hora': '16/11 18:13', 'cliente': 'Ana', 'mesero': 'mario',
+            'bloques': [{'plato': None, 'lineas': self.lineas(pedido)}],
+        }
+        self.assertEqual(dibujar_comanda(datos).width, 576)

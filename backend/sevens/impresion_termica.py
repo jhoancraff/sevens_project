@@ -340,6 +340,10 @@ def _clave_consolidacion(item):
         porcion = item.get('porcion')
         return ('acompanante', item['opcion'].producto_id, porcion['unidad'] if porcion else None, _plato_de_la_guarnicion(item))
     detalle = item['detalle']
+    if detalle.peso_gramos or any(opcion.producto_id for opcion in detalle.opciones.all()):
+        # Un corte por peso es una pieza física distinta con sus propios gramos, y un plato con guarniciones
+        # dinámicas lleva las suyas: juntarlos ("2x Punta") perdería los gramos y a quién acompaña cada guarnición.
+        return ('principal', 'unico', detalle.id)
     adicionales = tuple(sorted((a.preparacion_id, a.cantidad) for a in detalle.adicionales.all()))
     opciones_curadas = tuple(sorted(
         (o.grupo_nombre, o.preparacion_id) for o in detalle.opciones.all() if not o.producto_id
@@ -555,47 +559,104 @@ def _ancho_comanda():
     return max(8, ancho - ancho % 8)
 
 
-def _linea_comanda(item, cantidad=None, porcion=None):
-    """Línea de la comanda gráfica de un ítem (ver _render_detalle_principal / _render_acompanante)."""
-    if item['tipo'] == 'acompanante':
-        porcion = porcion or _porcion_de_grupo([item])
-        return {
-            'cantidad': porcion['etiqueta'] or '1x',
-            'nombre': item['opcion'].producto.nombre,
-            'referencia': porcion['referencia'],
-            'nota': '', 'opciones': [], 'adicionales': [],
-        }
+def _linea_comanda(item, cantidad=None):
+    """Línea de la comanda gráfica de un plato (ver _render_detalle_principal)."""
     detalle = item['detalle']
     opciones = []
     for opcion in detalle.opciones.all():
         if opcion.producto_id:
-            continue  # los acompañantes de grupo dinámico salen en la comanda de SU categoría
+            continue  # las guarniciones de grupo dinámico cuelgan del plato (ver _lineas_de_items)
         preparacion = getattr(opcion, 'preparacion', None)
         opciones.append(f"{opcion.grupo_nombre}: {getattr(preparacion, 'nombre', None) or 'Opción eliminada'}")
     adicionales = []
     for adicional in detalle.adicionales.all():
         preparacion = getattr(adicional, 'preparacion', None)
         adicionales.append(f"{adicional.cantidad}x {getattr(preparacion, 'nombre', None) or 'Adicional eliminado'}")
+    if cantidad is not None:
+        etiqueta = f'{cantidad}x'
+    elif detalle.peso_gramos and (detalle.cantidad or 1) > 1:
+        etiqueta = f'{detalle.cantidad}x {_num(detalle.peso_gramos)} g'
+    else:
+        etiqueta = _cantidad_label(detalle)
     return {
-        'cantidad': f'{cantidad}x' if cantidad is not None else _cantidad_label(detalle),
+        'cantidad': etiqueta,
         'nombre': _detalle_nombre(detalle),
         'nota': detalle.notas or '',
         'opciones': opciones,
         'adicionales': adicionales,
+        'hijas': [],
     }
 
 
+def _lineas_hijas(items_acompanante):
+    """
+    Guarniciones de un mismo plato, una línea por guarnición con su porción ("200 g Papas fritas", "4x Patacón").
+    Si el plato se repite, las porciones de la misma guarnición se suman.
+    """
+    por_guarnicion = {}
+    for item in items_acompanante:
+        porcion = item.get('porcion')
+        clave = (item['opcion'].producto_id, porcion['unidad'] if porcion else None)
+        por_guarnicion.setdefault(clave, []).append(item)
+    return [
+        {'cantidad': _porcion_de_grupo(grupo)['etiqueta'] or '1x', 'nombre': grupo[0]['opcion'].producto.nombre}
+        for grupo in por_guarnicion.values()
+    ]
+
+
+def _lineas_de_items(items):
+    """
+    Líneas de un bloque de la comanda. Cada plato lleva debajo, con sangría, sus guarniciones. Si la guarnición
+    llega a una impresora donde NO está su plato (la carne sale en la parrilla y la guarnición en la cocina), se
+    escribe un encabezado con el plato y sus gramos ("Punta trasera 500 g") y las guarniciones debajo, igual.
+    """
+    principales = [item for item in items if item['tipo'] == 'principal']
+    ids_principales = {item['detalle'].id for item in principales}
+    hijas_de, huerfanas = {}, []
+    for item in items:
+        if item['tipo'] != 'acompanante':
+            continue
+        padre = item.get('detalle_padre')
+        if padre is not None and padre.id in ids_principales:
+            hijas_de.setdefault(padre.id, []).append(item)
+        else:
+            huerfanas.append(item)
+
+    lineas = []
+    for grupo in _consolidar_grupos(principales):
+        linea = _linea_comanda(grupo['item'], grupo['cantidad'])
+        linea['hijas'] = _lineas_hijas(hijas_de.get(grupo['item']['detalle'].id, []))
+        lineas.append(linea)
+
+    por_plato = {}
+    for item in huerfanas:
+        por_plato.setdefault(_plato_de_la_guarnicion(item), []).append(item)
+    for (nombre, peso), its in por_plato.items():
+        if not nombre:
+            lineas.extend({'cantidad': _porcion_de_grupo([item])['etiqueta'] or '1x', 'nombre': item['opcion'].producto.nombre,
+                           'nota': '', 'opciones': [], 'adicionales': [], 'hijas': []} for item in its)
+            continue
+        padres = {item['detalle_padre'].id: Decimal(item['detalle_padre'].cantidad or 1) for item in its}
+        platos = sum(padres.values(), Decimal('0'))
+        encabezado = f"{_num(platos) + 'x ' if platos > 1 else ''}{nombre} {peso}".strip()
+        lineas.append({
+            'cantidad': '', 'nombre': encabezado, 'encabezado': True, 'nota': '', 'opciones': [], 'adicionales': [],
+            'hijas': _lineas_hijas(its),
+        })
+    return lineas
+
+
 def _bloques_comanda(items):
-    """Platos armados (con su barra "PLATO N - CATEGORÍA") y, al final, un solo bloque con todo lo consolidado."""
+    """Platos armados (con su barra "PLATO N - CATEGORÍA") y, al final, un solo bloque con todo lo demás."""
     platos, consolidables = _split_items_para_ticket(items)
     bloques = []
     for grupo_id, plato_items in platos:
         etiqueta = _plato_categoria_label(plato_items)
         bloques.append({
             'plato': f'PLATO {grupo_id} - {etiqueta}' if etiqueta else f'PLATO {grupo_id}',
-            'lineas': [_linea_comanda(item) for item in plato_items],
+            'lineas': _lineas_de_items(plato_items),
         })
-    lineas = [_linea_comanda(grupo['item'], grupo['cantidad'], grupo['porcion']) for grupo in _consolidar_grupos(consolidables)]
+    lineas = _lineas_de_items(consolidables)
     if lineas:
         bloques.append({'plato': None, 'lineas': lineas})
     return bloques
