@@ -32,7 +32,7 @@ def dibujar_comanda(datos, ancho=ANCHO_DE_DISENO):
       tipo              (opcional) texto de la barra de tipo de pedido ("DELIVERY"); vacío = no se dibuja
       pedido, hora, cliente, mesero    la fila de datos del pedido (cliente puede ir vacío)
       bloques           [{'plato': 'PLATO 2 - CARNES' | None,
-                          'lineas': [{'cantidad', 'nombre', 'nota', 'opciones': [...], 'adicionales': [...]}]}]
+                          'lineas': [{'cantidad', 'nombre', 'referencia' ("Punta 500 g", de qué plato es la guarnición), 'nota', 'opciones', 'adicionales'}]}]
       nota_pedido       (opcional) nota general del pedido
     Devuelve una imagen 'L' (255 = blanco) de `ancho` puntos.
     """
@@ -147,7 +147,13 @@ def dibujar_comanda(datos, ancho=ANCHO_DE_DISENO):
         primero = False
         if bloque.get('plato'):
             barra_negra(bloque['plato'], f(28), alineacion='izq', relleno=4)
+        ultima_referencia = ''
         for linea in bloque['lineas']:
+            if linea.get('referencia') and linea['referencia'] != ultima_referencia:
+                # Guarnición: de qué plato es, como encabezado de las guarniciones que le siguen ("Para: Punta
+                # 500 g"), para que la estación sepa a quién va. Una vez por plato, no tras cada guarnición.
+                texto(f"Para: {linea['referencia']}", f(24), interlineado=2)
+            ultima_referencia = linea.get('referencia') or ''
             linea_principal(linea['cantidad'], linea['nombre'])
             for opcion in linea.get('opciones', []):
                 texto(f'» {opcion}', f(26, False), sangria=sangria, interlineado=4)

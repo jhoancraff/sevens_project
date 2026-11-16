@@ -51,7 +51,7 @@ class ComandaBase(TestCase):
 
     def items(self, pedido):
         detalles = list(
-            pedido.detalles.select_related('producto__categoria')
+            pedido.detalles.select_related('producto__categoria').order_by('id')
             .prefetch_related('adicionales__preparacion', 'opciones__preparacion', 'opciones__producto__categoria')
         )
         return _collect_print_items(detalles), detalles

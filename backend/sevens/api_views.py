@@ -514,6 +514,60 @@ def _add_preparation_needs(prep_id, quantity_needed, components_by_preparation, 
     resolving.discard(prep_id)
 
 
+def _cantidad_bruta_tabla_racion_por_tamano(grupo_id, producto, peso_gramos):
+    """
+    La celda de la tabla de raciones del tramo más cercano a `peso_gramos`, TAL COMO está escrita:
+    gramos del acompañante si es de peso, unidades si no. None si no hay ninguna fila para este
+    grupo+producto. La usan el descuento de inventario (que la convierte a multiplicador de receta, ver
+    _resolver_cantidad_tabla_racion_por_tamano) y la comanda (que la imprime tal cual).
+    """
+    if not grupo_id or peso_gramos is None:
+        return None
+    filas = list(
+        VGGrupoOpcionRacionPorTamano.objects
+        .filter(grupo_id=grupo_id, producto_id=producto.id)
+        .values_list('tramo_peso_gramos', 'cantidad')
+    )
+    if not filas:
+        return None
+
+    def _distancia(fila):
+        tramo, _cantidad = fila
+        return (abs(Decimal(tramo) - Decimal(peso_gramos)), -tramo)
+
+    _tramo, cantidad = min(filas, key=_distancia)
+    return cantidad
+
+
+def racion_acompanante_para_comanda(opcion, detalle):
+    """
+    Cuánto lleva de `opcion.producto` (una guarnición de grupo dinámico) el plato `detalle`, para escribirlo en
+    la comanda. Sigue las mismas reglas que el descuento de inventario (_resolver_multiplicador_acompanante):
+
+      1. Tabla de raciones por tamaño: la celda del tramo más cercano, en gramos si la guarnición es de peso o en
+         unidades si no, por la cantidad de platos.
+      2. Sin tabla pero con gramos_base_racion: raciones completas (mínimo 1) por la cantidad de platos.
+      3. Sin ninguna: a la par del plato (gramos del plato si la guarnición es de peso; si no, una por plato).
+
+    Devuelve {'valor': Decimal, 'unidad': 'g' | 'u' | 'rac'}.
+    """
+    producto = opcion.producto
+    cantidad_platos = Decimal(detalle.cantidad)
+    if opcion.grupo_id and detalle.peso_gramos is not None:
+        bruta = _cantidad_bruta_tabla_racion_por_tamano(opcion.grupo_id, producto, detalle.peso_gramos)
+        if bruta is not None:
+            return {'valor': bruta * cantidad_platos, 'unidad': 'g' if producto.venta_por_peso else 'u'}
+
+    gramos_base = opcion.grupo.gramos_base_racion if opcion.grupo_id else None
+    if gramos_base and detalle.peso_gramos:
+        raciones = (detalle.peso_gramos / Decimal(gramos_base)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+        return {'valor': cantidad_platos * max(raciones, Decimal('1')), 'unidad': 'rac'}
+
+    if detalle.peso_gramos and producto.venta_por_peso:
+        return {'valor': detalle.peso_gramos * cantidad_platos, 'unidad': 'g'}
+    return {'valor': cantidad_platos, 'unidad': 'u'}
+
+
 def _resolver_cantidad_tabla_racion_por_tamano(grupo_id, producto, peso_gramos):
     """
     Busca en VGGrupoOpcionRacionPorTamano las filas configuradas para
@@ -531,21 +585,9 @@ def _resolver_cantidad_tabla_racion_por_tamano(grupo_id, producto, peso_gramos):
     a la par del plato). Cuando sí hay filas, la tabla manda sobre
     gramos_base_racion, sin importar qué tenga configurado el grupo.
     """
-    if not grupo_id or peso_gramos is None:
+    cantidad = _cantidad_bruta_tabla_racion_por_tamano(grupo_id, producto, peso_gramos)
+    if cantidad is None:
         return None
-    filas = list(
-        VGGrupoOpcionRacionPorTamano.objects
-        .filter(grupo_id=grupo_id, producto_id=producto.id)
-        .values_list('tramo_peso_gramos', 'cantidad')
-    )
-    if not filas:
-        return None
-
-    def _distancia(fila):
-        tramo, _cantidad = fila
-        return (abs(Decimal(tramo) - Decimal(peso_gramos)), -tramo)
-
-    _tramo, cantidad = min(filas, key=_distancia)
     if producto.venta_por_peso:
         # La celda de la tabla está en GRAMOS del acompañante, pero su receta
         # propia (_product_recipe_components) está definida por KILOGRAMO —

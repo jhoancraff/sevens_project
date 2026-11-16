@@ -12,6 +12,7 @@ mandarle los bytes ESC/POS — el mismo mecanismo que `printf ... | nc <ip> 9100
 import socket
 import time
 import logging
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ def _render_detalle_principal(detalle, cantidad_override=None):
     return bytes(out)
 
 
-def _render_acompanante(opcion, cantidad=1):
+def _render_acompanante(opcion, cantidad=1, etiqueta=None, referencia=None):
     """Línea de un acompañante de grupo dinámico (VGDetallePedidoOpcion.producto), que
     imprime en su propia comanda en vez de pegado a la línea principal del plato.
     `cantidad` > 1 cuando el mismo acompañante se consolidó porque varios platos armados
@@ -147,9 +148,73 @@ def _render_acompanante(opcion, cantidad=1):
     con "Yuca al vapor" de acompañante imprimen una sola línea "4x Yuca al vapor" en vez
     de repetirse dentro de cada bloque "PLATO N"."""
     out = bytearray()
-    prefijo = f'{cantidad}x ' if cantidad != 1 else ''
+    if etiqueta is not None:
+        prefijo = f'{etiqueta} ' if etiqueta else ''
+    else:
+        prefijo = f'{cantidad}x ' if cantidad != 1 else ''
     out += _text(f'{prefijo}{opcion.producto.nombre}') + FEED
+    if referencia:
+        out += _text(f'  para {referencia}') + FEED
     return bytes(out)
+
+
+def _calcular_porcion(opcion, detalle):
+    """
+    Porción de la guarnición para la comanda (ver api_views.racion_acompanante_para_comanda: las mismas reglas
+    que el descuento de inventario). Si algo falla (datos raros) devuelve None y la guarnición sale solo con
+    su nombre, como siempre: nunca se pierde una comanda por esto.
+    """
+    try:
+        from .api_views import racion_acompanante_para_comanda  # import tardío: api_views importa este módulo
+        return racion_acompanante_para_comanda(opcion, detalle)
+    except Exception:
+        logger.exception('No se pudo calcular la porción de %s para el detalle %s.', opcion.producto_id, detalle.id)
+        return None
+
+
+def _num(valor):
+    """200.00 -> '200'; 0.50 -> '0.5'."""
+    valor = Decimal(valor)
+    if valor == valor.to_integral_value():
+        return str(int(valor))
+    return format(valor.normalize(), 'f')
+
+
+def _etiqueta_porcion(unidad, valor):
+    if unidad == 'g':
+        return f'{_num(valor)} g'
+    if unidad == 'rac':
+        return f'{_num(valor)} ración' if Decimal(valor) == 1 else f'{_num(valor)} raciones'
+    return f'{_num(valor)}x'
+
+
+def _plato_de_la_guarnicion(item):
+    """('Punta', '500 g' | '') del plato al que acompaña esta guarnición."""
+    detalle = item.get('detalle_padre')
+    if detalle is None:
+        return ('', '')
+    peso = f'{_num(detalle.peso_gramos)} g' if detalle.peso_gramos else ''
+    return (_detalle_nombre(detalle), peso)
+
+
+def _porcion_de_grupo(items):
+    """
+    Cantidad y referencia que se escriben junto a una guarnición. `items` son las apariciones (ya agrupadas por
+    _clave_consolidacion: misma guarnición, misma unidad y mismo plato) de esa guarnición: se suman las
+    porciones y los platos. Devuelve {'etiqueta': '200 g' | '3x' | '' , 'referencia': 'Punta 500 g' | ''}.
+    """
+    porciones = [item.get('porcion') for item in items]
+    nombre, peso = _plato_de_la_guarnicion(items[0])
+    platos = sum((Decimal(item['detalle_padre'].cantidad or 1) for item in items if item.get('detalle_padre')), Decimal('0'))
+    referencia = ''
+    if nombre:
+        prefijo = f'{_num(platos)}x ' if platos > 1 else ''
+        referencia = f'{prefijo}{nombre} {peso}'.strip()
+    if all(porcion is not None for porcion in porciones):
+        etiqueta = _etiqueta_porcion(porciones[0]['unidad'], sum((p['valor'] for p in porciones), Decimal('0')))
+    else:
+        etiqueta = f'{len(items)}x' if len(items) > 1 else ''
+    return {'etiqueta': etiqueta, 'referencia': referencia}
 
 
 def _collect_print_items(detalles):
@@ -189,6 +254,9 @@ def _collect_print_items(detalles):
                 'tipo': 'acompanante',
                 'detalle': None,
                 'opcion': opcion,
+                # Para escribir cuanto lleva de esta guarnicion y de que plato es (ver _porcion_acompanante).
+                'detalle_padre': detalle,
+                'porcion': _calcular_porcion(opcion, detalle),
             })
     return items
 
@@ -197,7 +265,8 @@ def _render_item_individual(item):
     """Renderiza un ítem tal cual (sin consolidar), para cuando va dentro de un bloque
     "PLATO N" — ver _split_items_para_ticket."""
     if item['tipo'] == 'acompanante':
-        return _render_acompanante(item['opcion'])
+        porcion = _porcion_de_grupo([item])
+        return _render_acompanante(item['opcion'], etiqueta=porcion['etiqueta'], referencia=porcion['referencia'])
     return _render_detalle_principal(item['detalle'])
 
 
@@ -266,7 +335,10 @@ def _clave_consolidacion(item):
     (ej. "sin sal" en una sola de cuatro yucas), esa fila queda en su propio grupo en vez
     de mezclarse con las demás."""
     if item['tipo'] == 'acompanante':
-        return ('acompanante', item['opcion'].producto_id)
+        # Las guarniciones solo se juntan si son del mismo plato (mismo nombre y peso): "800 g Yuca, para 4x
+        # Punta 500 g" informa; mezclar platos de pesos distintos no.
+        porcion = item.get('porcion')
+        return ('acompanante', item['opcion'].producto_id, porcion['unidad'] if porcion else None, _plato_de_la_guarnicion(item))
     detalle = item['detalle']
     adicionales = tuple(sorted((a.preparacion_id, a.cantidad) for a in detalle.adicionales.all()))
     opciones_curadas = tuple(sorted(
@@ -302,12 +374,17 @@ def _consolidar_grupos(items):
             orden.append(clave)
         grupos[clave]['cantidad_total'] += _cantidad_item(item)
         grupos[clave]['num_filas'] += 1
+        grupos[clave].setdefault('items', []).append(item)
 
     resultado = []
     for clave in orden:
         grupo = grupos[clave]
         hay_repeticion = grupo['num_filas'] > 1
-        resultado.append({'item': grupo['item'], 'cantidad': grupo['cantidad_total'] if hay_repeticion else None})
+        resultado.append({
+            'item': grupo['item'],
+            'cantidad': grupo['cantidad_total'] if hay_repeticion else None,
+            'porcion': _porcion_de_grupo(grupo['items']) if grupo['item']['tipo'] == 'acompanante' else None,
+        })
     return resultado
 
 
@@ -317,7 +394,9 @@ def _consolidar_items(items):
     for grupo in _consolidar_grupos(items):
         item = grupo['item']
         if item['tipo'] == 'acompanante':
-            renders.append(_render_acompanante(item['opcion'], grupo['cantidad'] if grupo['cantidad'] is not None else 1))
+            renders.append(_render_acompanante(
+                item['opcion'], etiqueta=grupo['porcion']['etiqueta'], referencia=grupo['porcion']['referencia'],
+            ))
         else:
             renders.append(_render_detalle_principal(item['detalle'], cantidad_override=grupo['cantidad']))
     return renders
@@ -476,12 +555,14 @@ def _ancho_comanda():
     return max(8, ancho - ancho % 8)
 
 
-def _linea_comanda(item, cantidad=None):
+def _linea_comanda(item, cantidad=None, porcion=None):
     """Línea de la comanda gráfica de un ítem (ver _render_detalle_principal / _render_acompanante)."""
     if item['tipo'] == 'acompanante':
+        porcion = porcion or _porcion_de_grupo([item])
         return {
-            'cantidad': f'{cantidad if cantidad is not None else 1}x',
+            'cantidad': porcion['etiqueta'] or '1x',
             'nombre': item['opcion'].producto.nombre,
+            'referencia': porcion['referencia'],
             'nota': '', 'opciones': [], 'adicionales': [],
         }
     detalle = item['detalle']
@@ -514,7 +595,7 @@ def _bloques_comanda(items):
             'plato': f'PLATO {grupo_id} - {etiqueta}' if etiqueta else f'PLATO {grupo_id}',
             'lineas': [_linea_comanda(item) for item in plato_items],
         })
-    lineas = [_linea_comanda(grupo['item'], grupo['cantidad']) for grupo in _consolidar_grupos(consolidables)]
+    lineas = [_linea_comanda(grupo['item'], grupo['cantidad'], grupo['porcion']) for grupo in _consolidar_grupos(consolidables)]
     if lineas:
         bloques.append({'plato': None, 'lineas': lineas})
     return bloques
@@ -688,9 +769,9 @@ def imprimir_comandas_pedido(pedido, detalles=None, solo_destinos=None):
             pedido.detalles
             .select_related('producto__categoria')
             .prefetch_related(
-                'adicionales__preparacion', 'opciones__preparacion', 'opciones__producto__categoria',
+                'adicionales__preparacion', 'opciones__preparacion', 'opciones__producto__categoria', 'opciones__grupo',
             )
-            .all()
+            .order_by('id')  # sin orden la base devuelve los platos en cualquier orden: la comanda sale igual cada vez
         )
     if not detalles:
         return resultados
