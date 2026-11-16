@@ -32,7 +32,9 @@ def dibujar_comanda(datos, ancho=ANCHO_DE_DISENO):
       tipo              (opcional) texto de la barra de tipo de pedido ("DELIVERY"); vacío = no se dibuja
       pedido, hora, cliente, mesero    la fila de datos del pedido (cliente puede ir vacío)
       bloques           [{'plato': 'PLATO 2 - CARNES' | None,
-                          'lineas': [{'cantidad', 'nombre', 'nota', 'opciones': [...], 'adicionales': [...]}]}]
+                          'lineas': [{'cantidad', 'nombre', 'nota', 'opciones', 'adicionales',
+                                      'hijas': [{'cantidad', 'nombre'}]   # guarniciones del plato, con sangría
+                                      'encabezado': True si es solo el nombre del plato de unas guarniciones}]}]
       nota_pedido       (opcional) nota general del pedido
     Devuelve una imagen 'L' (255 = blanco) de `ancho` puntos.
     """
@@ -107,16 +109,18 @@ def dibujar_comanda(datos, ancho=ANCHO_DE_DISENO):
                 dibujo.rectangle((x, 7, x + paso // 2, 8), fill=0)
         franjas.append(franja)
 
-    def linea_principal(cantidad, nombre):
-        f_cantidad, f_nombre = f(40), f(34)
-        ancho_cantidad = max(f_cantidad.getlength(str(cantidad)) + 14 * esc, 70 * esc)
-        lineas = envolver(nombre, f_nombre, ancho - 2 * margen - ancho_cantidad)
+    def linea_principal(cantidad, nombre, sangria=0, tam_cantidad=40, tam_nombre=34):
+        """Cantidad (o gramos) en negrita a la izquierda y el nombre a su lado; con `sangria` cuelga del plato."""
+        f_cantidad, f_nombre = f(tam_cantidad), f(tam_nombre)
+        izquierda = margen + sangria
+        ancho_cantidad = max(f_cantidad.getlength(str(cantidad)) + 14 * esc, 70 * esc * tam_cantidad / 40)
+        lineas = envolver(nombre, f_nombre, ancho - margen - izquierda - ancho_cantidad)
         alto_linea = f_nombre.size + round(6 * esc)
         franja = Image.new('L', (ancho, max(alto_linea * len(lineas), f_cantidad.size + round(6 * esc)) + 6), 255)
         dibujo = ImageDraw.Draw(franja)
-        dibujo.text((margen, 2), str(cantidad), font=f_cantidad, fill=0)
+        dibujo.text((izquierda, 2), str(cantidad), font=f_cantidad, fill=0)
         for numero, linea in enumerate(lineas):
-            dibujo.text((margen + ancho_cantidad, 4 + numero * alto_linea), linea, font=f_nombre, fill=0)
+            dibujo.text((izquierda + ancho_cantidad, 4 + numero * alto_linea), linea, font=f_nombre, fill=0)
         franjas.append(franja)
 
     sangria = round(34 * esc)
@@ -147,14 +151,24 @@ def dibujar_comanda(datos, ancho=ANCHO_DE_DISENO):
         primero = False
         if bloque.get('plato'):
             barra_negra(bloque['plato'], f(28), alineacion='izq', relleno=4)
-        for linea in bloque['lineas']:
-            linea_principal(linea['cantidad'], linea['nombre'])
+        for numero_linea, linea in enumerate(bloque['lineas']):
+            if numero_linea:
+                espacio(10)  # un respiro entre un plato (con sus guarniciones) y el siguiente
+            if linea.get('encabezado'):
+                # Las guarniciones llegan a una impresora donde no está su plato: se escribe el plato con sus
+                # gramos ("Punta trasera 500 g") y las guarniciones cuelgan debajo.
+                texto(linea['nombre'], f(36), interlineado=4)
+            else:
+                linea_principal(linea['cantidad'], linea['nombre'])
             for opcion in linea.get('opciones', []):
                 texto(f'» {opcion}', f(26, False), sangria=sangria, interlineado=4)
             for adicional in linea.get('adicionales', []):
                 texto(f'+ {adicional}', f(26), sangria=sangria, interlineado=4)
             if linea.get('nota'):
                 texto(f"* {linea['nota']}", f(28), sangria=sangria, interlineado=4)
+            # Guarniciones del plato: debajo, con sangría y un poco más pequeñas que el plato.
+            for hija in linea.get('hijas', []):
+                linea_principal(hija['cantidad'], hija['nombre'], sangria=2 * sangria, tam_cantidad=34, tam_nombre=30)
 
     if datos.get('nota_pedido'):
         separador(grueso=True)

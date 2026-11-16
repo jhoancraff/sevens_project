@@ -51,7 +51,7 @@ class ComandaBase(TestCase):
 
     def items(self, pedido):
         detalles = list(
-            pedido.detalles.select_related('producto__categoria')
+            pedido.detalles.select_related('producto__categoria').order_by('id')
             .prefetch_related('adicionales__preparacion', 'opciones__preparacion', 'opciones__producto__categoria')
         )
         return _collect_print_items(detalles), detalles
@@ -138,8 +138,9 @@ class BloquesDeLaComandaTests(ComandaBase):
         VGDetallePedidoOpcion.objects.create(detalle_pedido=detalle, grupo_nombre='Guarnición', producto=self.yuca, precio_unitario=0)
         items, _ = self.items(pedido)
         cocina = [i for i in items if i['categoria'].id == self.cocina.id]
-        lineas = _bloques_comanda(cocina)[0]['lineas']
-        self.assertEqual([(l['cantidad'], l['nombre']) for l in lineas], [('1x', 'Yuca al vapor')])
+        (linea,) = _bloques_comanda(cocina)[0]['lineas']
+        self.assertEqual(linea['nombre'], 'Punta trasera 350 g')  # el plato al que acompaña, como encabezado
+        self.assertEqual([(h['cantidad'], h['nombre']) for h in linea['hijas']], [('1x', 'Yuca al vapor')])
 
 
 class DibujoDeLaComandaTests(TestCase):
