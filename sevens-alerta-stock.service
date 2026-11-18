@@ -1,0 +1,18 @@
+# Alerta diaria de stock minimo por Telegram. La lanza sevens-alerta-stock.timer cada hora.
+# Instalar:
+#   sudo cp sevens-alerta-stock.service /etc/systemd/system/sevens-alerta-stock.service
+#   sudo cp sevens-alerta-stock.timer   /etc/systemd/system/sevens-alerta-stock.timer
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now sevens-alerta-stock.timer
+[Unit]
+Description=Sevens - alerta diaria de stock minimo por Telegram
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=sevens
+Group=sevens
+WorkingDirectory=/home/sevens/sevens_project/backend
+EnvironmentFile=/home/sevens/sevens_project/backend/.env
+ExecStart=/home/sevens/sevens_project/backend/venv/bin/python manage.py alertas_stock_minimo
