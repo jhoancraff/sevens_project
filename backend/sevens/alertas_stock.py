@@ -10,8 +10,9 @@ ejecutar(), que decide solo si hay algo que hacer:
   - si hoy ya quedo 'enviado' o 'sin_alertas' tampoco, asi sale una sola vez al dia;
   - si hoy no se ha enviado todavia (primera corrida del dia, servidor que estuvo apagado) o la ultima vez fallo,
     lo intenta ahora. Un fallo se reintenta en la hora siguiente.
-Cada dia queda un registro (VGEjecucionAlertaStock) con el resultado. Si varios chats reciben el aviso y alguno
-falla, al reintentar solo se manda a los que faltan.
+Cada dia queda un registro (VGEjecucionAlertaStock) con el resultado. El aviso sale por Telegram (chats de
+TELEGRAM_CHAT_IDS) y/o por WhatsApp (numeros de WHATSAPP_TO_PHONES), segun lo que este configurado. Si varios
+destinos lo reciben y alguno falla, al reintentar solo se manda a los que faltan.
 """
 import logging
 import os
@@ -25,6 +26,7 @@ from django.utils import timezone
 from .api_views import HIDDEN_INGREDIENT_IDS
 from .models import VGEjecucionAlertaStock, VGIngrediente
 from .telegram_alertas import configuracion, enviar_texto, limpiar_error
+from .whatsapp_alertas import configuracion as configuracion_whatsapp, enviar_plantilla, una_linea
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,32 @@ def armar_mensaje(ingredientes, fecha, aviso_ayer=False):
     return '\n'.join(lineas)
 
 
+LIMITE_RESUMEN_WHATSAPP = 700  # la plantilla admite 1024 caracteres en total; el resto es texto fijo
+
+
+def armar_resumen_whatsapp(ingredientes, limite=LIMITE_RESUMEN_WHATSAPP):
+    """
+    La lista en UNA linea para la variable {{ingredientes}} de la plantilla (Meta no admite saltos de linea):
+    'Pollo: 800 g (mín. 2.000 g) | Sal: 500 g (mín. 500 g)'. Si no caben todos, termina con 'y N más'.
+    """
+    items = [
+        una_linea(f"{item['nombre']}: {_cantidad(item['stock_actual'], item['unidad_medida'])} "
+                  f"(mín. {_cantidad(item['stock_minimo'], item['unidad_medida'])})")
+        for item in ingredientes
+    ]
+    partes = []
+    largo = 0
+    for indice, item in enumerate(items):
+        suma = len(item) + (3 if partes else 0)
+        despues = len(items) - indice - 1
+        cola = len(f' | y {despues} más') if despues else 0
+        if partes and largo + suma + cola > limite:
+            return ' | '.join(partes) + f' | y {len(items) - indice} más'
+        largo += suma
+        partes.append(item)
+    return ' | '.join(partes)
+
+
 def _falta_el_de_ayer(hoy):
     """True si el sistema ya habia corrido antes pero no dejo registro de ayer (servidor apagado ese dia)."""
     ayer = hoy - timedelta(days=1)
@@ -87,11 +115,32 @@ def _falta_el_de_ayer(hoy):
     )
 
 
-def ejecutar(ahora=None, enviar=enviar_texto):
+def destinos_configurados(texto, fecha, resumen, enviar, enviar_whatsapp):
+    """
+    Lista de (clave, secreto, accion) con todos los destinos del aviso. La clave identifica al destino en el
+    registro del dia: el chat de Telegram tal cual, o 'wa:<numero>' para WhatsApp.
+    """
+    destinos = []
+    token, chats = configuracion()
+    if token and chats:
+        for chat in chats:
+            destinos.append((chat, token, lambda chat=chat, token=token: enviar(token, chat, texto)))
+    whatsapp = configuracion_whatsapp()
+    if whatsapp.completa:
+        for numero in whatsapp.numeros:
+            destinos.append((
+                f'wa:{numero}', whatsapp.token,
+                lambda numero=numero, whatsapp=whatsapp: enviar_whatsapp(whatsapp, numero, fecha, resumen),
+            ))
+    return destinos
+
+
+def ejecutar(ahora=None, enviar=enviar_texto, enviar_whatsapp=enviar_plantilla):
     """
     Corre la revision de hoy. Devuelve un dict con 'resultado':
       'fuera_de_horario' | 'ya_enviado' | 'sin_alertas' | 'enviado' | 'fallido'
-    (y 'error' en el caso de 'fallido'). `enviar(token, chat_id, texto)` se puede cambiar en las pruebas.
+    (y 'error' en el caso de 'fallido'). `enviar(token, chat_id, texto)` y
+    `enviar_whatsapp(config, numero, fecha, ingredientes)` se pueden cambiar en las pruebas.
     """
     ahora = timezone.localtime(ahora or timezone.now())
     hoy = ahora.date()
@@ -116,25 +165,30 @@ def ejecutar(ahora=None, enviar=enviar_texto):
             registro.save()
             return {'resultado': 'sin_alertas'}
 
-        token, chats = configuracion()
-        if not token or not chats:
-            error = 'Telegram no está configurado (faltan TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_IDS).'
+        texto = armar_mensaje(ingredientes, hoy, aviso_ayer=_falta_el_de_ayer(hoy))
+        destinos = destinos_configurados(
+            texto, f'{hoy:%d/%m/%Y}', armar_resumen_whatsapp(ingredientes), enviar, enviar_whatsapp,
+        )
+        if not destinos:
+            error = (
+                'El aviso no está configurado: faltan TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_IDS, o '
+                'WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_ACCESS_TOKEN y WHATSAPP_TO_PHONES.'
+            )
             registro.estado = VGEjecucionAlertaStock.FALLIDO
             registro.ultimo_error = error
             registro.save()
             return {'resultado': 'fallido', 'error': error}
 
-        texto = armar_mensaje(ingredientes, hoy, aviso_ayer=_falta_el_de_ayer(hoy))
-        ya_enviados = [chat for chat in registro.chats_enviados.split(',') if chat]
+        ya_enviados = [clave for clave in registro.chats_enviados.split(',') if clave]
         errores = []
-        for chat in chats:
-            if chat in ya_enviados:
+        for clave, secreto, accion in destinos:
+            if clave in ya_enviados:
                 continue
             try:
-                enviar(token, chat, texto)
-                ya_enviados.append(chat)
-            except Exception as error:  # noqa: BLE001 - cualquier fallo de red/Telegram se registra y se reintenta
-                errores.append(f'{chat}: {limpiar_error(error, token)}')
+                accion()
+                ya_enviados.append(clave)
+            except Exception as error:  # noqa: BLE001 - cualquier fallo de red/Telegram/WhatsApp se registra y se reintenta
+                errores.append(f'{clave}: {limpiar_error(error, secreto)}')
         registro.chats_enviados = ','.join(ya_enviados)
 
         if errores:

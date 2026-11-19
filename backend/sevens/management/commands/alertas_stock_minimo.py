@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Alerta diaria de stock minimo por Telegram (ver sevens/alertas_stock.py).
+Alerta diaria de stock minimo por Telegram y/o WhatsApp (ver sevens/alertas_stock.py).
 
 Se ejecuta cada hora desde un timer de systemd (sevens-alerta-stock.service y .timer en la raiz del proyecto). Cada corrida decide sola
 si hay algo que enviar: manda el resumen una sola vez al dia y reintenta cada hora si fallo.
@@ -8,7 +8,7 @@ si hay algo que enviar: manda el resumen una sola vez al dia y reintenta cada ho
 Uso:
     python manage.py alertas_stock_minimo             # la corrida normal (la del timer)
     python manage.py alertas_stock_minimo --simular   # muestra el mensaje de hoy sin enviarlo ni registrarlo
-    python manage.py alertas_stock_minimo --probar    # manda un mensaje de prueba a los chats configurados
+    python manage.py alertas_stock_minimo --probar    # manda un mensaje de prueba a los chats y numeros configurados
     python manage.py alertas_stock_minimo --estado    # resultado de los ultimos 7 dias
 
 Si el envio falla, el comando termina con error (el timer lo muestra como fallido en journalctl) y se reintenta
@@ -20,21 +20,22 @@ from django.utils import timezone
 from sevens import alertas_stock
 from sevens.models import VGEjecucionAlertaStock
 from sevens.telegram_alertas import configuracion, enviar_texto, limpiar_error
+from sevens.whatsapp_alertas import configuracion as configuracion_whatsapp, enviar_plantilla
 
 MENSAJES = {
     'fuera_de_horario': 'Todavía no es la hora de inicio ({hora}:00); no se hace nada.',
     'ya_enviado': 'El aviso de hoy ya quedó registrado; no se repite.',
     'sin_alertas': 'Ningún ingrediente con stock mínimo definido está en su mínimo; no hay nada que enviar.',
-    'enviado': 'Aviso enviado por Telegram ({ingredientes} ingrediente(s)).',
+    'enviado': 'Aviso enviado ({ingredientes} ingrediente(s)).',
 }
 
 
 class Command(BaseCommand):
-    help = 'Envía por Telegram los ingredientes con stock mínimo definido que están en su mínimo o por debajo (una vez al día).'
+    help = 'Envía por Telegram y/o WhatsApp los ingredientes con stock mínimo definido que están en su mínimo o por debajo (una vez al día).'
 
     def add_arguments(self, parser):
         parser.add_argument('--simular', action='store_true', help='Muestra el mensaje sin enviarlo ni registrar el día.')
-        parser.add_argument('--probar', action='store_true', help='Manda un mensaje de prueba a los chats configurados.')
+        parser.add_argument('--probar', action='store_true', help='Manda un mensaje de prueba a los chats y números configurados.')
         parser.add_argument('--estado', action='store_true', help='Muestra el resultado de los últimos 7 días.')
 
     def handle(self, *args, **options):
@@ -55,22 +56,45 @@ class Command(BaseCommand):
         if not ingredientes:
             self.stdout.write('Ningún ingrediente con stock mínimo definido está en su mínimo: hoy no se enviaría nada.')
             return
-        self.stdout.write(alertas_stock.armar_mensaje(ingredientes, timezone.localdate()))
+        hoy = timezone.localdate()
+        self.stdout.write('--- Telegram ---')
+        self.stdout.write(alertas_stock.armar_mensaje(ingredientes, hoy))
+        self.stdout.write('')
+        self.stdout.write('--- WhatsApp (variables de la plantilla) ---')
+        self.stdout.write(f'fecha: {hoy:%d/%m/%Y}')
+        self.stdout.write(f'ingredientes: {alertas_stock.armar_resumen_whatsapp(ingredientes)}')
 
     def _probar(self):
         token, chats = configuracion()
-        if not token or not chats:
-            raise CommandError('Faltan TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_IDS en el .env.')
+        whatsapp = configuracion_whatsapp()
+        telegram_listo = bool(token and chats)
+        if not telegram_listo and not whatsapp.completa:
+            raise CommandError(
+                'Falta configurar un canal en el .env: TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_IDS, o '
+                'WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_ACCESS_TOKEN y WHATSAPP_TO_PHONES.'
+            )
         fallos = 0
-        for chat in chats:
-            try:
-                enviar_texto(token, chat, '✅ Prueba de Sevens: las alertas de stock mínimo llegan a este chat.')
-                self.stdout.write(f'{chat}: enviado')
-            except Exception as error:  # noqa: BLE001
-                fallos += 1
-                self.stdout.write(f'{chat}: ERROR — {limpiar_error(error, token)}')
+        if telegram_listo:
+            for chat in chats:
+                try:
+                    enviar_texto(token, chat, '✅ Prueba de Sevens: las alertas de stock mínimo llegan a este chat.')
+                    self.stdout.write(f'Telegram {chat}: enviado')
+                except Exception as error:  # noqa: BLE001
+                    fallos += 1
+                    self.stdout.write(f'Telegram {chat}: ERROR — {limpiar_error(error, token)}')
+        if whatsapp.completa:
+            for numero in whatsapp.numeros:
+                try:
+                    enviar_plantilla(
+                        whatsapp, numero, f'{timezone.localdate():%d/%m/%Y}',
+                        'PRUEBA de conexión: si ve este mensaje, las alertas de stock mínimo llegan a este número.',
+                    )
+                    self.stdout.write(f'WhatsApp {numero}: enviado')
+                except Exception as error:  # noqa: BLE001
+                    fallos += 1
+                    self.stdout.write(f'WhatsApp {numero}: ERROR — {limpiar_error(error, whatsapp.token)}')
         if fallos:
-            raise CommandError(f'{fallos} chat(s) no recibieron el mensaje de prueba.')
+            raise CommandError(f'{fallos} destino(s) no recibieron el mensaje de prueba.')
 
     def _estado(self):
         registros = list(VGEjecucionAlertaStock.objects.all()[:7])

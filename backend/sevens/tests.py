@@ -9609,6 +9609,8 @@ class AlertaStockMinimoTests(TestCase):
         from sevens.models import VGIngrediente
         patcher = mock.patch.dict(os.environ, {
             'TELEGRAM_BOT_TOKEN': self.TOKEN, 'TELEGRAM_CHAT_IDS': '111,222', 'TELEGRAM_ALERTA_STOCK_HORA': '8',
+            # WhatsApp apagado por defecto: el .env de quien corre las pruebas no debe mandar nada real.
+            'WHATSAPP_PHONE_NUMBER_ID': '', 'WHATSAPP_ACCESS_TOKEN': '', 'WHATSAPP_TO_PHONES': '',
         })
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -9778,3 +9780,151 @@ class AlertaStockMinimoTests(TestCase):
             with self.assertRaises(CommandError) as ctx:
                 call_command('alertas_stock_minimo', stdout=io.StringIO())
         self.assertIn('Unauthorized', str(ctx.exception))
+
+
+class AlertaStockWhatsAppTests(TestCase):
+    """Alerta de stock minimo por WhatsApp (plantilla de Meta): lista en una linea, envio, errores y reintentos."""
+
+    TOKEN_TG = '123:SECRETO'
+    TOKEN_WA = 'EAAG-TOKEN-WA'
+
+    def setUp(self):
+        import os
+        from unittest import mock
+        from sevens.models import VGIngrediente
+        patcher = mock.patch.dict(os.environ, {
+            'TELEGRAM_BOT_TOKEN': '', 'TELEGRAM_CHAT_IDS': '', 'TELEGRAM_ALERTA_STOCK_HORA': '8',
+            'WHATSAPP_PHONE_NUMBER_ID': '1234567890', 'WHATSAPP_ACCESS_TOKEN': self.TOKEN_WA,
+            'WHATSAPP_TO_PHONES': '+58 412-123 4567, 584141112233', 'WHATSAPP_TEMPLATE_STOCK': '', 'WHATSAPP_TEMPLATE_LANG': '',
+        })
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        VGIngrediente.objects.create(
+            nombre='Pollo AWA', unidad_medida='g', stock_actual='800', stock_minimo='2000', costo_unitario='0.01',
+        )
+        self.telegram = []
+        self.whatsapp = []
+
+    def _telegram(self, token, chat, texto):
+        self.telegram.append(chat)
+
+    def _whatsapp(self, config, numero, fecha, ingredientes):
+        self.whatsapp.append((numero, fecha, ingredientes))
+
+    def _a(self, dia, hora, minuto=0):
+        return timezone.make_aware(datetime(2026, 11, dia, hora, minuto))
+
+    def test_los_numeros_se_limpian_a_solo_digitos_con_codigo_de_pais(self):
+        from sevens.whatsapp_alertas import configuracion
+        config = configuracion()
+        self.assertEqual(config.numeros, ['584121234567', '584141112233'])
+        self.assertEqual((config.plantilla, config.idioma), ('alerta_stock_minimo', 'es'))
+        self.assertTrue(config.completa)
+
+    def test_la_lista_va_en_una_sola_linea_con_stock_y_minimo(self):
+        from sevens import alertas_stock
+        from sevens.models import VGIngrediente
+        VGIngrediente.objects.create(nombre='Sal\nfina  AWA', unidad_medida='g', stock_actual='500', stock_minimo='500', costo_unitario='0.002')
+        resumen = alertas_stock.armar_resumen_whatsapp(alertas_stock.ingredientes_en_minimo())
+        self.assertEqual(resumen, 'Pollo AWA: 800 g (mín. 2.000 g) | Sal fina AWA: 500 g (mín. 500 g)')
+        self.assertNotIn('\n', resumen)
+
+    def test_si_no_caben_todos_termina_con_cuantos_faltan_sin_pasar_el_limite(self):
+        from sevens import alertas_stock
+        ingredientes = [
+            {'nombre': f'Ingrediente numero {i}', 'unidad_medida': 'g', 'stock_actual': '10', 'stock_minimo': '20'}
+            for i in range(100)
+        ]
+        resumen = alertas_stock.armar_resumen_whatsapp(ingredientes, limite=200)
+        self.assertLessEqual(len(resumen), 200)
+        self.assertRegex(resumen, r' \| y \d+ más$')
+        mostrados = resumen.count(' | ')  # separadores = ingredientes mostrados (el ultimo separa el 'y N mas')
+        self.assertEqual(int(resumen.rsplit('y ', 1)[1].split(' ')[0]), 100 - mostrados)
+
+    def test_envia_la_plantilla_con_las_variables_con_nombre(self):
+        from unittest import mock
+        from sevens.whatsapp_alertas import configuracion, enviar_plantilla
+        with mock.patch('sevens.whatsapp_alertas.requests.post', return_value=mock.Mock(ok=True)) as post:
+            enviar_plantilla(configuracion(), '584121234567', '19/11/2026', 'Pollo: 800 g\n(mín. 2.000 g)')
+        self.assertEqual(post.call_args.args[0], 'https://graph.facebook.com/v23.0/1234567890/messages')
+        self.assertEqual(post.call_args.kwargs['headers']['Authorization'], f'Bearer {self.TOKEN_WA}')
+        carga = post.call_args.kwargs['json']
+        self.assertEqual((carga['to'], carga['type']), ('584121234567', 'template'))
+        self.assertEqual(carga['template']['name'], 'alerta_stock_minimo')
+        self.assertEqual(carga['template']['language'], {'code': 'es'})
+        self.assertEqual(carga['template']['components'][0]['parameters'], [
+            {'type': 'text', 'parameter_name': 'fecha', 'text': '19/11/2026'},
+            {'type': 'text', 'parameter_name': 'ingredientes', 'text': 'Pollo: 800 g (mín. 2.000 g)'},
+        ])
+
+    def test_un_error_de_meta_se_explica_y_no_muestra_el_token(self):
+        from unittest import mock
+        from sevens.whatsapp_alertas import configuracion, enviar_plantilla
+        respuesta = mock.Mock(ok=False, status_code=400, text='')
+        respuesta.json.return_value = {'error': {'message': f'Bad token {self.TOKEN_WA}', 'code': 131030}}
+        with mock.patch('sevens.whatsapp_alertas.requests.post', return_value=respuesta):
+            with self.assertRaises(RuntimeError) as ctx:
+                enviar_plantilla(configuracion(), '584121234567', '19/11/2026', 'x')
+        mensaje = str(ctx.exception)
+        self.assertIn('400', mensaje)
+        self.assertIn('131030', mensaje)
+        self.assertIn('lista de destinatarios', mensaje)
+        self.assertNotIn(self.TOKEN_WA, mensaje)
+
+    def test_solo_whatsapp_configurado_envia_a_cada_numero_y_queda_registrado(self):
+        from sevens import alertas_stock
+        from sevens.models import VGEjecucionAlertaStock
+        r = alertas_stock.ejecutar(ahora=self._a(17, 9), enviar=self._telegram, enviar_whatsapp=self._whatsapp)
+        self.assertEqual(r['resultado'], 'enviado')
+        self.assertEqual(self.telegram, [])
+        self.assertEqual([n for n, _, _ in self.whatsapp], ['584121234567', '584141112233'])
+        self.assertEqual(self.whatsapp[0][1:], ('17/11/2026', 'Pollo AWA: 800 g (mín. 2.000 g)'))
+        self.assertEqual(VGEjecucionAlertaStock.objects.get(fecha=date(2026, 11, 17)).chats_enviados, 'wa:584121234567,wa:584141112233')
+        # Una sola vez al dia.
+        self.assertEqual(alertas_stock.ejecutar(ahora=self._a(17, 10), enviar=self._telegram, enviar_whatsapp=self._whatsapp)['resultado'], 'ya_enviado')
+        self.assertEqual(len(self.whatsapp), 2)
+
+    def test_con_los_dos_canales_si_falla_un_numero_solo_se_reintenta_ese(self):
+        import os
+        from unittest import mock
+        from sevens import alertas_stock
+
+        def whatsapp_con_uno_caido(config, numero, fecha, ingredientes):
+            if numero == '584141112233':
+                raise RuntimeError(f'sin internet {config.token}')
+            self.whatsapp.append((numero, fecha, ingredientes))
+
+        with mock.patch.dict(os.environ, {'TELEGRAM_BOT_TOKEN': self.TOKEN_TG, 'TELEGRAM_CHAT_IDS': '111'}):
+            r = alertas_stock.ejecutar(ahora=self._a(17, 9), enviar=self._telegram, enviar_whatsapp=whatsapp_con_uno_caido)
+            self.assertEqual(r['resultado'], 'fallido')
+            self.assertIn('wa:584141112233', r['error'])
+            self.assertNotIn(self.TOKEN_WA, r['error'])
+            r = alertas_stock.ejecutar(ahora=self._a(17, 10), enviar=self._telegram, enviar_whatsapp=self._whatsapp)
+        self.assertEqual(r['resultado'], 'enviado')
+        # Telegram y el primer numero no reciben el aviso por segunda vez.
+        self.assertEqual(self.telegram, ['111'])
+        self.assertEqual([n for n, _, _ in self.whatsapp], ['584121234567', '584141112233'])
+
+    def test_si_no_hay_ningun_canal_queda_fallido_con_el_motivo(self):
+        import os
+        from unittest import mock
+        from sevens import alertas_stock
+        with mock.patch.dict(os.environ, {'WHATSAPP_ACCESS_TOKEN': ''}):
+            r = alertas_stock.ejecutar(ahora=self._a(17, 9), enviar=self._telegram, enviar_whatsapp=self._whatsapp)
+        self.assertEqual(r['resultado'], 'fallido')
+        self.assertIn('no está configurado', r['error'])
+        self.assertEqual(self.whatsapp, [])
+
+    def test_el_comando_prueba_y_simula_con_whatsapp(self):
+        import io
+        from django.core.management import call_command
+        from unittest import mock
+        with mock.patch('sevens.whatsapp_alertas.requests.post', return_value=mock.Mock(ok=True)) as post:
+            salida = io.StringIO()
+            call_command('alertas_stock_minimo', '--probar', stdout=salida)
+        self.assertEqual(post.call_count, 2)
+        self.assertIn('WhatsApp 584121234567: enviado', salida.getvalue())
+        self.assertIn('PRUEBA', post.call_args.kwargs['json']['template']['components'][0]['parameters'][1]['text'])
+        salida = io.StringIO()
+        call_command('alertas_stock_minimo', '--simular', stdout=salida)
+        self.assertIn('ingredientes: Pollo AWA: 800 g (mín. 2.000 g)', salida.getvalue())
