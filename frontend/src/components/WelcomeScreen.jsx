@@ -81,6 +81,7 @@ import AnalystMargenGananciaPage from './AnalystMargenGananciaPage';
 import AnalystMargenGananciaDetalladoPage from './AnalystMargenGananciaDetalladoPage';
 import AnalystMovimientoProductosPage from './AnalystMovimientoProductosPage';
 import AnalystConfiguracionCosteoPage from './AnalystConfiguracionCosteoPage';
+import AnalystMermaConfigPage from './AnalystMermaConfigPage';
 import EditOrderPage from './EditOrderPage';
 import MesasAtendidasPage from './MesasAtendidasPage';
 import NewOrderPage from './NewOrderPage';
@@ -1215,6 +1216,12 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
           />
         ) : activeView === 'admin-configuracion-costeo' ? (
           <AnalystConfiguracionCosteoPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onMerma={() => goToView('admin-merma-ingredientes')}
+          />
+        ) : activeView === 'admin-merma-ingredientes' ? (
+          <AnalystMermaConfigPage
             isMobile={isMobile}
             onBack={goBackView}
           />
