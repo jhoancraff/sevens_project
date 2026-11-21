@@ -39,6 +39,7 @@ import AnalystActivosPage from './AnalystActivosPage';
 import AnalystInventarioGeneralPage from './AnalystInventarioGeneralPage';
 import AnalystInventarioMovimientosPage from './AnalystInventarioMovimientosPage';
 import AnalystInventoryCategoriesPage from './AnalystInventoryCategoriesPage';
+import AnalystStockMinimoPage from './AnalystStockMinimoPage';
 import { limpiarFiltroInventario } from '../utils/filtroInventario';
 import AnalystProductCategoriesPage from './AnalystProductCategoriesPage';
 import AnalystInventoryHubPage from './AnalystInventoryHubPage';
@@ -1464,6 +1465,14 @@ function WelcomeScreen({ name, role, isAdmin, isOwner, onBack }) {
             onGeneral={() => goToView('admin-inventario-general')}
             onMovimientos={() => goToView('admin-inventario-movimientos')}
             onViewAlerts={() => goToView('admin-alertas-costos')}
+            onStockMinimo={() => goToView('admin-ingredients-stock-minimo')}
+          />
+        ) : activeView === 'admin-ingredients-stock-minimo' ? (
+          <AnalystStockMinimoPage
+            isMobile={isMobile}
+            onBack={goBackView}
+            onEdit={(ingredientId) => goToView(`admin-ingredients-edit:${ingredientId}`)}
+            onCargarCompra={() => goToView('admin-ingredients-compras-borrador')}
           />
         ) : activeView === 'admin-alertas-costos' ? (
           <AnalystAlertasCostosPage

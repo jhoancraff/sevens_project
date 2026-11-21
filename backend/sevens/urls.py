@@ -111,6 +111,7 @@ from .activos_views import (
 )
 from .categorias_inventario_views import admin_categorias_inventario_view
 from .merma_ingredientes_views import admin_merma_ingredientes_view
+from .stock_minimo_views import admin_stock_minimo_view
 from .categorias_productos_views import admin_categorias_productos_view
 from .inventario_movimientos_views import admin_inventario_movimientos_view
 from .conciliacion_bancaria_views import (
@@ -239,6 +240,7 @@ urlpatterns = [
     path('admin/categorias/', admin_categorias_view, name='admin_categorias'),
     path('admin/categorias-inventario/', admin_categorias_inventario_view, name='admin_categorias_inventario'),
     path('admin/merma-ingredientes/', admin_merma_ingredientes_view, name='admin_merma_ingredientes'),
+    path('admin/stock-minimo/', admin_stock_minimo_view, name='admin_stock_minimo'),
     path('admin/categorias-productos/', admin_categorias_productos_view, name='admin_categorias_productos'),
     path('admin/activos/', admin_activos_view, name='admin_activos'),
     path('admin/categorias-activos/', admin_categorias_activos_view, name='admin_categorias_activos'),

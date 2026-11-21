@@ -64,6 +64,14 @@ const GridIcon = () => (
   </svg>
 );
 
+const LowStockIcon = () => (
+  <svg {...iconProps}>
+    <path d="M3 8 12 3l9 5v8l-9 5-9-5V8Z" />
+    <path d="M12 11v5" />
+    <path d="m9.5 14 2.5 2.5 2.5-2.5" />
+  </svg>
+);
+
 const AlertIcon = () => (
   <svg {...iconProps}>
     <path d="M12 3 2 20h20L12 3Z" />
@@ -93,6 +101,10 @@ const grupos = [
       { id: 'adjust', title: 'Ajuste de inventario', detalle: 'Corregir el stock tras un conteo', icon: AdjustIcon },
       { id: 'categories', title: 'Categorías de inventario', detalle: 'Condimentos, carnes, granos, bolsas...', icon: TagIcon },
       {
+        id: 'stockMinimo', title: 'Stock mínimo', detalle: 'Lo que hay que reponer, y cargar la compra', icon: LowStockIcon,
+        badgeKey: 'stockMinimo', badgeTexto: 'ingredientes en su mínimo', badgeTitulo: 'Ingredientes en su stock mínimo o por debajo',
+      },
+      {
         id: 'alertas', title: 'Alertas de precios', detalle: 'Cambios fuertes en el costo de un ingrediente', icon: AlertIcon,
         badgeKey: 'alertasPrecio', badgeTexto: 'alertas pendientes', badgeTitulo: 'Alertas de precio pendientes de revisión',
       },
@@ -118,10 +130,11 @@ const grupos = [
 
 function AnalystInventoryHubPage({
   isMobile, onBack, onCreate, onViewInventory, onAdjustInventory, onCategories,
-  onActivos, onActivosCategories, onGeneral, onMovimientos, onViewAlerts,
+  onActivos, onActivosCategories, onGeneral, onMovimientos, onViewAlerts, onStockMinimo,
 }) {
   const [bajoMinimo, setBajoMinimo] = useState(0);
   const [alertasPrecio, setAlertasPrecio] = useState(0);
+  const [stockMinimo, setStockMinimo] = useState(0);
 
   // Aviso (como los de Contabilidad): cuántos utensilios o dotaciones están en su mínimo o por debajo.
   useEffect(() => {
@@ -146,15 +159,20 @@ function AnalystInventoryHubPage({
       .then((respuesta) => respuesta.json().catch(() => ({})))
       .then((json) => { if (!cancelado && json.ok) setAlertasPrecio(Number(json.pendientes) || 0); })
       .catch(() => {});
+    // Cuantos ingredientes estan en su stock minimo o por debajo (el mismo reporte del aviso de Telegram).
+    fetch('/api/admin/stock-minimo/', { credentials: 'include', cache: 'no-store' })
+      .then((respuesta) => respuesta.json().catch(() => ({})))
+      .then((json) => { if (!cancelado && json.ok) setStockMinimo(Number(json.resumen?.total) || 0); })
+      .catch(() => {});
     return () => { cancelado = true; };
   }, []);
 
   const handlers = {
     create: onCreate, view: onViewInventory, adjust: onAdjustInventory, categories: onCategories,
     activos: onActivos, 'activos-categories': onActivosCategories, general: onGeneral, movimientos: onMovimientos,
-    alertas: onViewAlerts,
+    alertas: onViewAlerts, stockMinimo: onStockMinimo,
   };
-  const badges = { bajoMinimo, alertasPrecio };
+  const badges = { bajoMinimo, alertasPrecio, stockMinimo };
 
   const renderTile = (opcion) => {
     const Icono = opcion.icon;
