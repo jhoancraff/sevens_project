@@ -120,6 +120,20 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
   // Totales de lo que se ve (todas las ventas del rango, o las del plato elegido): se suman linea por
   // linea, asi que un plato que se repite cuenta cada vez que se vendio.
   const totalesVisibles = useMemo(() => {
+    // Sin filtro de plato se usan los totales del servidor, que suman las ventas sin redondear y redondean una sola
+    // vez. Sumar aqui los totales ya redondeados de cada plato arrastraba centavos de diferencia (cada plato redondea
+    // a su centavo) y el costo no coincidia con el del Estado de resultados.
+    if (!productoSeleccionado && data?.totales) {
+      const t = data.totales;
+      return {
+        lineas: Number(data.total_lineas || 0),
+        ingreso: Number(t.ingreso_total),
+        costo: Number(t.costo_total),
+        costoConMargen: Number(t.costo_con_margen_total),
+        ganancia: Number(t.ganancia_monto),
+        gananciaPct: Number(t.ganancia_pct),
+      };
+    }
     const acumulado = { lineas: 0, ingreso: 0, costo: 0, costoConMargen: 0 };
     seccionesFiltradas.forEach((seccion) => {
       acumulado.lineas += Number(seccion.total_lineas || 0);
@@ -129,7 +143,7 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
     });
     const ganancia = acumulado.ingreso - acumulado.costoConMargen;
     return { ...acumulado, ganancia, gananciaPct: acumulado.ingreso > 0 ? (ganancia / acumulado.ingreso) * 100 : 0 };
-  }, [seccionesFiltradas]);
+  }, [seccionesFiltradas, productoSeleccionado, data]);
 
   return (
     <section style={containerStyle(isMobile)}>
@@ -149,6 +163,10 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
 
       <div>
         <h2 style={titleStyle(isMobile)}>Detalles de margen de ganancia por plato</h2>
+        <p style={subtitleStyle}>
+          Solo ventas cobradas, igual que el Estado de resultados: notas de entrega pagadas o abonadas, por su fecha de
+          emisión. Una nota pendiente de pago no entra hasta que se abona, y una abonada a medias cuenta la parte cobrada.
+        </p>
       </div>
 
       <RangoFechas
@@ -277,7 +295,17 @@ function AnalystMargenGananciaDetalladoPage({ isMobile, onBack }) {
                           <div style={{ ...cellStyle, fontWeight: 700, color: 'var(--vg-f-8fffb0)' }}>{formatCantidadFila(fila)}</div>
                           <div style={cellStyle}>{formatHora(fila.fecha_hora)}</div>
                           <div style={cellStyle}>#{fila.pedido_id}</div>
-                          <div style={cellStyle}>{fila.nota_entrega_codigo || '—'}</div>
+                          <div style={cellStyle}>
+                            {fila.nota_entrega_codigo || '—'}
+                            {fila.cobro_parcial ? (
+                              <span
+                                style={estimadoBadgeInlineStyle}
+                                title="Nota abonada a medias: el ingreso, el costo y la cantidad cuentan solo la parte cobrada, igual que en el Estado de resultados."
+                              >
+                                cobrado {Math.round(Number(fila.fraccion_cobrada) * 100)}%
+                              </span>
+                            ) : null}
+                          </div>
                           <div style={cellStyle}>
                             ${formatMonto(fila.ingreso)}
                             <BsAmount amountUsd={fila.ingreso} tasa={tasaCambio} />
