@@ -277,11 +277,47 @@ def _es_prioritario(grupo_items):
     return any(item['categoria'] is not None and item['categoria'].prioridad_comanda for item in grupo_items)
 
 
+def _etiqueta_categoria(categoria):
+    """Nombre de la categoría para escribirlo en la comanda, o '' si es una categoría oculta (activa=False): las
+    ocultas existen solo para armar opciones (ej. las guarniciones de un plato) y nunca se imprimen."""
+    if categoria is None or not categoria.activa:
+        return ''
+    return categoria.nombre.upper()
+
+
+def _titulo_estacion(categorias):
+    """
+    Título de la comanda: las categorías VISIBLES que imprimen en esa impresora, sin repetir. Las ocultas no cuentan.
+    Si todas lo son (ej. el ticket solo trae una guarnición de una categoría oculta), se usan las categorías visibles
+    que normalmente imprimen en esa misma impresora; si no hay ninguna, "COMANDA".
+    """
+    visibles = sorted({categoria.nombre.upper() for categoria in categorias if categoria.activa})
+    if visibles:
+        return ' / '.join(visibles)
+    referencia = next((categoria for categoria in categorias if categoria.ip_impresora), None)
+    if referencia is not None:
+        from .models import VGCategoriaProducto  # import tardío: los modelos importan este módulo indirectamente
+        habituales = list(
+            VGCategoriaProducto.objects
+            .filter(ip_impresora=referencia.ip_impresora, puerto_impresora=referencia.puerto_impresora, activa=True)
+            .order_by('nombre').values_list('nombre', flat=True)
+        )
+        if habituales:
+            return ' / '.join(nombre.upper() for nombre in habituales)
+    return 'COMANDA'
+
+
+def _titulo_plato(numero, etiqueta, mayusculas=True):
+    """"PLATO 2 - CARNES", o solo "PLATO 2" si la categoría no se imprime (oculta)."""
+    base = 'PLATO' if mayusculas else 'Plato'
+    return f'{base} {numero} - {etiqueta}' if etiqueta else f'{base} {numero}'
+
+
 def _plato_categoria_label(items):
     """Nombres de categoría (sin repetir, en mayúsculas) de los ítems de un plato, para el
     encabezado "PLATO N - CATEGORÍA". Normalmente es una sola (ej. "ENTRADA"); si el plato
     combina categorías distintas (armado manual mezclando productos) se listan todas."""
-    nombres = sorted({item['categoria'].nombre.upper() for item in items if item['categoria'] is not None})
+    nombres = sorted({_etiqueta_categoria(item['categoria']) for item in items} - {''})
     return ' / '.join(nombres)
 
 
@@ -413,7 +449,7 @@ def _build_ticket_texto_bytes(pedido, categorias, items):
     # (ej: Carnes + Guarniciones + Entradas en la impresora de cocina). Ya no se
     # etiqueta cada línea con su categoría (el título "PLATO N" en negrita ya separa
     # cada plato); este encabezado solo indica qué estación imprimió el ticket.
-    encabezado = ' / '.join(sorted(c.nombre.upper() for c in categorias))
+    encabezado = _titulo_estacion(categorias)
 
     out = bytearray()
     # Secuencia mínima robusta para este equipo: reset ESC/POS + salir de modo
@@ -518,7 +554,7 @@ def _build_ticket_secundario_texto_bytes(pedido, categoria, detalles):
     out += BOLD_ON
     out += _text('SEVEN') + FEED
     out += BOLD_OFF
-    out += _text(categoria.nombre.upper()) + FEED
+    out += _text(_titulo_estacion([categoria])) + FEED
     out += ALIGN_LEFT
     out += _text('=' * LINE_WIDTH) + FEED
     # Mismo criterio de prioridad que el ticket completo (ver _build_ticket_bytes):
@@ -536,7 +572,7 @@ def _build_ticket_secundario_texto_bytes(pedido, categoria, detalles):
 
     for detalle in detalles:
         if detalle.grupo_armado:
-            out += BOLD_ON + _text(f'Plato {detalle.grupo_armado} - {categoria.nombre.upper()}') + BOLD_OFF + FEED
+            out += BOLD_ON + _text(_titulo_plato(detalle.grupo_armado, _etiqueta_categoria(categoria), mayusculas=False)) + BOLD_OFF + FEED
         out += _render_linea_reducida(detalle)
 
     out += FEED + FEED + FEED + FEED
@@ -701,7 +737,7 @@ def _build_ticket_bytes(pedido, categorias, items):
     """Comanda de una impresora: gráfica si se puede; si algo falla (Pillow, fuentes) cae al texto de siempre."""
     if _comanda_grafica_activa():
         try:
-            estacion = ' / '.join(sorted(c.nombre.upper() for c in categorias))
+            estacion = _titulo_estacion(categorias)
             return _comanda_a_bytes(_datos_comanda(pedido, estacion, _bloques_comanda(items)))
         except Exception:
             logger.exception('No se pudo dibujar la comanda del pedido %s; se imprime en texto.', pedido.id)
@@ -719,10 +755,10 @@ def _build_ticket_secundario_bytes(pedido, categoria, detalles):
                     'nota': detalle.notas or '', 'opciones': [], 'adicionales': [],
                 }
                 bloques.append({
-                    'plato': f'PLATO {detalle.grupo_armado} - {categoria.nombre.upper()}' if detalle.grupo_armado else None,
+                    'plato': _titulo_plato(detalle.grupo_armado, _etiqueta_categoria(categoria)) if detalle.grupo_armado else None,
                     'lineas': [linea],
                 })
-            return _comanda_a_bytes(_datos_comanda(pedido, categoria.nombre.upper(), bloques))
+            return _comanda_a_bytes(_datos_comanda(pedido, _titulo_estacion([categoria]), bloques))
         except Exception:
             logger.exception('No se pudo dibujar la comanda secundaria del pedido %s; se imprime en texto.', pedido.id)
     return _build_ticket_secundario_texto_bytes(pedido, categoria, detalles)
