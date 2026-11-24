@@ -254,3 +254,33 @@ class DisenoDeLaComandaTests(PorcionesBase):
             'bloques': [{'plato': None, 'lineas': self.lineas(pedido)}],
         }
         self.assertEqual(dibujar_comanda(datos).width, 576)
+
+    def test_la_nota_del_plato_viaja_con_sus_guarniciones_a_su_impresora(self):
+        pedido, detalle = self.plato(500, [self.papas])
+        VGDetallePedido.objects.filter(pk=detalle.pk).update(notas='sin sal')
+        (linea,) = self.lineas(pedido, self.guarniciones)
+        self.assertEqual(linea['nombre'], 'Punta trasera 500 g')
+        self.assertEqual(linea['nota'], 'sin sal')
+        self.assertEqual([(h['cantidad'], h['nombre']) for h in linea['hijas']], [('200 g', 'Papas fritas')])
+
+    def test_la_nota_sigue_saliendo_tambien_en_la_comanda_de_la_carne(self):
+        pedido, detalle = self.plato(500, [self.papas])
+        VGDetallePedido.objects.filter(pk=detalle.pk).update(notas='bien cocida')
+        (linea,) = self.lineas(pedido, self.carnes)
+        self.assertEqual(linea['nota'], 'bien cocida')
+
+    def test_dos_platos_iguales_con_notas_distintas_las_juntan_y_sin_repetir(self):
+        pedido, primero = self.plato(500, [self.papas])
+        _, segundo = self.plato(500, [self.papas], pedido=pedido)
+        _, tercero = self.plato(500, [self.papas], pedido=pedido)
+        VGDetallePedido.objects.filter(pk=primero.pk).update(notas='sin sal')
+        VGDetallePedido.objects.filter(pk=segundo.pk).update(notas='bien cocida')
+        VGDetallePedido.objects.filter(pk=tercero.pk).update(notas='sin sal')
+        (linea,) = self.lineas(pedido, self.guarniciones)
+        self.assertEqual(linea['nombre'], '3x Punta trasera 500 g')
+        self.assertEqual(linea['nota'], 'sin sal / bien cocida')
+
+    def test_sin_nota_el_encabezado_de_guarniciones_no_lleva_nada(self):
+        pedido, _ = self.plato(500, [self.papas])
+        (linea,) = self.lineas(pedido, self.guarniciones)
+        self.assertEqual(linea['nota'], '')

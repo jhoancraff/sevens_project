@@ -675,8 +675,14 @@ def _lineas_de_items(items):
         padres = {item['detalle_padre'].id: Decimal(item['detalle_padre'].cantidad or 1) for item in its}
         platos = sum(padres.values(), Decimal('0'))
         encabezado = f"{_num(platos) + 'x ' if platos > 1 else ''}{nombre} {peso}".strip()
+        # La nota del plato ("sin sal", "bien cocida") viaja con sus guarniciones: quien las prepara también la lee.
+        notas = []
+        for item in its:
+            nota = (item['detalle_padre'].notas or '').strip()
+            if nota and nota not in notas:
+                notas.append(nota)
         lineas.append({
-            'cantidad': '', 'nombre': encabezado, 'encabezado': True, 'nota': '', 'opciones': [], 'adicionales': [],
+            'cantidad': '', 'nombre': encabezado, 'encabezado': True, 'nota': ' / '.join(notas), 'opciones': [], 'adicionales': [],
             'hijas': _lineas_hijas(its),
         })
     return lineas
