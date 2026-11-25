@@ -54,7 +54,10 @@ def _usos(ingrediente_ids):
         usos.setdefault(fila.ingrediente_id, []).append(
             {'tipo': 'receta', 'nombre': fila.producto.nombre, 'cantidad': f'{fila.cantidad_requerida.normalize():f}'}
         )
-    for fila in VGRecetaPreparacion.objects.filter(ingrediente_id__in=ingrediente_ids).select_related('preparacion'):
+    # Las subrecetas bloqueadas (recetas secretas) no se listan: "este ingrediente se usa en ella" ya la delata.
+    for fila in VGRecetaPreparacion.objects.filter(
+        ingrediente_id__in=ingrediente_ids, preparacion__bloqueada=False,
+    ).select_related('preparacion'):
         usos.setdefault(fila.ingrediente_id, []).append(
             {'tipo': 'subreceta', 'nombre': fila.preparacion.nombre, 'cantidad': f'{fila.cantidad_requerida.normalize():f}'}
         )

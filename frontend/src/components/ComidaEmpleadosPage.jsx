@@ -183,7 +183,7 @@ function ComidaEmpleadosPage({ isMobile, onBack }) {
           turno,
           nota,
           // La cajera ya vio y aceptó el aviso de stock en la confirmación.
-          confirmar_stock_insuficiente: Boolean(vistaPrevia && vistaPrevia.sin_stock.length > 0),
+          confirmar_stock_insuficiente: Boolean(vistaPrevia && (vistaPrevia.hay_faltantes || vistaPrevia.sin_stock.length > 0)),
         },
       });
       if (!ok) {
@@ -210,7 +210,8 @@ function ComidaEmpleadosPage({ isMobile, onBack }) {
     setAbiertas((actual) => ({ ...actual, [comida.id]: !abierta }));
     if (!abierta && !lineas[comida.id]) {
       const { ok, json } = await api(`/api/admin/comida-empleados/${comida.id}/`);
-      setLineas((actual) => ({ ...actual, [comida.id]: ok ? json.comida.lineas : [] }));
+      // Una receta bloqueada no trae sus ingredientes (ver subrecetas bloqueadas).
+      setLineas((actual) => ({ ...actual, [comida.id]: ok ? (json.comida.oculta ? 'oculta' : json.comida.lineas) : [] }));
     }
   };
 
@@ -244,7 +245,15 @@ function ComidaEmpleadosPage({ isMobile, onBack }) {
     <>
       ¿Estás seguro de usar {TIPO_ARTICULO[tipo]} <strong>«{elegido.nombre}»</strong> para la comida del día
       ({formatCantidad(cantidad)} {elegido.unidad}{fecha !== hoyIso ? `, del ${formatFecha(fecha)}` : ''})?
-      {' '}Se descontarán {vistaPrevia.lineas.length} ingredientes del inventario por un costo de ${formatMonto(vistaPrevia.costo_total)}.
+      {' '}{vistaPrevia.oculta
+        ? 'Se descontarán del inventario los ingredientes de la receta bloqueada.'
+        : `Se descontarán ${vistaPrevia.lineas.length} ingredientes del inventario por un costo de $${formatMonto(vistaPrevia.costo_total)}.`}
+      {vistaPrevia.oculta && vistaPrevia.hay_faltantes ? (
+        <>
+          <br /><br />
+          <strong style={{ color: 'var(--vg-f-ffcf7d)' }}>Atención:</strong> no alcanza el stock de algún ingrediente; quedará en negativo.
+        </>
+      ) : null}
       {sinStock.length > 0 ? (
         <>
           <br /><br />
@@ -372,6 +381,13 @@ function ComidaEmpleadosPage({ isMobile, onBack }) {
                     {' '}{yaRegistradas.map((comida) => `${comida.nombre} (${formatCantidad(comida.cantidad)} ${comida.unidad})`).join(', ')}.
                   </div>
                 ) : null}
+                {vistaPrevia.oculta ? (
+                  <div style={infoStyle}>
+                    🔒 Receta bloqueada: no se muestran sus ingredientes ni su costo.
+                    {vistaPrevia.hay_faltantes ? ' No alcanza el stock de algún ingrediente: quedará en negativo.' : ''}
+                  </div>
+                ) : (
+                <>
                 <div style={tablaScrollStyle}>
                   <table style={tablaStyle}>
                     <thead>
@@ -399,6 +415,8 @@ function ComidaEmpleadosPage({ isMobile, onBack }) {
                   </table>
                 </div>
                 <div style={totalStyle}>Costo total: <strong>${formatMonto(vistaPrevia.costo_total)}</strong></div>
+                </>
+                )}
               </div>
             ) : null}
 
@@ -470,7 +488,9 @@ function ComidaEmpleadosPage({ isMobile, onBack }) {
                 </div>
                 {abiertas[comida.id] ? (
                   <div style={{ marginTop: 8 }}>
-                    {!lineas[comida.id] ? <div style={mutedStyle}>Cargando...</div> : (
+                    {!lineas[comida.id] ? <div style={mutedStyle}>Cargando...</div> : lineas[comida.id] === 'oculta' ? (
+                      <div style={mutedStyle}>🔒 Receta bloqueada: ingredientes ocultos.</div>
+                    ) : (
                       <ul style={listaStyle}>
                         {lineas[comida.id].map((linea) => (
                           <li key={linea.ingrediente_id} style={lineaStyle}>

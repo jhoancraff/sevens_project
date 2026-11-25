@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import AbstractUser
 from django.core.validators import MinValueValidator
 from django.db import models
@@ -227,6 +228,8 @@ class VGProducto(VGAuditoria):
                 for componente in self.receta_vinculada.receta.all()
             ]
         if self.subreceta_vinculada_id:
+            if self.subreceta_vinculada.bloqueada:
+                return []  # receta secreta: ni el mesero ve de qué está hecha (ver subrecetas_bloqueadas.py)
             return [
                 (componente.ingrediente.nombre if componente.ingrediente_id else componente.sub_preparacion.nombre)
                 for componente in self.subreceta_vinculada.componentes.all()
@@ -521,6 +524,17 @@ class VGPreparacion(VGAuditoria):
         max_digits=6, decimal_places=2, null=True, blank=True,
         help_text="Porcentaje de ganancia sobre el costo unitario (ej: 40.00 = 40%). Solo aplica cuando es_adicional=True.",
     )
+    bloqueada = models.BooleanField(
+        default=False,
+        help_text=(
+            "Receta secreta: en la aplicación no se muestran sus ingredientes, cantidades ni costo sin el código, "
+            "y solo se modifica desde el Django Admin. Solo un superusuario puede bloquear o desbloquear."
+        ),
+    )
+    codigo_acceso = models.CharField(
+        max_length=128, blank=True, editable=False,
+        help_text="Código de acceso guardado como una contraseña (hash): no se puede leer, solo cambiar.",
+    )
 
     class Meta:
         db_table = "vg_preparaciones"
@@ -529,6 +543,33 @@ class VGPreparacion(VGAuditoria):
 
     def __str__(self):
         return self.nombre
+
+    def poner_codigo(self, codigo):
+        self.codigo_acceso = make_password(codigo)
+
+    def codigo_correcto(self, codigo):
+        return bool(self.codigo_acceso) and check_password(codigo, self.codigo_acceso)
+
+
+class VGAccesoSubreceta(models.Model):
+    """Cada intento de abrir una subreceta bloqueada (bueno o malo): auditoría y freno a quien adivina el código."""
+    preparacion = models.ForeignKey(VGPreparacion, on_delete=models.CASCADE, related_name="accesos")
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="accesos_subrecetas",
+    )
+    exitoso = models.BooleanField()
+    fecha = models.DateTimeField(auto_now_add=True)
+    ip = models.GenericIPAddressField(null=True, blank=True)
+
+    class Meta:
+        db_table = "vg_accesos_subreceta"
+        verbose_name = "Acceso a subreceta bloqueada"
+        verbose_name_plural = "Accesos a subrecetas bloqueadas"
+        ordering = ["-fecha", "-id"]
+        indexes = [models.Index(fields=["usuario", "preparacion", "fecha"], name="vg_acceso_sub_idx")]
+
+    def __str__(self):
+        return f"{self.usuario} · {self.preparacion} · {'abrió' if self.exitoso else 'código errado'}"
 
 
 class VGGrupoOpcionProducto(models.Model):

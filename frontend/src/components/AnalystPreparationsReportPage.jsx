@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Pagination from './Pagination';
 import BsAmount from './BsAmount';
+import SubrecetaBloqueadaModal from './SubrecetaBloqueadaModal';
 import Toast from './Toast';
 import useExchangeRate from '../hooks/useExchangeRate';
 import useToast from '../hooks/useToast';
@@ -15,6 +16,7 @@ function AnalystPreparationsReportPage({ isMobile, onBack, onCreateNew, onEdit }
   const [saving, setSaving] = useState(false);
   const { toast, showSuccess, showError, hideToast } = useToast();
   const [page, setPage] = useState(0);
+  const [bloqueadaAbierta, setBloqueadaAbierta] = useState(null);
 
   useEffect(() => {
     const loadData = async () => {
@@ -95,6 +97,10 @@ function AnalystPreparationsReportPage({ isMobile, onBack, onCreateNew, onEdit }
 
       <Toast toast={toast} onClose={hideToast} />
 
+      {bloqueadaAbierta ? (
+        <SubrecetaBloqueadaModal subreceta={bloqueadaAbierta} onClose={() => setBloqueadaAbierta(null)} />
+      ) : null}
+
       <section style={panelStyle}>
         <div style={toolbarStyle(isMobile)}>
           <div style={sectionTitleStyle}>Listado</div>
@@ -128,22 +134,43 @@ function AnalystPreparationsReportPage({ isMobile, onBack, onCreateNew, onEdit }
                     {item.rendimiento_cantidad || '0'} {item.rendimiento_unidad || 'unidad'}
                   </div>
                   <div key={`components-${item.id}`} style={cellStyle}>
-                    <div style={{ color: 'var(--vg-f-ffcaca)', fontSize: 13, fontWeight: 700 }}>{item.componentes_total || 0} componentes</div>
-                    <div style={{ color: 'var(--vg-f-d2c4c4)', fontSize: 13 }}>{(item.componentes || []).slice(0, 3).map((component) => component.nombre).join(', ') || 'Sin componentes'}</div>
+                    {item.bloqueada ? (
+                      <div style={{ color: 'var(--vg-f-ffcf85)', fontSize: 13, fontWeight: 700 }}>🔒 Receta bloqueada</div>
+                    ) : (
+                      <>
+                        <div style={{ color: 'var(--vg-f-ffcaca)', fontSize: 13, fontWeight: 700 }}>{item.componentes_total || 0} componentes</div>
+                        <div style={{ color: 'var(--vg-f-d2c4c4)', fontSize: 13 }}>{(item.componentes || []).slice(0, 3).map((component) => component.nombre).join(', ') || 'Sin componentes'}</div>
+                      </>
+                    )}
                   </div>
                   <div key={`cost-${item.id}`} style={cellStyle}>
-                    <div style={{ color: 'var(--vg-text-strong)', fontWeight: 700 }}>${item.costo_total || '0.00'} total</div>
-                    <div style={{ color: 'var(--vg-f-7dffa0)', fontSize: 13 }}>${Number(item.costo_unitario_calculado || 0).toFixed(4)} / {item.rendimiento_unidad || 'unidad'}</div>
+                    {item.bloqueada ? (
+                      <div style={{ color: 'var(--vg-f-d2c4c4)', fontSize: 13 }}>Costo oculto</div>
+                    ) : (
+                      <>
+                        <div style={{ color: 'var(--vg-text-strong)', fontWeight: 700 }}>${item.costo_total || '0.00'} total</div>
+                        <div style={{ color: 'var(--vg-f-7dffa0)', fontSize: 13 }}>${Number(item.costo_unitario_calculado || 0).toFixed(4)} / {item.rendimiento_unidad || 'unidad'}</div>
+                      </>
+                    )}
                     {item.es_adicional ? (
                       <div style={addonBadgeStyle}>
-                        Adicional · margen {item.margen_ganancia || '0'}% · vende ${item.precio_venta_calculado || '0.00'}
+                        Adicional{item.bloqueada ? '' : ` · margen ${item.margen_ganancia || '0'}%`} · vende ${item.precio_venta_calculado || '0.00'}
                         <BsAmount amountUsd={item.precio_venta_calculado} tasa={tasaCambio} />
                       </div>
                     ) : null}
                   </div>
                   <div key={`actions-${item.id}`} style={cellActionsStyle}>
-                    <button type="button" onClick={() => onEdit(item.id)} style={secondaryButtonStyle}>Modificar</button>
-                    <button type="button" onClick={() => handleDelete(item)} style={dangerButtonStyle} disabled={saving}>Eliminar</button>
+                    {item.bloqueada ? (
+                      <>
+                        <button type="button" onClick={() => setBloqueadaAbierta(item)} style={secondaryButtonStyle}>Ver receta</button>
+                        <span style={{ color: 'var(--vg-f-c8bbbb)', fontSize: 12 }}>Se modifica en Django Admin</span>
+                      </>
+                    ) : (
+                      <>
+                        <button type="button" onClick={() => onEdit(item.id)} style={secondaryButtonStyle}>Modificar</button>
+                        <button type="button" onClick={() => handleDelete(item)} style={dangerButtonStyle} disabled={saving}>Eliminar</button>
+                      </>
+                    )}
                   </div>
                 </>
               ))}

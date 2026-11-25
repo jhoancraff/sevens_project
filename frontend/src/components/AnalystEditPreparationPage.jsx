@@ -51,6 +51,7 @@ function AnalystEditPreparationPage({ isMobile, preparationId, onBack }) {
   const [showPreparationResults, setShowPreparationResults] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [bloqueada, setBloqueada] = useState(false);
   const { toast, showSuccess, showError, hideToast } = useToast();
   const { guard, isConfirmOpen, confirmLeave, cancelLeave, markClean } = useUnsavedChangesGuard({ form, components });
 
@@ -85,6 +86,11 @@ function AnalystEditPreparationPage({ isMobile, preparationId, onBack }) {
         const selected = (data.recipes || []).find((item) => String(item.id) === String(preparationId));
         if (!selected) {
           throw new Error('La subreceta seleccionada no existe.');
+        }
+        if (selected.bloqueada) {
+          // Receta secreta: aquí no llegan sus componentes; guardar desde esta pantalla la vaciaría.
+          setBloqueada(true);
+          return;
         }
 
         setInventory(Array.isArray(data.inventory) ? data.inventory : []);
@@ -231,6 +237,18 @@ function AnalystEditPreparationPage({ isMobile, preparationId, onBack }) {
     }
   };
 
+  if (bloqueada) {
+    return (
+      <section style={containerStyle(isMobile)}>
+        <h2 style={titleStyle(isMobile)}>Editar subreceta</h2>
+        <div role="status" style={emptyStyle}>🔒 Esta subreceta está bloqueada: solo se modifica desde el Django Admin.</div>
+        <button type="button" onClick={onBack} style={{ width: 'fit-content', borderRadius: 999, padding: '10px 16px', cursor: 'pointer' }}>
+          Volver
+        </button>
+      </section>
+    );
+  }
+
   return (
     <section style={containerStyle(isMobile)}>
       <h2 style={titleStyle(isMobile)}>Editar subreceta</h2>
@@ -315,6 +333,11 @@ function AnalystEditPreparationPage({ isMobile, preparationId, onBack }) {
               ))}
             </div>
 
+            {components.some((c) => c.tipo === 'sub_preparacion' && preparations.find((p) => String(p.id) === String(c.referencia_id))?.bloqueada) ? (
+              <div role="note" style={{ color: 'var(--vg-f-ffcf85)', fontSize: 13 }}>
+                🔒 El costo estimado no incluye las subrecetas bloqueadas (su costo está oculto).
+              </div>
+            ) : null}
             <div style={costSummaryStyle}>
               <div>
                 <div style={costLabelStyle}>Costo total estimado</div>

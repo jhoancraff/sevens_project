@@ -65,6 +65,7 @@ from .servicios_adicionales_views import (
     servicio_adicional_detail_view,
     servicios_adicionales_view,
 )
+from .subrecetas_bloqueadas_views import desbloquear_subreceta_view
 from .reportes_pdf_views import (
     comprobante_entrega_activo_pdf_view,
     reporte_cashea_por_cobrar_pdf_view,
@@ -235,6 +236,7 @@ urlpatterns = [
 
     # --- Administracion: catalogo y configuracion -------------------------
     path('admin/catalogo/', admin_catalog_view, name='admin_catalogo'),
+    path('admin/subrecetas/desbloquear/', desbloquear_subreceta_view, name='subreceta_desbloquear'),
     path('admin/productos/', admin_products_view, name='admin_productos'),
     path('admin/recetas/', admin_recipes_view, name='admin_recetas'),
     path('admin/categorias/', admin_categorias_view, name='admin_categorias'),

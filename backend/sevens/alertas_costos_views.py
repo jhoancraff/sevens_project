@@ -18,6 +18,7 @@ from . import api_views as av
 from .auth_helpers import _auth_response, _is_admin_user
 from .costos_historial import umbral_alerta
 from .models import VGHistorialCostoIngrediente, VGIngrediente, VGProducto
+from .subrecetas_bloqueadas import ids_bloqueadas
 
 LIMITE_DEFECTO = 60
 LIMITE_CON_IMPACTO = 30   # el calculo de recetas afectadas se hace solo para las primeras filas de la lista
@@ -44,6 +45,11 @@ def _recetas_afectadas(filas):
     }
     components_by_preparation, yields_by_preparation = av._load_preparation_structure()
     sin_rendimiento = SimpleNamespace(rendimiento_receta_pct=Decimal('0'))
+    # Recetas secretas: un producto no debe aparecer como afectado SOLO porque el ingrediente esta dentro de una
+    # subreceta bloqueada (diria que lo lleva). Se detecta el cambio con las bloqueadas vacias; los costos que se
+    # muestran siguen siendo los completos.
+    bloqueadas = ids_bloqueadas()
+    sin_secretas = {pk: ([] if pk in bloqueadas else comps) for pk, comps in components_by_preparation.items()}
     productos = list(
         VGProducto.objects.exclude(categoria__nombre__iexact='Recetas')
         .select_related('receta_vinculada', 'subreceta_vinculada')
@@ -54,16 +60,22 @@ def _recetas_afectadas(filas):
     for fila in filas:
         costos = {}
         mapas = {}
+        mapas_visibles = {}
         for etiqueta, valor in (('antes', fila.costo_anterior), ('despues', fila.costo_nuevo)):
             costos[etiqueta] = {**costos_actuales, fila.ingrediente_id: valor}
             mapas[etiqueta] = av._compute_preparation_cost_map(
                 components_by_preparation, costos[etiqueta], yields_by_preparation,
             )
+            mapas_visibles[etiqueta] = av._compute_preparation_cost_map(sin_secretas, costos[etiqueta], yields_by_preparation)
         cambian = []
         for producto in productos:
+            if producto.subreceta_vinculada_id in bloqueadas:
+                continue
             antes = av._compute_product_unit_cost(producto, costos['antes'], mapas['antes'], sin_rendimiento)
             despues = av._compute_product_unit_cost(producto, costos['despues'], mapas['despues'], sin_rendimiento)
-            if antes != despues:
+            visible_antes = av._compute_product_unit_cost(producto, costos['antes'], mapas_visibles['antes'], sin_rendimiento)
+            visible_despues = av._compute_product_unit_cost(producto, costos['despues'], mapas_visibles['despues'], sin_rendimiento)
+            if antes != despues and visible_antes != visible_despues:
                 cambian.append((abs(despues - antes), producto, antes, despues))
         cambian.sort(key=lambda t: t[0], reverse=True)
         resultado[fila.id] = {

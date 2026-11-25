@@ -47,6 +47,7 @@ from .contabilidad import (
 )
 from .restaurant import (
     VGAbonoCompra,
+    VGAccesoSubreceta,
     VGActivo,
     VGAjusteInventario,
     VGAjustePedido,
@@ -96,6 +97,7 @@ from .restaurant import (
 
 __all__ = [
     "VGAbonoCompra",
+    "VGAccesoSubreceta",
     "VGAbonoGasto",
     "VGActivo",
     "VGAjusteInventario",

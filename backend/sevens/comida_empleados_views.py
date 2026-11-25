@@ -40,6 +40,7 @@ from .models import (
     VGPreparacion,
     VGProducto,
 )
+from .subrecetas_bloqueadas import usa_bloqueada
 from .tasa_cambio import tasa_cambio_para_registro
 
 CENTAVO = Decimal('0.01')
@@ -258,7 +259,12 @@ def _serializar(comida, con_lineas=False):
         'fecha_anulacion': timezone.localtime(comida.fecha_anulacion).isoformat() if comida.fecha_anulacion else None,
         'motivo_anulacion': comida.motivo_anulacion,
     }
-    if con_lineas:
+    # Si desglosarla mostraria una receta secreta, no salen los ingredientes (ver subrecetas_bloqueadas.py).
+    objeto = {'receta': comida.receta, 'subreceta': comida.subreceta}.get(comida.tipo_origen)
+    if con_lineas and usa_bloqueada(comida.tipo_origen, objeto):
+        data['lineas'] = []
+        data['oculta'] = True
+    elif con_lineas:
         data['lineas'] = [
             {
                 'ingrediente_id': d.ingrediente_id,
@@ -322,13 +328,16 @@ def comida_empleados_previsualizar_view(request):
             'ok': False,
             'message': 'Esa selección no descuenta ningún ingrediente (¿la receta está vacía o la cantidad es muy pequeña?).',
         }, status=400)
+    oculta = usa_bloqueada(tipo, objeto)
     return _auth_response({
         'ok': True,
         'nombre': objeto.nombre,
         'unidad': unidad,
-        'lineas': _lineas_json(lineas),
-        'costo_total': str(sum((l['costo'] for l in lineas), Decimal('0')).quantize(CENTAVO)),
-        'sin_stock': [l['ingrediente'].nombre for l in lineas if l['stock_despues'] < 0],
+        'oculta': oculta,
+        'lineas': [] if oculta else _lineas_json(lineas),
+        'costo_total': None if oculta else str(sum((l['costo'] for l in lineas), Decimal('0')).quantize(CENTAVO)),
+        'hay_faltantes': any(l['stock_despues'] < 0 for l in lineas),
+        'sin_stock': [] if oculta else [l['ingrediente'].nombre for l in lineas if l['stock_despues'] < 0],
         'ya_registradas': _ya_registradas(fecha, _turno(data)),
     })
 
@@ -395,14 +404,16 @@ def _registrar(request):
         if not lineas:
             return _auth_response({'ok': False, 'message': 'Esa selección no descuenta ningún ingrediente.'}, status=400)
 
+        oculta = usa_bloqueada(tipo, objeto)
         faltantes = [l for l in lineas if l['stock_despues'] < 0]
         if faltantes and not data.get('confirmar_stock_insuficiente'):
             return _auth_response({
                 'ok': False,
                 'code': 'stock_insuficiente',
                 'message': 'Algunos ingredientes no alcanzan: el stock quedaría en negativo.',
-                'sin_stock': [l['ingrediente'].nombre for l in faltantes],
-                'lineas': _lineas_json(lineas),
+                'sin_stock': [] if oculta else [l['ingrediente'].nombre for l in faltantes],
+                'lineas': [] if oculta else _lineas_json(lineas),
+                'oculta': oculta,
             }, status=409)
 
         comida = VGComidaEmpleados.objects.create(
@@ -422,6 +433,8 @@ def _registrar(request):
             actualizado_por=request.user,
         )
         motivo = f'Comida de empleados — {objeto.nombre} ({_fmt(cantidad)} {unidad}) #{comida.id}'[:255]
+        if oculta:
+            motivo = f'Comida de empleados #{comida.id}'
         movimientos = []
         for linea in lineas:
             ingrediente = linea['ingrediente']

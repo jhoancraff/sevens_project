@@ -320,6 +320,11 @@ function AnalystNewPreparationPage({ isMobile, onBack }) {
               ))}
             </div>
 
+            {components.some((c) => c.tipo === 'sub_preparacion' && preparations.find((p) => String(p.id) === String(c.referencia_id))?.bloqueada) ? (
+              <div role="note" style={{ color: 'var(--vg-f-ffcf85)', fontSize: 13 }}>
+                🔒 El costo estimado no incluye las subrecetas bloqueadas (su costo está oculto).
+              </div>
+            ) : null}
             <div style={costSummaryStyle}>
               <div>
                 <div style={costLabelStyle}>Costo total estimado</div>

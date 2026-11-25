@@ -81,6 +81,7 @@ from .reportes import tasa_para_fecha
 from .serializers import MesaSerializer, ProductoSerializer
 from .tasa_cambio import obtener_tasa_actual, tasa_cambio_para_registro
 from .cuenta_cliente import cuenta_desactualizada, respuesta_cuenta_desactualizada
+from .subrecetas_bloqueadas import MENSAJE_SOLO_ADMIN, ids_bloqueadas
 from .tasa_cuenta import prefacturas_con_tasa_vigente, resolver_tasa_cuenta
 
 logger = logging.getLogger(__name__)
@@ -1317,7 +1318,10 @@ def _ingredientes_sin_costo_de_producto(producto, ingredient_costs, components_b
     senalarlo en las tablas de costo.
     """
     faltan = set()
-    visitadas = set()
+    # Las subrecetas bloqueadas no se recorren: nombrar un ingrediente sin precio delataría su contenido.
+    visitadas = ids_bloqueadas()
+    if producto.subreceta_vinculada_id in visitadas:
+        return []  # el producto ES la subreceta secreta: sus componentes directos son los de ella
 
     def revisar(ingrediente_id):
         if not ingredient_costs.get(ingrediente_id):
@@ -2733,8 +2737,20 @@ def admin_catalog_view(request):
         preparation_cost_map = _load_preparation_cost_map()
         recipes = []
         for preparation in VGPreparacion.objects.order_by('-fecha_creacion', 'nombre').values(
-            'id', 'nombre', 'rendimiento_cantidad', 'rendimiento_unidad', 'es_adicional', 'margen_ganancia',
+            'id', 'nombre', 'rendimiento_cantidad', 'rendimiento_unidad', 'es_adicional', 'margen_ganancia', 'bloqueada',
         ):
+            if preparation['bloqueada']:
+                # Receta secreta: ni componentes, ni costo, ni margen salen del servidor (se abren con el codigo,
+                # ver subrecetas_bloqueadas_views). El precio de venta del adicional es publico: se cobra con el.
+                precio = None
+                if preparation['es_adicional']:
+                    costo = preparation_cost_map.get(preparation['id'], {'costo_total': Decimal('0')})['costo_total']
+                    precio = str(_compute_addon_sale_price(costo, preparation['margen_ganancia']))
+                recipes.append({
+                    **preparation, 'margen_ganancia': None, 'componentes': [], 'componentes_total': None,
+                    'costo_total': None, 'costo_unitario_calculado': None, 'precio_venta_calculado': precio,
+                })
+                continue
             components = recipe_components_by_preparation.get(preparation['id'], [])
             costs = preparation_cost_map.get(preparation['id'], {'costo_total': Decimal('0'), 'costo_unitario': Decimal('0')})
             costo_unitario = costs['costo_unitario']
@@ -2816,6 +2832,8 @@ def admin_catalog_view(request):
             preparation = VGPreparacion.objects.get(pk=int(preparation_id))
         except (ValueError, TypeError, VGPreparacion.DoesNotExist):
             return _auth_response({'ok': False, 'message': 'La receta a eliminar no existe.'}, status=400)
+        if preparation.bloqueada:
+            return _auth_response({'ok': False, 'message': MENSAJE_SOLO_ADMIN}, status=403)
         preparation.delete()
         return _auth_response({'ok': True, 'message': 'Receta eliminada correctamente.'})
 
@@ -3224,6 +3242,8 @@ def admin_catalog_view(request):
             preparation = VGPreparacion.objects.get(pk=int(preparation_id))
         except (ValueError, TypeError, VGPreparacion.DoesNotExist):
             return _auth_response({'ok': False, 'message': 'La subreceta a actualizar no existe.'}, status=400)
+        if preparation.bloqueada:
+            return _auth_response({'ok': False, 'message': MENSAJE_SOLO_ADMIN}, status=403)
 
         nombre = str(data.get('nombre', '')).strip()
         if not nombre:
@@ -3439,6 +3459,12 @@ def admin_catalog_view(request):
                 preparation = VGPreparacion.objects.get(pk=int(preparation_id))
             except (ValueError, TypeError, VGPreparacion.DoesNotExist):
                 return _auth_response({'ok': False, 'message': 'La receta a editar no existe.'}, status=400)
+
+        # Guardar por nombre tambien podria pisar una subreceta bloqueada: se mira antes de tocar nada.
+        if (preparation is not None and preparation.bloqueada) or (
+            preparation is None and VGPreparacion.objects.filter(nombre__iexact=nombre, bloqueada=True).exists()
+        ):
+            return _auth_response({'ok': False, 'message': MENSAJE_SOLO_ADMIN}, status=403)
 
         if preparation is None:
             preparation, created = VGPreparacion.objects.get_or_create(
@@ -5230,13 +5256,15 @@ def admin_products_view(request):
             {
                 'id': preparation['id'],
                 'nombre': preparation['nombre'],
+                'bloqueada': preparation['bloqueada'],
                 # 6 decimales, no 2 — ver comentario equivalente más arriba (mismo motivo).
-                'costo_unitario_calculado': str(
+                # Bloqueada (receta secreta): su costo no sale; el costo de los productos lo calcula el servidor.
+                'costo_unitario_calculado': None if preparation['bloqueada'] else str(
                     preparation_cost_map.get(preparation['id'], {'costo_unitario': Decimal('0')})['costo_unitario']
                     .quantize(Decimal('0.000001'))
                 ),
             }
-            for preparation in VGPreparacion.objects.order_by('nombre').values('id', 'nombre')
+            for preparation in VGPreparacion.objects.order_by('nombre').values('id', 'nombre', 'bloqueada')
         ]
         return _auth_response({
             'ok': True,
@@ -5518,10 +5546,13 @@ def admin_recipes_view(request):
         preparation_cost_map = _load_preparation_cost_map()
         config_costeo = VGConfiguracionCosteo.obtener_config()
         preparations = []
-        for preparation in VGPreparacion.objects.order_by('nombre').values('id', 'nombre', 'rendimiento_unidad', 'rendimiento_cantidad'):
+        for preparation in VGPreparacion.objects.order_by('nombre').values('id', 'nombre', 'rendimiento_unidad', 'rendimiento_cantidad', 'bloqueada'):
             costs = preparation_cost_map.get(preparation['id'], {'costo_unitario': Decimal('0')})
             # 6 decimales, no 2 — ver comentario equivalente en admin_catalogo_view (mismo motivo).
-            preparations.append({**preparation, 'costo_unitario_calculado': str(costs['costo_unitario'].quantize(Decimal('0.000001')))})
+            preparations.append({
+                **preparation,
+                'costo_unitario_calculado': None if preparation['bloqueada'] else str(costs['costo_unitario'].quantize(Decimal('0.000001'))),
+            })
 
         recipe_payloads = []
         for recipe in recipes:
