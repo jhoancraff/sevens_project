@@ -23,7 +23,6 @@ from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 
-from .api_views import HIDDEN_INGREDIENT_IDS
 from .models import VGEjecucionAlertaStock, VGIngrediente
 from .telegram_alertas import configuracion, enviar_texto, limpiar_error
 from .whatsapp_alertas import configuracion as configuracion_whatsapp, enviar_plantilla, una_linea
@@ -45,7 +44,7 @@ def hora_inicio():
 def ingredientes_en_minimo():
     """Ingredientes con stock minimo definido (> 0) cuyo stock actual esta en ese minimo o por debajo."""
     return list(
-        VGIngrediente.objects.exclude(id__in=HIDDEN_INGREDIENT_IDS)
+        VGIngrediente.objects.all()
         .filter(stock_minimo__gt=0, stock_actual__lte=F('stock_minimo'))
         .order_by('nombre')
         .values('id', 'nombre', 'unidad_medida', 'stock_actual', 'stock_minimo', 'categoria__nombre')

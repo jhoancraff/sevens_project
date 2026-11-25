@@ -4638,7 +4638,7 @@ class ReporteInventarioPdfTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.content.startswith(b'%PDF'))
 
-    def test_usa_el_costo_efectivo_y_omite_los_ingredientes_ocultos(self):
+    def test_usa_el_costo_efectivo_y_no_omite_ingredientes_por_su_numero(self):
         from unittest import mock
         from sevens.models import VGIngrediente
         # costo_unitario desincronizado (0.5) pero el envase dice 10 / 1000 = 0.01 por gramo
@@ -4646,13 +4646,13 @@ class ReporteInventarioPdfTests(TestCase):
             nombre='Harina PDF test', unidad_medida='g', stock_actual='2000', costo_unitario='0.5',
             contenido_envase='1000', peso_real='1000', precio_compra='10.00',
         )
-        VGIngrediente.objects.create(id=285, nombre='Oculto PDF test', unidad_medida='g', stock_actual='1', costo_unitario='1')
+        VGIngrediente.objects.create(id=285, nombre='Queso PDF test', unidad_medida='g', stock_actual='1', costo_unitario='1')
         self.client.force_login(self.admin)
         with mock.patch('sevens.reportes_pdf_views.generar_pdf_inventario', return_value=b'%PDF-falso') as generar:
             r = self.client.get(self.URL)
         self.assertEqual(r.status_code, 200)
         enviados = {i['nombre']: i for i in generar.call_args.args[0]}
-        self.assertNotIn('Oculto PDF test', enviados)
+        self.assertIn('Queso PDF test', enviados)  # el id 285 estaba oculto antes
         self.assertEqual(Decimal(enviados['Harina PDF test']['costo_unitario']), Decimal('0.01'))
 
     def test_calcula_valor_total_orden_y_total_del_inventario(self):
@@ -9933,9 +9933,9 @@ class AlertaStockMinimoTests(TestCase):
         VGIngrediente.objects.create(nombre='Arroz AST', unidad_medida='g', stock_actual='900', stock_minimo='500', costo_unitario='0.002')
         VGIngrediente.objects.create(nombre='Sin minimo AST', unidad_medida='g', stock_actual='0', stock_minimo='0', costo_unitario='0.002')
         VGIngrediente.objects.create(nombre='Negativo AST', unidad_medida='unidad', stock_actual='-1', stock_minimo='5', costo_unitario='1')
-        VGIngrediente.objects.create(id=285, nombre='Oculto AST', unidad_medida='g', stock_actual='1', stock_minimo='9', costo_unitario='1')
+        VGIngrediente.objects.create(id=285, nombre='Queso AST', unidad_medida='g', stock_actual='1', stock_minimo='9', costo_unitario='1')
         nombres = [i['nombre'] for i in alertas_stock.ingredientes_en_minimo()]
-        self.assertEqual(nombres, ['Negativo AST', 'Pollo AST', 'Sal AST'])
+        self.assertEqual(nombres, ['Negativo AST', 'Pollo AST', 'Queso AST', 'Sal AST'])
 
     def test_el_mensaje_trae_cada_ingrediente_con_su_stock_y_su_minimo(self):
         from sevens import alertas_stock
@@ -10551,11 +10551,11 @@ class StockMinimoPantallaTests(TestCase):
         self._ingrediente('Arroz SM', '900', '500')          # por encima: no entra
         self._ingrediente('Sin minimo SM', '0', '0')         # sin minimo definido: no entra
         self._ingrediente('Negativo SM', '-1', '5', unidad='unidad')
-        self._ingrediente('Oculto SM', '1', '9', id=285)     # ingrediente oculto del sistema: no entra
+        self._ingrediente('Queso SM', '1', '9', id=285)      # ningun ingrediente se oculta por su numero
         datos = self.client.get(self.URL).json()
         self.assertTrue(datos['ok'])
         nombres = [i['nombre'] for i in datos['ingredientes']]
-        self.assertEqual(nombres, ['Negativo SM', 'Pollo SM', 'Sal SM'])
+        self.assertEqual(nombres, ['Negativo SM', 'Pollo SM', 'Queso SM', 'Sal SM'])
         self.assertEqual(nombres, [i['nombre'] for i in alertas_stock.ingredientes_en_minimo()])
 
     def test_calcula_lo_que_falta_y_el_estado_de_cada_ingrediente(self):

@@ -18,7 +18,7 @@ from django.db import transaction
 from django.db.models import Count, Q
 from django.views.decorators.csrf import csrf_exempt
 
-from .api_views import HIDDEN_INGREDIENT_IDS, _costo_unitario_efectivo
+from .api_views import _costo_unitario_efectivo
 from .auth_helpers import _auth_response, _is_admin_user
 from .models import (
     VGActivo,
@@ -453,7 +453,7 @@ def filas_inventario_general(params):
 
     ingredientes = []
     if incluir_ing:
-        consulta = VGIngrediente.objects.exclude(id__in=HIDDEN_INGREDIENT_IDS).select_related('categoria')
+        consulta = VGIngrediente.objects.all().select_related('categoria')
         if categoria == 'sin':
             consulta = consulta.filter(categoria__isnull=True)
         elif categoria.startswith('i:'):

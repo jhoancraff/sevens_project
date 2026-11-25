@@ -20,7 +20,7 @@ from django.db.models import F, Q
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from .api_views import HIDDEN_INGREDIENT_IDS, _factor_merma_de
+from .api_views import _factor_merma_de
 from .auth_helpers import _auth_response, _is_admin_user
 from .models import VGIngrediente, VGRecetaPreparacion, VGRecetaProducto
 
@@ -31,7 +31,7 @@ USOS_POR_INGREDIENTE = 8
 def _con_merma():
     """Ingredientes (g/ml) con envase y peso real cargados y peso real menor al envase: los que tienen merma."""
     return (
-        VGIngrediente.objects.exclude(id__in=HIDDEN_INGREDIENT_IDS)
+        VGIngrediente.objects.all()
         .exclude(unidad_medida='unidad')
         .filter(contenido_envase__gt=0, peso_real__gt=0, peso_real__lt=F('contenido_envase'))
     )
@@ -40,7 +40,7 @@ def _con_merma():
 def _listado_queryset():
     # Tambien los que quedaron encendidos y ya no tienen merma (se cambio el peso real): hay que poder apagarlos.
     return (
-        VGIngrediente.objects.exclude(id__in=HIDDEN_INGREDIENT_IDS)
+        VGIngrediente.objects.all()
         .filter(Q(pk__in=_con_merma().values('pk')) | Q(descuenta_merma=True))
         .select_related('categoria')
         .order_by('nombre')
@@ -127,7 +127,7 @@ def admin_merma_ingredientes_view(request):
     except (TypeError, ValueError):
         return _auth_response({'ok': False, 'message': 'Hay un ingrediente invalido en la seleccion.'}, status=400)
 
-    existentes = VGIngrediente.objects.filter(pk__in=ids).exclude(id__in=HIDDEN_INGREDIENT_IDS)
+    existentes = VGIngrediente.objects.filter(pk__in=ids)
     if existentes.count() != len(ids):
         return _auth_response({'ok': False, 'message': 'Hay ingredientes que ya no existen.'}, status=400)
 

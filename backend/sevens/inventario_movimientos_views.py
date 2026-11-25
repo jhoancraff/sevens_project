@@ -21,7 +21,6 @@ from decimal import Decimal
 from django.db.models import Case, Count, DecimalField, F, Q, Sum, When
 from django.utils import timezone
 
-from .api_views import HIDDEN_INGREDIENT_IDS
 from .auth_helpers import _auth_response, _is_admin_user
 from .models import VGActivo, VGIngrediente, VGMovimientoActivo, VGMovimientoInventario
 
@@ -76,7 +75,7 @@ def _numero(valor):
 
 
 def _movimientos_ingredientes(p):
-    consulta = VGMovimientoInventario.objects.exclude(ingrediente_id__in=HIDDEN_INGREDIENT_IDS)
+    consulta = VGMovimientoInventario.objects.all()
     for palabra in p['q'].split():
         consulta = consulta.filter(ingrediente__nombre__icontains=palabra)
     return consulta

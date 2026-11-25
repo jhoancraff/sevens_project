@@ -23,7 +23,6 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from .api_views import (
-    HIDDEN_INGREDIENT_IDS,
     _add_preparation_needs,
     _costo_unitario_efectivo,
     _factor_merma_de,
@@ -112,7 +111,7 @@ def _resolver_origen(tipo, origen_id):
         if subreceta is None:
             return None, None, 'Esa subreceta no existe.'
         return subreceta, subreceta.rendimiento_unidad or 'unidad', None
-    ingrediente = VGIngrediente.objects.filter(pk=origen_id).exclude(id__in=HIDDEN_INGREDIENT_IDS).first()
+    ingrediente = VGIngrediente.objects.filter(pk=origen_id).first()
     if ingrediente is None:
         return None, None, 'Ese ingrediente no existe.'
     return ingrediente, ingrediente.unidad_medida, None
@@ -295,7 +294,7 @@ def comida_empleados_opciones_view(request):
             VGPreparacion.objects.order_by('nombre').values('id', 'nombre', 'rendimiento_unidad')
         ),
         'ingredientes': list(
-            VGIngrediente.objects.exclude(id__in=HIDDEN_INGREDIENT_IDS).order_by('nombre')
+            VGIngrediente.objects.all().order_by('nombre')
             .values('id', 'nombre', 'unidad_medida', 'stock_actual')
         ),
         'turnos': [{'value': v, 'label': e} for v, e in VGComidaEmpleados.TURNOS],

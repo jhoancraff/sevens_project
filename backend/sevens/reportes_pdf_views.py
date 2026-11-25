@@ -15,7 +15,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 
 from .api_views import (
-    HIDDEN_INGREDIENT_IDS, _costo_unitario_efectivo, _serialize_compra, armar_margen_ganancia_detallado,
+    _costo_unitario_efectivo, _serialize_compra, armar_margen_ganancia_detallado,
 )
 from . import conciliacion_bancaria as conciliacion
 from .auth_helpers import _auth_response, _is_admin_user, _is_cajera_user
@@ -84,7 +84,7 @@ def reporte_inventario_pdf_view(request):
     (stock x costo) y stock actual. Usa el mismo costo "efectivo" y la misma lista (sin
     los ingredientes ocultos) que "Ver inventario actual", asi el PDF coincide con la pantalla.
     """
-    consulta = VGIngrediente.objects.exclude(id__in=HIDDEN_INGREDIENT_IDS)
+    consulta = VGIngrediente.objects.all()
 
     # categoria_id: vacio = todo el inventario (por bloques de categoria), 'sin' = los que no tienen
     # categoria, o el id de una categoria de inventario.
