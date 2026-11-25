@@ -277,6 +277,10 @@ def parsear_extracto(contenido, nombre_archivo=''):
     """
     if not contenido:
         raise ExtractoInvalido('El archivo está vacío.')
+    if contenido[:5] == b'%PDF-' or nombre_archivo.lower().endswith('.pdf'):
+        # Solo el estado de cuenta del BNC se admite en PDF (ver banco_pdf_bnc.py); cualquier otro se rechaza ahi.
+        from .banco_pdf_bnc import parsear_estado_bnc  # import tardio: ese modulo usa utilidades de este
+        return parsear_estado_bnc(contenido)
     es_xlsx = contenido[:2] == b'PK' or nombre_archivo.lower().endswith('.xlsx')
     hojas_crudas = leer_hojas_xlsx(contenido) if es_xlsx else leer_hojas_csv(contenido)
 

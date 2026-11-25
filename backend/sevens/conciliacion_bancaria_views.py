@@ -14,6 +14,7 @@ from django.views.decorators.csrf import csrf_exempt
 from . import conciliacion_bancaria as motor
 from .auth_helpers import _auth_response, _is_admin_user
 from .banco_excel import ExtractoInvalido, parsear_extracto
+from .banco_pdf_bnc import es_cuenta_bnc
 from .models import (
     VGAbonoCompra, VGAbonoGasto, VGCierreConciliacion, VGConciliacionMovimiento, VGExtractoBancario, VGGasto, VGIngresoExtra,
     VGMovimientoBancario, VGPago, VGTransferenciaCuenta,
@@ -238,7 +239,7 @@ def conciliacion_importar_view(request):
         return _auth_response({'ok': False, 'message': 'Elige la cuenta bancaria del archivo.'}, status=400)
     archivo = request.FILES.get('archivo')
     if archivo is None:
-        return _auth_response({'ok': False, 'message': 'Adjunta el archivo de movimientos del banco (.xlsx o .csv).'}, status=400)
+        return _auth_response({'ok': False, 'message': 'Adjunta el archivo de movimientos del banco (.xlsx, .csv o el PDF del BNC).'}, status=400)
     if archivo.size > MAX_TAMANO_EXTRACTO_BYTES:
         return _auth_response({'ok': False, 'message': 'El archivo no debe superar los 5MB.'}, status=400)
 
@@ -246,6 +247,13 @@ def conciliacion_importar_view(request):
         parseado = parsear_extracto(archivo.read(), archivo.name)
     except ExtractoInvalido as exc:
         return _auth_response({'ok': False, 'message': str(exc)}, status=400)
+    if parseado.get('banco') == 'BNC' and not es_cuenta_bnc(cuenta):
+        # Evita cargar el estado de cuenta del BNC en la cuenta de otro banco por haber elegido mal.
+        return _auth_response({
+            'ok': False,
+            'message': f'Este PDF es del BNC y elegiste la cuenta «{cuenta}». Elige la cuenta del BNC '
+                       '(su nombre debe incluir "BNC" o "Nacional de Crédito").',
+        }, status=400)
     if not parseado['movimientos']:
         return _auth_response({'ok': False, 'message': 'El archivo no tiene movimientos para importar.'}, status=400)
 

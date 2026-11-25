@@ -1081,10 +1081,11 @@ function ImportarModal({ cuenta, onCerrar, onImportado, onError }) {
         <div style={modalTituloStyle}>Importar extracto del banco</div>
         <div style={mutedStyle}>
           <strong style={{ color: 'var(--vg-text-strong)' }}>{cuenta}</strong> · Sube un día, un rango o el mes: lo ya cargado se omite solo.
+          {' '}Excel o CSV; del BNC también el PDF del estado de cuenta.
         </div>
         <input
           type="file"
-          accept=".xlsx,.csv"
+          accept=".xlsx,.csv,.pdf"
           onChange={(e) => elegir(e.target.files?.[0] || null)}
           disabled={leyendo || guardando}
           style={inputStyle}
