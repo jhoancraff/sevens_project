@@ -4,7 +4,7 @@ import AnalystPreparationsReportPage from '../AnalystPreparationsReportPage';
 
 const bloqueada = {
   id: 7, nombre: 'Salsa Sevens', rendimiento_cantidad: '1000', rendimiento_unidad: 'g', bloqueada: true,
-  componentes: [], componentes_total: null, costo_total: null, costo_unitario_calculado: null, es_adicional: false,
+  componentes: [], componentes_total: null, costo_total: null, costo_unitario_calculado: '0.012300', es_adicional: false,
 };
 const normal = {
   id: 8, nombre: 'Pico de gallo', rendimiento_cantidad: '500', rendimiento_unidad: 'g', bloqueada: false,
@@ -47,6 +47,7 @@ describe('Subrecetas bloqueadas', () => {
     pintar();
     expect(await screen.findByText('🔒 Receta bloqueada')).toBeInTheDocument();
     expect(screen.getByText('Costo oculto')).toBeInTheDocument();
+    expect(screen.queryByText(/0.0123/)).not.toBeInTheDocument(); // en el listado no se muestra
     expect(screen.getByRole('button', { name: 'Ver receta' })).toBeInTheDocument();
     // Solo la subreceta normal se puede modificar o eliminar.
     expect(screen.getAllByRole('button', { name: 'Modificar' })).toHaveLength(1);

@@ -497,11 +497,6 @@ function AnalystEditRecipePage({ isMobile, isAdmin, recipeId, onBack }) {
               )}
             </section>
 
-            {components.some((c) => c.tipo === 'sub_preparacion' && preparations.find((p) => String(p.id) === String(c.referencia_id))?.bloqueada) ? (
-              <div role="note" style={{ color: 'var(--vg-f-ffcf85)', fontSize: 13 }}>
-                🔒 El costo estimado no incluye las subrecetas bloqueadas (su costo está oculto).
-              </div>
-            ) : null}
             <div style={costSummaryStyle}>
               <div style={costLabelStyle}>Costo neto de la receta (suma de sus artículos)</div>
               <div style={costValueStyle}>${estimatedTotalCost.toFixed(2)}</div>

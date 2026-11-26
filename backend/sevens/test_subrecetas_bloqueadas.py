@@ -68,26 +68,38 @@ class SecretaBase(TestCase):
 
 
 class NoSaleSinCodigoTests(SecretaBase):
-    def test_el_catalogo_no_trae_componentes_ni_costo_de_la_bloqueada(self):
+    def test_el_catalogo_no_trae_componentes_ni_costo_de_la_tanda_de_la_bloqueada(self):
         recetas = {r['nombre']: r for r in self.get('/api/admin/catalogo/').json()['recipes']}
         secreta = recetas['Salsa Sevens']
         self.assertTrue(secreta['bloqueada'])
         self.assertEqual(secreta['componentes'], [])
-        for campo in ('componentes_total', 'costo_total', 'costo_unitario_calculado', 'margen_ganancia'):
+        for campo in ('componentes_total', 'costo_total', 'margen_ganancia'):
             self.assertIsNone(secreta[campo], campo)
         self.assertNotIn(SECRETO, json.dumps(secreta, ensure_ascii=False))
         self.assertNotIn('codigo_acceso', secreta)
         self.assertEqual(len(recetas['Pico de gallo SB']['componentes']), 1)
 
-    def test_productos_y_recetas_no_traen_el_costo_ni_los_ingredientes_sin_precio(self):
-        datos = self.get('/api/admin/productos/').json()
-        sub = {s['nombre']: s for s in datos['subrecetas']}
-        self.assertIsNone(sub['Salsa Sevens']['costo_unitario_calculado'])
-        self.assertIsNotNone(sub['Pico de gallo SB']['costo_unitario_calculado'])
-        for producto in datos['products']:
+    def test_al_usarla_en_otra_receta_o_producto_llega_su_costo_por_unidad(self):
+        # Tanda de 1000 g: 863 g de tomate a $0.01 (el chile no tiene precio) = $8.63 -> $0.008630 por gramo.
+        for url, clave in (
+            ('/api/admin/catalogo/', 'recipes'),            # selector al armar subrecetas
+            ('/api/admin/productos/', 'subrecetas'),        # selector al armar productos
+            ('/api/admin/recetas/', 'preparations'),        # selector al armar recetas
+        ):
+            filas = {f['nombre']: f for f in self.get(url).json()[clave]}
+            self.assertEqual(Decimal(filas['Salsa Sevens']['costo_unitario_calculado']), Decimal('0.008630'), url)
+            self.assertNotIn(SECRETO, json.dumps(filas['Salsa Sevens'], ensure_ascii=False), url)
+
+    def test_una_subreceta_que_usa_la_bloqueada_suma_su_costo_segun_la_cantidad(self):
+        marinado = VGPreparacion.objects.create(nombre='Marinado SB', rendimiento_cantidad='200', rendimiento_unidad='g')
+        VGRecetaPreparacion.objects.create(preparacion=marinado, sub_preparacion=self.salsa, cantidad_requerida='100')
+        filas = {f['nombre']: f for f in self.get('/api/admin/catalogo/').json()['recipes']}
+        self.assertEqual(filas['Marinado SB']['costo_total'], '0.86')  # 100 g x $0.00863
+        self.assertEqual([c['nombre'] for c in filas['Marinado SB']['componentes']], ['Salsa Sevens'])
+
+    def test_los_productos_no_nombran_ingredientes_sin_precio_de_la_secreta(self):
+        for producto in self.get('/api/admin/productos/').json()['products']:
             self.assertNotIn(SECRETO, producto.get('ingredientes_sin_costo', []), producto['nombre'])
-        preparaciones = {p['nombre']: p for p in self.get('/api/admin/recetas/').json()['preparations']}
-        self.assertIsNone(preparaciones['Salsa Sevens']['costo_unitario_calculado'])
 
     def test_el_aviso_de_ingredientes_sin_costo_no_nombra_los_de_la_secreta(self):
         componentes, _ = _load_preparation_structure()

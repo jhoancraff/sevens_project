@@ -633,7 +633,7 @@ function AnalystEditProductPage({ isMobile, isAdmin, productId, onBack, onProduc
                           <option value="">Selecciona...</option>
                           {(form.vinculo_tipo === 'receta' ? recetas : subrecetas).map((item) => (
                             <option key={item.id} value={item.id}>
-                              {item.nombre} — {item.bloqueada ? '🔒 costo oculto' : `costo unitario: $${Number(item.costo_unitario_calculado || 0).toFixed(2)}`}
+                              {item.bloqueada ? '🔒 ' : ''}{item.nombre} — costo unitario: ${Number(item.costo_unitario_calculado || 0).toFixed(2)}
                             </option>
                           ))}
                         </select>
@@ -645,9 +645,8 @@ function AnalystEditProductPage({ isMobile, isAdmin, productId, onBack, onProduc
                     <div style={costReferenceBoxStyle}>
                       <div>
                         <div style={costReferenceLabelStyle}>Costo unitario calculado de "{selectedVinculo.nombre}"</div>
-                        <div style={costReferenceValueStyle}>{selectedVinculo.bloqueada ? '🔒 Oculto' : `$${Number(selectedVinculo.costo_unitario_calculado || 0).toFixed(2)}`}</div>
+                        <div style={costReferenceValueStyle}>${Number(selectedVinculo.costo_unitario_calculado || 0).toFixed(2)}</div>
                       </div>
-                      {selectedVinculo.bloqueada ? null : (
                       <button
                         type="button"
                         onClick={() => handleChange('costo_estimado', selectedVinculo.costo_unitario_calculado)}
@@ -655,7 +654,6 @@ function AnalystEditProductPage({ isMobile, isAdmin, productId, onBack, onProduc
                       >
                         Usar este valor
                       </button>
-                      )}
                     </div>
                   ) : null}
                 </>

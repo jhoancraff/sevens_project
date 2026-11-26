@@ -2738,15 +2738,17 @@ def admin_catalog_view(request):
             'id', 'nombre', 'rendimiento_cantidad', 'rendimiento_unidad', 'es_adicional', 'margen_ganancia', 'bloqueada',
         ):
             if preparation['bloqueada']:
-                # Receta secreta: ni componentes, ni costo, ni margen salen del servidor (se abren con el codigo,
-                # ver subrecetas_bloqueadas_views). El precio de venta del adicional es publico: se cobra con el.
+                # Receta secreta: ni componentes, ni margen, ni costo de la tanda salen del servidor (se abren con el
+                # codigo, ver subrecetas_bloqueadas_views). SI sale el costo por unidad de rendimiento: sin el no se
+                # puede costear la receta o el producto que la usa. El precio de venta del adicional es publico.
+                costos = preparation_cost_map.get(preparation['id'], {'costo_total': Decimal('0'), 'costo_unitario': Decimal('0')})
                 precio = None
                 if preparation['es_adicional']:
-                    costo = preparation_cost_map.get(preparation['id'], {'costo_total': Decimal('0')})['costo_total']
-                    precio = str(_compute_addon_sale_price(costo, preparation['margen_ganancia']))
+                    precio = str(_compute_addon_sale_price(costos['costo_total'], preparation['margen_ganancia']))
                 recipes.append({
                     **preparation, 'margen_ganancia': None, 'componentes': [], 'componentes_total': None,
-                    'costo_total': None, 'costo_unitario_calculado': None, 'precio_venta_calculado': precio,
+                    'costo_total': None, 'precio_venta_calculado': precio,
+                    'costo_unitario_calculado': str(costos['costo_unitario'].quantize(Decimal('0.000001'))),
                 })
                 continue
             components = recipe_components_by_preparation.get(preparation['id'], [])
@@ -5256,8 +5258,8 @@ def admin_products_view(request):
                 'nombre': preparation['nombre'],
                 'bloqueada': preparation['bloqueada'],
                 # 6 decimales, no 2 — ver comentario equivalente más arriba (mismo motivo).
-                # Bloqueada (receta secreta): su costo no sale; el costo de los productos lo calcula el servidor.
-                'costo_unitario_calculado': None if preparation['bloqueada'] else str(
+                # Tambien las bloqueadas: se ocultan sus ingredientes, no lo que cuesta usarla.
+                'costo_unitario_calculado': str(
                     preparation_cost_map.get(preparation['id'], {'costo_unitario': Decimal('0')})['costo_unitario']
                     .quantize(Decimal('0.000001'))
                 ),
@@ -5549,7 +5551,7 @@ def admin_recipes_view(request):
             # 6 decimales, no 2 — ver comentario equivalente en admin_catalogo_view (mismo motivo).
             preparations.append({
                 **preparation,
-                'costo_unitario_calculado': None if preparation['bloqueada'] else str(costs['costo_unitario'].quantize(Decimal('0.000001'))),
+                'costo_unitario_calculado': str(costs['costo_unitario'].quantize(Decimal('0.000001'))),
             })
 
         recipe_payloads = []
